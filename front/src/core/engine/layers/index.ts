@@ -1,0 +1,18 @@
+import { Layer, LAYER_ID, type LayerId } from "./Layer.ts";
+import { SolidLayer } from "./Solid.layer.ts";
+import { PlasmaLayer } from "./Plasma.layer.ts";
+import { SweepLayer } from "./Sweep.layer.ts";
+
+/** Registre explicite des couches disponibles (pas d'auto-discovery). */
+const FACTORIES: Record<LayerId, (id: string) => Layer> = {
+  [LAYER_ID.SOLID]: (id) => new SolidLayer(id),
+  [LAYER_ID.PLASMA]: (id) => new PlasmaLayer(id),
+  [LAYER_ID.SWEEP]: (id) => new SweepLayer(id),
+};
+
+export function createLayer(kind: LayerId, id: string): Layer {
+  return FACTORIES[kind](id);
+}
+
+export { Layer, LAYER_ID, type LayerId } from "./Layer.ts";
+export type { BlendMode, LayerContext, TSLNode } from "./Layer.ts";
