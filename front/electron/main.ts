@@ -56,8 +56,12 @@ ipcMain.handle("project:load", async (): Promise<string | null> => {
   if (res.canceled || !res.filePaths[0]) return null;
   return readFile(res.filePaths[0], "utf8");
 });
-ipcMain.handle("project:save", async (_e, json: string): Promise<void> => {
+ipcMain.handle("project:save", async (_e, json: string, defaultName?: string): Promise<void> => {
+  const defaultPath = defaultName 
+    ? `${defaultName.replace(/[^a-zA-Z0-9-_]/g, "_")}.json` 
+    : "projet.json";
   const res = await dialog.showSaveDialog({
+    defaultPath,
     filters: [{ name: "Projet LED", extensions: ["json"] }],
   });
   if (res.canceled || !res.filePath) return;
