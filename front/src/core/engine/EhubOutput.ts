@@ -3,10 +3,20 @@ import type { Fixture, FixtureEntity } from "@domain/Fixture.ts";
 import type { Transport } from "@core/transport.ts";
 import { encodeUpdate, gzipBrowser, type EhubEntity } from "@core/ehub.ts";
 
+// Un groupe entier (~4096 entités) tient largement dans les 65 Ko max d'un
+// message eHuB, mais dépasse la taille qu'un datagramme UDP peut envoyer d'un
+// coup (EMSGSIZE dès ~16 Ko sur boucle locale macOS, une vraie carte Ethernet
+// est encore plus stricte avec sa MTU ~1500o). On découpe donc chaque groupe
+// en plusieurs messages `update`, comme anticipé par le sujet pour les
+// installations de grande envergure. 200 entités brutes = 1200o, marge de
+// sécurité même si le payload compresse mal.
+const MAX_ENTITIES_PER_MESSAGE = 200;
+
 /**
  * Site unique de SORTIE : lit la render target (readback GPU→CPU), construit les
- * messages eHuB `update` par groupe (1 univers eHuB = 1 contrôleur) et les pousse
- * sur le transport. Cadencé ~40 Hz par ThreeDevice, découplé du rendu.
+ * messages eHuB `update` par groupe (1 univers eHuB = 1 contrôleur), découpés en
+ * plusieurs paquets UDP si besoin, et les pousse sur le transport. Cadencé ~40 Hz
+ * par ThreeDevice, découplé du rendu.
  *
  * ⚠ Y-flip possible du readback à vérifier sur le vrai rendu (origine bas/haut).
  */
@@ -43,8 +53,15 @@ export class EhubOutput {
           const o = (e.y * w + e.x) * 4;
           return { id: e.ehubId, r: rgba[o], g: rgba[o + 1], b: rgba[o + 2], w: 0 };
         });
-        this._transport.send(await encodeUpdate(group, payload, gzipBrowser));
+        for (let i = 0; i < payload.length; i += MAX_ENTITIES_PER_MESSAGE) {
+          const chunk = payload.slice(i, i + MAX_ENTITIES_PER_MESSAGE);
+          this._transport.send(await encodeUpdate(group, chunk, gzipBrowser));
+        }
       }
+    } catch (err) {
+      // Une exception ici (readback WebGPU, gzip, ...) ne doit pas remonter en
+      // promesse non gérée silencieuse : on la journalise pour rester débogable.
+      console.error("[EhubOutput] tick a echoue:", err);
     } finally {
       this._busy = false;
     }

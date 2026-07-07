@@ -6,6 +6,11 @@ import dgram from "node:dgram";
 import { readFile, writeFile } from "node:fs/promises";
 
 const udp = dgram.createSocket("udp4");
+// Sans ce listener, une erreur socket async (ex: EMSGSIZE) throw et peut
+// crasher le process principal sans message clair.
+udp.on("error", (err) => {
+  console.error("[udp] erreur socket:", err);
+});
 let ehubTarget = { host: "127.0.0.1", port: 8765 }; // routeur Go — port À CONFIRMER avec Mathis
 let win: BrowserWindow | null = null;
 
@@ -27,7 +32,16 @@ function createWindow(): void {
 
 // --- eHuB : le renderer pousse des octets, on les émet en UDP vers le Go ---
 ipcMain.on("ehub:send", (_e, data: Uint8Array) => {
-  udp.send(Buffer.from(data.buffer, data.byteOffset, data.byteLength), ehubTarget.port, ehubTarget.host);
+  udp.send(
+    Buffer.from(data.buffer, data.byteOffset, data.byteLength),
+    ehubTarget.port,
+    ehubTarget.host,
+    // Sans callback, une erreur d'envoi (ex: EMSGSIZE si le payload est trop
+    // gros) serait silencieuse.
+    (err) => {
+      if (err) console.error("[udp] echec envoi vers", ehubTarget, ":", err);
+    },
+  );
 });
 ipcMain.on("ehub:target", (_e, target: { host: string; port: number }) => {
   ehubTarget = target;

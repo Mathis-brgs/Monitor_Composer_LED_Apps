@@ -9,7 +9,7 @@ import { createProject, type Project } from "@domain/Project.ts";
 import { WallFixture } from "@domain/fixtures/WallFixture.ts";
 import type { View } from "@views/View.ts";
 
-const EHUB_HZ = 40;
+const EHUB_HZ = 24; // limite fixee par le prof : 24 fps max
 
 /**
  * Composition root : charge la config, précharge les assets, construit le
