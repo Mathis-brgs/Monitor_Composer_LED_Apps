@@ -6,10 +6,12 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"time"
 
 	"ledtest/artnet"
+	"ledtest/ehub"
 	"ledtest/wall"
 )
 
@@ -35,6 +37,8 @@ func main() {
 		cmdSweep(sender, os.Args[2:])
 	case "chase":
 		cmdChase(sender, os.Args[2:])
+	case "listen":
+		cmdListen(sender, os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -48,7 +52,8 @@ Commandes:
   single -strip N -led N -r N -g N -b N   Allume une seule LED
   fill   -strip N -r N -g N -b N          Remplit une bande (-strip 0 = tout le mur)
   sweep                                    Balaie chaque bande en rouge/vert/bleu (debug cablage)
-  chase  -fps N                            Anime un point lumineux sur tout le mur (test perf/synchro)`)
+  chase  -fps N                            Anime un point lumineux sur tout le mur (test perf/synchro)
+  listen -port N                           Ecoute le flux eHuB (config+update) et le route vers ArtNet`)
 }
 
 func cmdSingle(s *artnet.Sender, args []string) {
@@ -162,5 +167,100 @@ func cmdChase(s *artnet.Sender, args []string) {
 		seq++
 		prevStrip, prevLed = strip, led
 		pos = (pos + 1) % total
+	}
+}
+
+// cmdListen écoute le flux eHuB envoyé par l'outil de création (config +
+// update), et route chaque état reçu vers les contrôleurs via ArtNet. C'est
+// le module de routage proprement dit : il ne connaît rien de l'origine des
+// couleurs (Unity, Tan, ...), seulement le protocole eHuB en entrée et le
+// mapping entité -> bande/LED (ou canal DMX brut pour les lyres/projecteur)
+// en sortie.
+func cmdListen(s *artnet.Sender, args []string) {
+	fs := flag.NewFlagSet("listen", flag.ExitOnError)
+	port := fs.Int("port", 8765, "port UDP sur lequel ecouter les messages eHuB")
+	fs.Parse(args)
+
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: *port})
+	if err != nil {
+		fmt.Println("erreur d'ecoute UDP:", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	frame := wall.NewFrame()
+	var fixtureData [512]byte
+	fixtureDirty := false
+	unknownEntities := 0
+
+	buf := make([]byte, 65535)
+	var seq byte
+
+	fmt.Printf("ecoute eHuB sur le port %d, Ctrl+C pour arreter\n", *port)
+	for {
+		n, src, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			fmt.Println("erreur de lecture UDP:", err)
+			continue
+		}
+
+		header, compressed, err := ehub.ParseHeader(buf[:n])
+		if err != nil {
+			fmt.Println("paquet eHuB invalide de", src, ":", err)
+			continue
+		}
+		payload, err := ehub.Decompress(compressed)
+		if err != nil {
+			fmt.Println("erreur de decompression gzip de", src, ":", err)
+			continue
+		}
+
+		switch header.Type {
+		case ehub.TypeConfig:
+			ranges, err := ehub.DecodeConfig(payload, header.Count)
+			if err != nil {
+				fmt.Println("config eHuB invalide:", err)
+				continue
+			}
+			fmt.Printf("config eHuB recue (univers eHuB %d) : %d plage(s)\n", header.EhubUniverse, len(ranges))
+
+		case ehub.TypeUpdate:
+			entities, err := ehub.DecodeUpdate(payload, header.Count)
+			if err != nil {
+				fmt.Println("update eHuB invalide:", err)
+				continue
+			}
+
+			fixtureDirty = false
+			for _, e := range entities {
+				if strip, led, ok := wall.EntityLocation(int(e.ID)); ok {
+					frame.SetLED(strip, led, e.R, e.G, e.B)
+					continue
+				}
+				if _, _, ch, ok := wall.FixtureChannel(int(e.ID)); ok {
+					fixtureData[ch] = e.R
+					fixtureDirty = true
+					continue
+				}
+				unknownEntities++
+				if unknownEntities == 1 {
+					fmt.Printf("entite eHuB inconnue: %d (ignoree, ce message ne s'affiche qu'une fois)\n", e.ID)
+				}
+			}
+
+			if err := frame.Flush(s, seq); err != nil {
+				fmt.Println("erreur d'envoi ArtNet:", err)
+			}
+			if fixtureDirty {
+				ip, universe, _, _ := wall.FixtureChannel(1)
+				if err := s.Send(ip, universe, seq, fixtureData[:]); err != nil {
+					fmt.Println("erreur d'envoi ArtNet (fixtures):", err)
+				}
+			}
+			seq++
+
+		default:
+			fmt.Printf("type de message eHuB inconnu (%d) de %s\n", header.Type, src)
+		}
 	}
 }
