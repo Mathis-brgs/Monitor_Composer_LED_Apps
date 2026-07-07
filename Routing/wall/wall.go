@@ -23,12 +23,16 @@ var ControllerIPs = [4]string{
 	"192.168.1.48",
 }
 
-// StripBase retourne l'IP du contrôleur et le premier univers (0-indexé,
-// global 0-127) utilisé par une bande (1-indexée, 1..64).
+// StripBase retourne l'IP du contrôleur et le premier univers utilisé par une
+// bande (1-indexée, 1..64). L'univers ArtNet est local à chaque contrôleur
+// (chaque BC216 numérote ses propres univers de 0 à 31), il faut donc repartir
+// à 0 à chaque nouveau contrôleur plutôt que de continuer à compter globalement.
 func StripBase(strip int) (ip string, baseUniverse uint16) {
 	idx := strip - 1
-	ip = ControllerIPs[idx/StripsPerCtrl]
-	baseUniverse = uint16(idx * UniversesPerStrip)
+	ctrlIdx := idx / StripsPerCtrl
+	localIdx := idx % StripsPerCtrl
+	ip = ControllerIPs[ctrlIdx]
+	baseUniverse = uint16(localIdx * UniversesPerStrip)
 	return
 }
 
@@ -73,27 +77,42 @@ func NewFrame() *Frame {
 	return &Frame{}
 }
 
-// SetLED colore une LED donnée (bande 1..64, led 1..259).
+// SetLED colore une LED donnée (bande 1..64, led 1..259). Le stockage interne
+// utilise un slot global unique (indépendant du contrôleur) pour éviter toute
+// collision entre bandes de contrôleurs différents qui partagent les mêmes
+// numéros d'univers locaux (ex: bande 1 et bande 17 utilisent toutes les deux
+// les univers locaux 0 et 1, mais sur des contrôleurs différents).
 func (f *Frame) SetLED(strip, led int, r, g, b byte) {
-	_, universe, ch := LEDAddress(strip, led)
-	f.data[universe][ch] = r
-	f.data[universe][ch+1] = g
-	f.data[universe][ch+2] = b
-	f.dirty[universe] = true
+	var offsetWithinStrip, ch int
+	if led <= LEDsPerUniverse {
+		offsetWithinStrip = 0
+		ch = (led - 1) * 3
+	} else {
+		offsetWithinStrip = 1
+		ch = (led - 1 - LEDsPerUniverse) * 3
+	}
+	slot := (strip-1)*UniversesPerStrip + offsetWithinStrip
+	f.data[slot][ch] = r
+	f.data[slot][ch+1] = g
+	f.data[slot][ch+2] = b
+	f.dirty[slot] = true
 }
 
-// Flush envoie uniquement les univers modifiés depuis le dernier Flush.
+// Flush envoie uniquement les univers modifiés depuis le dernier Flush, en
+// reconvertissant chaque slot de stockage vers l'IP et l'univers local réels.
 func (f *Frame) Flush(sender *artnet.Sender, seq byte) error {
-	for u := range f.data {
-		if !f.dirty[u] {
+	for slot := range f.data {
+		if !f.dirty[slot] {
 			continue
 		}
-		strip := u/UniversesPerStrip + 1
-		ip, _ := StripBase(strip)
-		if err := sender.Send(ip, uint16(u), seq, f.data[u][:]); err != nil {
+		strip := slot/UniversesPerStrip + 1
+		offsetWithinStrip := slot % UniversesPerStrip
+		ip, base := StripBase(strip)
+		universe := base + uint16(offsetWithinStrip)
+		if err := sender.Send(ip, universe, seq, f.data[slot][:]); err != nil {
 			return err
 		}
-		f.dirty[u] = false
+		f.dirty[slot] = false
 	}
 	return nil
 }
