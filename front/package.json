@@ -6,6 +6,7 @@
   "main": "out/main/main.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:web": "vite --port 5199 --strictPort",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "pack": "electron-vite build && electron-builder --dir",
@@ -14,24 +15,40 @@
     "test:core": "node --test"
   },
   "dependencies": {
+    "solid-js": "^1.9.14",
     "three": "^0.180.0",
     "tweakpane": "^4.0.5"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/three": "^0.180.0",
     "electron": "^34.0.0",
     "electron-builder": "^25.1.8",
     "electron-vite": "^5.0.0",
     "typescript": "^5.9.3",
     "vite": "^7.1.0",
-    "@types/node": "^22.10.0",
-    "@types/three": "^0.180.0"
+    "vite-plugin-solid": "^2.11.12"
   },
   "build": {
     "appId": "tech.laps.led-composer",
     "productName": "LED Composer",
-    "directories": { "output": "release" },
-    "files": ["out/**"],
-    "mac": { "target": "dmg", "arch": ["arm64"] },
-    "win": { "target": "nsis", "arch": ["x64"] }
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**"
+    ],
+    "mac": {
+      "target": "dmg",
+      "arch": [
+        "arm64"
+      ]
+    },
+    "win": {
+      "target": "nsis",
+      "arch": [
+        "x64"
+      ]
+    }
   }
 }
