@@ -15,10 +15,18 @@ let ehubTarget = { host: "127.0.0.1", port: 8765 }; // routeur Go — port À CO
 let win: BrowserWindow | null = null;
 
 function createWindow(): void {
+  const mac = process.platform === "darwin";
   win = new BrowserWindow({
     width: 1440,
     height: 900,
-    backgroundColor: "#0a0a0f",
+    // Barre native fondue dans le fond de l'app (couleur --app ember).
+    backgroundColor: "#0a0908",
+    ...(mac
+      ? { titleBarStyle: "hiddenInset" as const }
+      : {
+          titleBarStyle: "hidden" as const,
+          titleBarOverlay: { color: "#0a0908", symbolColor: "#948a7e", height: 38 },
+        }),
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.js"),
       sandbox: false,
