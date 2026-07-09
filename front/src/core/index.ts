@@ -2,6 +2,8 @@ export { App } from "./app.ts";
 export type { AppContext } from "./AppContext.ts";
 export { createRenderer } from "./device.ts";
 export { Runtime, type Frame } from "./Runtime.ts";
+export { Clock, type ClockListener } from "./Clock.ts";
+export { Editor, type EditorListener } from "./Editor.ts";
 export { AssetStore } from "./AssetStore.ts";
 export { IpcTransport, type Transport } from "./transport.ts";
 export {

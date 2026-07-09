@@ -3,6 +3,8 @@ import { Runtime, type Frame } from "./Runtime.ts";
 import { IpcTransport } from "./transport.ts";
 import { AssetStore } from "./AssetStore.ts";
 import { Engine } from "./engine/Engine.ts";
+import { Clock } from "./Clock.ts";
+import { Editor } from "./Editor.ts";
 import type { AppContext } from "./AppContext.ts";
 import { ASSET_MANIFEST } from "@assets/assets.manifest.ts";
 import { createProject, serializeProject, deserializeProject, type Project } from "@domain/Project.ts";
@@ -27,7 +29,12 @@ export class App {
     this._runtime = new Runtime(this._frame);
   }
 
-  static async create(canvas: HTMLCanvasElement, project: Project = createProject()): Promise<App> {
+  static async create(
+    canvas: HTMLCanvasElement,
+    project: Project = createProject(),
+    clock: Clock = new Clock(),
+    editor: Editor = new Editor(),
+  ): Promise<App> {
     const renderer = await createRenderer(canvas);
 
     const assets = new AssetStore();
@@ -43,14 +50,21 @@ export class App {
     const fixture = new WallFixture();
     const engine = new Engine(renderer, fixture, transport, project);
 
-    const app = new App({ renderer, project, assets, engine, transport });
+    const app = new App({ renderer, project, assets, engine, transport, clock, editor });
     app._start();
     app.sendEhubConfig().catch((err) => console.error("Erreur d'envoi config eHuB initiale :", err));
     return app;
   }
 
-  /** monte une vue avec le contexte injecté ; la dernière vue avec `render` devient active. */
-  mountView(view: View, host: HTMLElement): void {
+  /**
+   * Vue de rendu active dans le canvas moteur partagé : démonte la précédente,
+   * monte la nouvelle avec le contexte injecté. Idempotent par `id`.
+   * Un seul canvas → une seule vue rend à la fois (l'espace actif décide laquelle).
+   */
+  setView(view: View, host: HTMLElement): void {
+    if (this._view?.id === view.id) return;
+    this._view?.unmount();
+    this._view = view;
     view.mount(this.context, host);
     this._views.push(view);
     if (view.render) this._active = view;
@@ -106,7 +120,9 @@ export class App {
   }
 
   private readonly _frame = (frame: Frame): void => {
-    this.context.engine.update(frame);
-    this._active?.render?.();
+    const { clock, engine } = this.context;
+    clock.advance(frame.deltaTime);
+    engine.update(clock.time);
+    this._view?.render?.();
   };
 }
