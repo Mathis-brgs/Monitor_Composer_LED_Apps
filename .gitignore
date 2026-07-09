@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# Artefacts d'outillage local (non versionnés)
+.playwright-mcp/
+cap-*.png
+
+# Notes de travail de session (locales)
+/findings.md
+/progress.md
+/task_plan.md
+/handoff/
+/docs/
