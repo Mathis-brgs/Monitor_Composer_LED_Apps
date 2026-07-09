@@ -10,7 +10,6 @@ export interface ProjectConfig {
   readonly controllers: ControllerConfig[];
   /** cible UDP du routeur Go (le process principal Electron y émet l'eHuB) */
   readonly ehub: { readonly host: string; readonly port: number };
-  drawings?: Record<number, "red" | "blue" | "green" | "white">;
 }
 
 export const DEFAULT_CONFIG: ProjectConfig = {
@@ -22,5 +21,5 @@ export const DEFAULT_CONFIG: ProjectConfig = {
     { ip: "192.168.1.47" },
     { ip: "192.168.1.48" },
   ],
-  ehub: { host: "192.168.1.62", port: 8765 },
+  ehub: { host: "127.0.0.1", port: 8765 },
 };

@@ -1,5 +1,6 @@
 import { defineConfig } from "electron-vite";
 import { fileURLToPath, URL } from "node:url";
+import solid from "vite-plugin-solid";
 
 const r = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 
@@ -16,6 +17,7 @@ export default defineConfig({
   },
   renderer: {
     root: ".",
+    plugins: [solid()],
     resolve: {
       alias: {
         "@": r("./src"),
@@ -23,6 +25,8 @@ export default defineConfig({
         "@domain": r("./src/domain"),
         "@assets": r("./src/assets"),
         "@views": r("./src/views"),
+        "@ui": r("./src/ui"),
+        "@styles": r("./src/styles"),
       },
     },
     build: {
