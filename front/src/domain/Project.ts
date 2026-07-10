@@ -28,7 +28,6 @@ export function deserializeProject(json: string): Project {
   const config: ProjectConfig = {
     name: parsed.config?.name ?? DEFAULT_CONFIG.name,
     fixture: parsed.config?.fixture ?? DEFAULT_CONFIG.fixture,
-    controllers: parsed.config?.controllers ?? DEFAULT_CONFIG.controllers,
     ehub: {
       host: parsed.config?.ehub?.host ?? DEFAULT_CONFIG.ehub.host,
       port: parsed.config?.ehub?.port ?? DEFAULT_CONFIG.ehub.port,
