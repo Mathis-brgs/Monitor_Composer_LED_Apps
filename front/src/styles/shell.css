@@ -772,6 +772,7 @@ body {
 }
 
 .layer {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-10);
@@ -789,6 +790,32 @@ body {
 
 .layer--hidden {
   opacity: 0.5;
+}
+
+.layer--dragging {
+  opacity: 0.4;
+}
+
+.layer--drag-over-above::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--acc);
+  z-index: 10;
+}
+
+.layer--drag-over-below::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--acc);
+  z-index: 10;
 }
 
 .layer__eye {

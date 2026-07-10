@@ -255,6 +255,30 @@ export class Editor {
     this._emit();
   }
 
+  /** Réordonne un calque par glisser-déposer dans l'Outliner (avant/après une cible, même parent). */
+  moveLayer(draggedId: string, targetId: string, relativePos: "before" | "after"): void {
+    if (draggedId === targetId) return;
+
+    const parent = findParent(this._doc.root, draggedId);
+    if (!parent) return;
+
+    const draggedIdx = parent.children.findIndex((c) => c.id === draggedId);
+    if (draggedIdx === -1) return;
+
+    const targetIdx = parent.children.findIndex((c) => c.id === targetId);
+    if (targetIdx === -1) return;
+
+    const [layer] = parent.children.splice(draggedIdx, 1);
+    let newIdx = parent.children.findIndex((c) => c.id === targetId);
+    if (relativePos === "after") {
+      newIdx += 1;
+    }
+
+    parent.children.splice(newIdx, 0, layer);
+    this._push();
+    this._emit();
+  }
+
   // ———————————————————————————————— Mutation ————————————————————————————————
 
   setVisible(id: string, visible: boolean): void {
