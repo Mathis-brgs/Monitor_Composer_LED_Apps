@@ -1,7 +1,7 @@
 import type { RenderTarget, WebGPURenderer } from "three/webgpu";
 import type { Fixture, FixtureEntity } from "@domain/Fixture.ts";
 import type { Transport } from "@core/transport.ts";
-import { encodeUpdate, gzipBrowser, type EhubEntity } from "@core/ehub.ts";
+import { encodeConfig, encodeUpdate, gzipBrowser, type EhubEntity, type EhubRange } from "@core/ehub.ts";
 
 /**
  * Site unique de SORTIE : lit la render target (readback GPU→CPU), construit les
@@ -47,6 +47,28 @@ export class EhubOutput {
       }
     } finally {
       this._busy = false;
+    }
+  }
+
+  async sendConfig(): Promise<void> {
+    if (!this._transport.connected) return;
+    for (const [group, entities] of this._byGroup) {
+      const sortedIds = entities.map((e) => e.ehubId).sort((a, b) => a - b);
+      const fixtureRanges = this._fixture.ranges(group);
+
+      const ranges: EhubRange[] = fixtureRanges.map((r) => {
+        const startSextet = sortedIds.indexOf(r.startEntity);
+        const endSextet = sortedIds.indexOf(r.endEntity);
+        return {
+          startSextet,
+          startEntity: r.startEntity,
+          endSextet,
+          endEntity: r.endEntity,
+        };
+      });
+
+      const configPacket = encodeConfig(group, ranges);
+      this._transport.send(configPacket);
     }
   }
 }

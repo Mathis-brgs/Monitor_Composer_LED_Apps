@@ -7,11 +7,9 @@ import { Clock } from "./Clock.ts";
 import { Editor } from "./Editor.ts";
 import type { AppContext } from "./AppContext.ts";
 import { ASSET_MANIFEST } from "@assets/assets.manifest.ts";
-import { createProject, type Project } from "@domain/Project.ts";
+import { createProject, serializeProject, deserializeProject, type Project } from "@domain/Project.ts";
 import { WallFixture } from "@domain/fixtures/WallFixture.ts";
 import type { View } from "@views/View.ts";
-
-const EHUB_HZ = 40;
 
 export class App {
   private readonly _runtime: Runtime;
@@ -44,7 +42,7 @@ export class App {
 
     // TODO: résoudre la fixture depuis project.config.fixture via un registre
     const fixture = new WallFixture();
-    const engine = new Engine(renderer, fixture, transport, project);
+    const engine = new Engine(renderer, fixture, transport);
     editor.attach(engine);
 
     const app = new App({ renderer, project, assets, engine, transport, clock, editor });

@@ -10,7 +10,6 @@ export interface ProjectConfig {
   readonly controllers: ControllerConfig[];
   /** cible UDP du routeur Go (le process principal Electron y émet l'eHuB) */
   readonly ehub: { readonly host: string; readonly port: number };
-  drawings?: Record<number, "red" | "blue" | "green" | "white">;
   frequency?: number;
 }
 

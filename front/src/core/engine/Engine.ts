@@ -19,9 +19,8 @@ export class Engine {
 
   constructor(
     private readonly _renderer: WebGPURenderer,
-    fixture: Fixture,
+    readonly fixture: Fixture,
     transport: Transport,
-    _project: Project,
   ) {
     this.stack = new LayerStack(fixture.width, fixture.height);
     this.stack.setLayers([createLayer(LAYER_ID.PLASMA, "plasma-1")]); // contenu par défaut (provisoire)
@@ -43,6 +42,11 @@ export class Engine {
   /** ~40 Hz (découplé) : readback RT → eHuB → transport */
   async output(): Promise<void> {
     await this._output.tick();
+  }
+
+  /** envoie la config des plages de contrôleurs au routage Go */
+  async sendConfig(): Promise<void> {
+    await this._output.sendConfig();
   }
 
   /** texture de sortie (RT) — consommée par les previews */

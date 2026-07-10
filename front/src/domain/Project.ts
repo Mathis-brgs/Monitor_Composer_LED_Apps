@@ -33,7 +33,6 @@ export function deserializeProject(json: string): Project {
       host: parsed.config?.ehub?.host ?? DEFAULT_CONFIG.ehub.host,
       port: parsed.config?.ehub?.port ?? DEFAULT_CONFIG.ehub.port,
     },
-    drawings: parsed.config?.drawings ?? {},
     frequency: parsed.config?.frequency ?? DEFAULT_CONFIG.frequency,
   };
 
