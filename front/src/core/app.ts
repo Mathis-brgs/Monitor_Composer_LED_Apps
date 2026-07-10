@@ -5,17 +5,25 @@ import { AssetStore } from "./AssetStore.ts";
 import { Engine } from "./engine/Engine.ts";
 import { Clock } from "./Clock.ts";
 import { Editor } from "./Editor.ts";
+import { LiveState } from "./LiveState.ts";
 import type { AppContext } from "./AppContext.ts";
 import { ASSET_MANIFEST } from "@assets/assets.manifest.ts";
 import { createProject, serializeProject, deserializeProject, type Project } from "@domain/Project.ts";
 import { WallFixture } from "@domain/fixtures/WallFixture.ts";
 import type { View } from "@views/View.ts";
 
+const EHUB_HZ = 24;
+
+/**
+ * Composition root : charge la config, précharge les assets, construit le
+ * document, crée le device + le moteur, puis monte les vues avec le contexte.
+ */
 export class App {
   private readonly _runtime: Runtime;
   private _view: View | null = null;
-  private _ehubIntervalId: any = null;
-  
+  private _ehubIntervalId: number | null = null;
+
+
   /** Callback déclenché après le chargement réussi d'un projet pour actualiser l'IHM */
   public onProjectLoaded?: () => void;
 
@@ -28,6 +36,7 @@ export class App {
     project: Project = createProject(),
     clock: Clock = new Clock(),
     editor: Editor = new Editor(),
+    live: LiveState = new LiveState(),
   ): Promise<App> {
     const renderer = await createRenderer(canvas);
 
@@ -45,7 +54,16 @@ export class App {
     const engine = new Engine(renderer, fixture, transport);
     editor.attach(engine);
 
-    const app = new App({ renderer, project, assets, engine, transport, clock, editor });
+    const app = new App({
+      renderer,
+      project,
+      assets,
+      engine,
+      transport,
+      clock,
+      editor,
+      live,
+    });
     app._start();
     return app;
   }
@@ -121,20 +139,34 @@ export class App {
     await this.context.engine.sendConfig();
   }
 
-  updateFrequency(hz: number): void {
-    this.context.project.config.frequency = hz;
+  /**
+   * (Re)démarre la boucle d'envoi eHuB à la fréquence donnée. Seul point qui
+   * touche `_ehubIntervalId` : évite d'avoir deux boucles d'envoi en
+   * parallèle (une pour LIVE, une pour la fréquence du projet). La boucle
+   * n'envoie la scène que si LIVE est actif — sinon elle ne fait rien.
+   */
+  private _restartEhubInterval(hz: number): void {
     if (this._ehubIntervalId !== null) {
       window.clearInterval(this._ehubIntervalId);
     }
-    this._ehubIntervalId = window.setInterval(
-      () => void this.context.engine.output(),
-      1000 / hz
-    );
+    this._ehubIntervalId = window.setInterval(() => {
+      if (this.context.live.live) void this.context.engine.output();
+    }, 1000 / hz);
+  }
+
+  updateFrequency(hz: number): void {
+    this.context.project.config.frequency = hz;
+    this._restartEhubInterval(hz);
     console.log(`Fréquence d'envoi eHuB mise à jour : ${hz} Hz`);
   }
 
   private _start(): void {
-    this.updateFrequency(this.context.project.config.frequency ?? 24);
+    this._restartEhubInterval(this.context.project.config.frequency ?? EHUB_HZ);
+    // À la sortie du LIVE (et à l'état initial, off par défaut), on pousse
+    // une frame noire pour ne pas laisser le mur figé sur la dernière image.
+    this.context.live.subscribe((state) => {
+      if (!state.live) void this.context.engine.blackout();
+    });
     this._runtime.start();
   }
 

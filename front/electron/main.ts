@@ -6,7 +6,7 @@ import dgram from "node:dgram";
 import { readFile, writeFile } from "node:fs/promises";
 
 const udp = dgram.createSocket("udp4");
-let ehubTarget = { host: "127.0.0.1", port: 8765 }; // routeur Go — port À CONFIRMER avec Mathis
+let ehubTarget = { host: "127.0.0.1", port: 8765 }; 
 let win: BrowserWindow | null = null;
 
 function createWindow(): void {

@@ -1,11 +1,7 @@
 // Package ehub décode le protocole UDP "eHuB" (messages "config" et "update")
 // tel que décrit dans le sujet : un en-tête de 10 octets suivi d'un payload
 // compressé en GZip.
-//
-// Hypothèse non précisée dans le sujet : l'ordre des octets des champs
-// entiers (count, taille payload, champs des plages/entités). On utilise
-// little-endian (convention .NET/Unity par défaut) ; à corriger facilement
-// ici si les tests avec le vrai émetteur montrent l'inverse.
+
 package ehub
 
 import (
@@ -37,8 +33,7 @@ type Header struct {
 	PayloadLen   uint16 // taille du payload compressé, en octets
 }
 
-// ParseHeader lit l'en-tête d'un message eHuB brut (tel que reçu sur le
-// socket UDP) et retourne le payload compressé correspondant (encore en GZip).
+// ParseHeader lit l'en-tête et retourne le payload (encore en GZip).
 func ParseHeader(buf []byte) (Header, []byte, error) {
 	if len(buf) < headerSize {
 		return Header{}, nil, fmt.Errorf("eHuB: message trop court (%d octets)", len(buf))
@@ -61,7 +56,6 @@ func ParseHeader(buf []byte) (Header, []byte, error) {
 	return h, rest[:h.PayloadLen], nil
 }
 
-// Decompress décompresse le payload GZip d'un message eHuB.
 func Decompress(compressed []byte) ([]byte, error) {
 	r, err := gzip.NewReader(bytes.NewReader(compressed))
 	if err != nil {
@@ -72,7 +66,7 @@ func Decompress(compressed []byte) ([]byte, error) {
 }
 
 // ConfigRange décrit une plage d'entités et sa position dans le payload des
-// messages "update" (voir la spec pour le détail de la compaction des trous).
+// messages "update".
 type ConfigRange struct {
 	SlotStart   uint16
 	EntityStart uint16
@@ -82,7 +76,6 @@ type ConfigRange struct {
 
 const configRangeSize = 8
 
-// DecodeConfig décode le payload (déjà décompressé) d'un message "config".
 func DecodeConfig(payload []byte, count uint16) ([]ConfigRange, error) {
 	need := int(count) * configRangeSize
 	if len(payload) < need {
@@ -109,7 +102,6 @@ type Entity struct {
 
 const entitySize = 6
 
-// DecodeUpdate décode le payload (déjà décompressé) d'un message "update".
 func DecodeUpdate(payload []byte, count uint16) ([]Entity, error) {
 	need := int(count) * entitySize
 	if len(payload) < need {

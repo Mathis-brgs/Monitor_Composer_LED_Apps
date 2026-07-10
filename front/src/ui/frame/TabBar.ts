@@ -1,4 +1,5 @@
 import type { Clock } from "@core/Clock.ts";
+import type { LiveState } from "@core/LiveState.ts";
 import { SPACES, type SpaceId } from "../workspace/spaces.ts";
 import { TransportControls } from "./TransportControls.ts";
 
@@ -7,7 +8,7 @@ export class TabBar {
   readonly element: HTMLElement;
   private readonly _tabs = new Map<SpaceId, HTMLElement>();
 
-  constructor(active: SpaceId, clock: Clock, onSelect: (id: SpaceId) => void) {
+  constructor(active: SpaceId, clock: Clock, live: LiveState, onSelect: (id: SpaceId) => void) {
     this.element = document.createElement("div");
     this.element.className = "tab-bar";
 
@@ -23,7 +24,7 @@ export class TabBar {
 
     const spacer = document.createElement("div");
     spacer.className = "tab-bar__spacer";
-    this.element.append(spacer, new TransportControls(clock).element);
+    this.element.append(spacer, new TransportControls(clock, live).element);
 
     this.setActive(active);
   }

@@ -1,3 +1,5 @@
 /ledtest
 /monitor/monitor
 *.test
+*.exe
+*.md

@@ -212,21 +212,34 @@ body {
   align-items: center;
   gap: var(--space-6);
   padding: var(--space-3) var(--space-9);
-  color: var(--acc);
+  color: var(--dim);
+  font: inherit;
   font-size: var(--fs-3);
   font-weight: 500;
   letter-spacing: var(--ls-live);
   text-transform: uppercase;
-  background: var(--acc-fill);
-  border: var(--stroke-hairline) solid var(--acc-border);
+  background: transparent;
+  border: var(--stroke-hairline) solid var(--line);
   border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.live--active {
+  color: var(--acc);
+  background: var(--acc-fill);
+  border-color: var(--acc-border);
 }
 
 .live-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--acc);
+  background: currentColor;
+  opacity: 0.5;
+}
+
+.live--active .live-dot {
+  opacity: 1;
   box-shadow: 0 0 6px var(--acc-glow);
   animation: blink 1.6s infinite;
 }

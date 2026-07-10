@@ -44,6 +44,11 @@ export class Engine {
     await this._output.tick();
   }
 
+  /** Éteint le mur (frame noire), utilisé à la sortie du mode LIVE. */
+  async blackout(): Promise<void> {
+    await this._output.sendBlackout();
+  }
+
   /** envoie la config des plages de contrôleurs au routage Go */
   async sendConfig(): Promise<void> {
     await this._output.sendConfig();

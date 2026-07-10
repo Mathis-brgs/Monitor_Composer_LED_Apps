@@ -3,6 +3,14 @@ import type { Fixture, FixtureEntity } from "@domain/Fixture.ts";
 import type { Transport } from "@core/transport.ts";
 import { encodeConfig, encodeUpdate, gzipBrowser, type EhubEntity, type EhubRange } from "@core/ehub.ts";
 
+// Un groupe entier (~4096 entités) tient largement dans les 65 Ko max d'un
+// message eHuB, mais dépasse la taille qu'un datagramme UDP peut envoyer d'un
+// coup (EMSGSIZE dès ~16 Ko sur boucle locale macOS, une vraie carte Ethernet
+// est encore plus stricte avec sa MTU ~1500o). sendBlackout découpe donc en
+// plusieurs messages `update`, 200 entités brutes = 1200o, marge de sécurité
+// même si le payload compresse mal.
+const MAX_ENTITIES_PER_MESSAGE = 200;
+
 /**
  * Site unique de SORTIE : lit la render target (readback GPU→CPU), construit les
  * messages eHuB `update` par groupe (1 univers eHuB = 1 contrôleur) et les pousse
@@ -11,7 +19,8 @@ import { encodeConfig, encodeUpdate, gzipBrowser, type EhubEntity, type EhubRang
  * ⚠ Y-flip possible du readback à vérifier sur le vrai rendu (origine bas/haut).
  */
 export class EhubOutput {
-  private _busy = false;
+  private _busy = false; // garde le readback GPU de tick(), indépendant de sendBlackout
+  private _blackoutBusy = false;
   private readonly _byGroup = new Map<number, FixtureEntity[]>();
 
   constructor(
@@ -50,6 +59,30 @@ export class EhubOutput {
     }
   }
 
+  /**
+   * Envoie une frame entièrement noire (éteint le mur), sans lire le rendu.
+   * Utilisé à la sortie du mode LIVE : sans ça, le mur resterait figé sur la
+   * dernière image envoyée au lieu de s'éteindre. Découpé en plusieurs
+   * messages UDP par groupe pour rester sous la taille qu'un datagramme peut
+   * transporter d'un coup (voir MAX_ENTITIES_PER_MESSAGE).
+   */
+  async sendBlackout(): Promise<void> {
+    if (this._blackoutBusy || !this._transport.connected) return;
+    this._blackoutBusy = true;
+    try {
+      for (const [group, entities] of this._byGroup) {
+        const payload: EhubEntity[] = entities.map((e) => ({ id: e.ehubId, r: 0, g: 0, b: 0, w: 0 }));
+        for (let i = 0; i < payload.length; i += MAX_ENTITIES_PER_MESSAGE) {
+          const chunk = payload.slice(i, i + MAX_ENTITIES_PER_MESSAGE);
+          this._transport.send(await encodeUpdate(group, chunk, gzipBrowser));
+        }
+      }
+    } finally {
+      this._blackoutBusy = false;
+    }
+  }
+
+  /** Envoie la config des plages de contrôleurs au routage Go. */
   async sendConfig(): Promise<void> {
     if (!this._transport.connected) return;
     for (const [group, entities] of this._byGroup) {
@@ -67,7 +100,7 @@ export class EhubOutput {
         };
       });
 
-      const configPacket = encodeConfig(group, ranges);
+      const configPacket = await encodeConfig(group, ranges, gzipBrowser);
       this._transport.send(configPacket);
     }
   }
