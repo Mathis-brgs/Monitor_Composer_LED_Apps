@@ -47,6 +47,9 @@ App.create(shell.viewportCanvas, project, clock, editor)
     dismissLoader();
     app.setView(VIEW_FOR_SPACE[DEFAULT_SPACE](), shell.viewportHost);
     shell.onSpaceChange = (id) => app.setView(VIEW_FOR_SPACE[id](), shell.viewportHost);
+
+    // Connecter l'application au shell (barre de menus)
+    shell.setApp(app);
   })
   .catch((err: unknown) => {
     dismissLoader();

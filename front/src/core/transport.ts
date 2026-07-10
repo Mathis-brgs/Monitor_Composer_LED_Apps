@@ -3,6 +3,7 @@ export interface Transport {
   readonly connected: boolean;
   connect(): void;
   send(data: Uint8Array): void;
+  updateTarget(host: string, port: number): void;
   dispose(): void;
 }
 
@@ -23,6 +24,15 @@ export class IpcTransport implements Transport {
 
   send(data: Uint8Array): void {
     window.led?.sendEhub(data);
+  }
+
+  updateTarget(host: string, port: number): void {
+    const mutableTarget = this._target as { host: string; port: number };
+    mutableTarget.host = host;
+    mutableTarget.port = port;
+    if (this.connected) {
+      window.led?.setEhubTarget(host, port);
+    }
   }
 
   dispose(): void {}

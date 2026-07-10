@@ -42,13 +42,14 @@ ipcMain.on("ehub:target", (_e, target: { host: string; port: number }) => {
 });
 
 // --- Projet : ouverture/sauvegarde disque (P1) ---
-ipcMain.handle("project:load", async (): Promise<string | null> => {
+ipcMain.handle("project:load", async (): Promise<{ content: string; filePath: string } | null> => {
   const res = await dialog.showOpenDialog({
     filters: [{ name: "Projet LED", extensions: ["json"] }],
     properties: ["openFile"],
   });
   if (res.canceled || !res.filePaths[0]) return null;
-  return readFile(res.filePaths[0], "utf8");
+  const content = await readFile(res.filePaths[0], "utf8");
+  return { content, filePath: res.filePaths[0] };
 });
 ipcMain.handle("project:save", async (_e, json: string): Promise<void> => {
   const res = await dialog.showSaveDialog({
