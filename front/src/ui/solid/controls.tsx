@@ -1,4 +1,4 @@
-import { createSignal, For, Show, type JSX } from "solid-js";
+import { createEffect, createSignal, For, Show, type JSX } from "solid-js";
 import type { RGB } from "@domain/Layer.ts";
 import { createIcon } from "@ui/icons/Icon.ts";
 import { hexToRgb, rgbToHex } from "./color.ts";
@@ -136,25 +136,59 @@ export interface NumberFieldProps {
   onInput?: (v: number) => void;
 }
 
-/** Champ numérique éditable : drag horizontal (valeur locale). */
+/**
+ * Champ numérique éditable : glisser pour scrubber, cliquer (sans glisser) pour
+ * taper une valeur au clavier (Entrée valide, Échap annule). Se resynchronise
+ * sur `props.value` tant que l'utilisateur n'interagit pas avec CE champ — pour
+ * refléter les changements faits ailleurs (ex : gizmo 3D, undo).
+ */
 export function NumberField(props: NumberFieldProps): JSX.Element {
   const format = props.format ?? ((n: number) => n.toFixed(2));
   const step = props.step ?? 0.01;
   const [v, setV] = createSignal(props.value);
+  const [editing, setEditing] = createSignal(false);
   let el!: HTMLDivElement;
+  let input!: HTMLInputElement;
+  let dragging = false;
+
+  // resynchronisation externe : seulement si le champ n'est ni en cours de drag ni d'édition
+  createEffect(() => {
+    const next = props.value;
+    if (!dragging && !editing()) setV(next);
+  });
 
   const commit = (nv: number): void => { setV(nv); props.onInput?.(nv); };
 
-  const onPointerDown = (e: PointerEvent): void => {
+  const startEditing = (): void => {
     if (!props.onInput) return;
+    setEditing(true);
+    queueMicrotask(() => { input.focus(); input.select(); });
+  };
+
+  const stopEditing = (apply: boolean): void => {
+    if (apply) {
+      const parsed = Number.parseFloat(input.value.replace(",", "."));
+      if (!Number.isNaN(parsed)) commit(parsed);
+    }
+    setEditing(false);
+  };
+
+  const onPointerDown = (e: PointerEvent): void => {
+    if (!props.onInput || editing()) return;
     el.setPointerCapture(e.pointerId);
     const x0 = e.clientX;
     const base = v();
-    const move = (ev: PointerEvent): void => commit(base + (ev.clientX - x0) * step);
+    dragging = false;
+    const move = (ev: PointerEvent): void => {
+      if (!dragging && Math.abs(ev.clientX - x0) > 3) dragging = true;
+      if (dragging) commit(base + (ev.clientX - x0) * step);
+    };
     const up = (ev: PointerEvent): void => {
       el.releasePointerCapture(ev.pointerId);
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);
+      if (!dragging) startEditing(); // simple clic (pas de glisser) → édition au clavier
+      dragging = false;
     };
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
@@ -162,7 +196,21 @@ export function NumberField(props: NumberFieldProps): JSX.Element {
 
   return (
     <div ref={el} class="insp-field insp-field--editable insp-control" onPointerDown={onPointerDown}>
-      {format(v())}
+      <Show when={editing()} fallback={format(v())}>
+        <input
+          ref={input}
+          class="insp-field__input"
+          type="text"
+          inputmode="decimal"
+          value={v()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); stopEditing(true); }
+            else if (e.key === "Escape") { e.preventDefault(); stopEditing(false); }
+          }}
+          onBlur={() => stopEditing(true)}
+          onClick={(e) => e.stopPropagation()}
+        />
+      </Show>
     </div>
   );
 }

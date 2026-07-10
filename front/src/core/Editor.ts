@@ -1,8 +1,9 @@
 import type { Engine } from "./engine/Engine.ts";
 import {
-  makeGroup, makeShape, makeShaderLayer, findLayer, findGroup, findParent, groupChildren,
-  type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer,
-  type RGB, type Vec3, type ShapeKind, type ShaderId, type BlendMode, type Fill,
+  makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, findLayer, findGroup, findParent, groupChildren,
+  fixtureDmxChannels, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
+  type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer,
+  type RGB, type Vec3, type ShapeKind, type ShaderId, type BlendMode, type Fill, type SpotChannels, type LyreChannels,
 } from "@domain/Layer.ts";
 
 /** Patch de transform : chaque canal (position/rotation/échelle) partiellement modifiable. */
@@ -215,6 +216,45 @@ export class Editor {
     return id;
   }
 
+  /**
+   * Nombre de spots/lyres illimité côté éditeur : le canal de base est juste une
+   * suggestion de départ (doc prof), toujours modifiable ensuite (voir
+   * `setFixtureBaseChannel`) si le patch DMX réel change — et supprimable comme
+   * n'importe quel calque (`deleteLayer`/`deleteSelected`).
+   */
+  addSpot(): string {
+    this._counter += 1;
+    const base = this._nextFreeChannel(SPOT_CHANNEL_COUNT, SPOT_DEFAULT_BASE);
+    const spot = makeSpot(`spot-${this._counter}`, "Projecteur", base);
+    this._activeGroup().children.unshift(spot);
+    this._doc.selectedId = spot.id;
+    this._push();
+    this._emit();
+    return spot.id;
+  }
+
+  addLyre(): string {
+    this._counter += 1;
+    const existing = this._collect<LyreLayer>((l): l is LyreLayer => l.type === "lyre").length;
+    const suggestion = LYRE_DEFAULT_BASES[existing] ?? LYRE_DEFAULT_BASES[LYRE_DEFAULT_BASES.length - 1];
+    const base = this._nextFreeChannel(LYRE_CHANNEL_COUNT, suggestion);
+    const lyre = makeLyre(`lyre-${this._counter}`, `Lyre ${existing + 1}`, base);
+    this._activeGroup().children.unshift(lyre);
+    this._doc.selectedId = lyre.id;
+    this._push();
+    this._emit();
+    return lyre.id;
+  }
+
+  /** Reconfigure le canal DMX de base d'un spot/lyre (si le patch réel change de câblage/adressage). */
+  setFixtureBaseChannel(id: string, baseChannel: number): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || (layer.type !== "spot" && layer.type !== "lyre")) return;
+    layer.baseChannel = Math.max(1, Math.round(baseChannel));
+    this._pushFixtures();
+    this._emit();
+  }
+
   // ———————————————————————————————— Mutation ————————————————————————————————
 
   setVisible(id: string, visible: boolean): void {
@@ -301,6 +341,22 @@ export class Editor {
     else this._imagePixels.delete(id);
 
     this._recomputeScene();
+    this._emit();
+  }
+
+  setSpotChannels(id: string, patch: Partial<SpotChannels>): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "spot") return;
+    layer.channels = { ...layer.channels, ...patch };
+    this._pushFixtures();
+    this._emit();
+  }
+
+  setLyreChannels(id: string, patch: Partial<LyreChannels>): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "lyre") return;
+    layer.channels = { ...layer.channels, ...patch };
+    this._pushFixtures();
     this._emit();
   }
 
@@ -415,6 +471,44 @@ export class Editor {
     this._scene3d?.setShapes(this._shapeInputs());
   }
 
+  /** parcourt tout le document (pas seulement le groupe actif) et filtre par prédicat. */
+  private _collect<T extends Layer>(pred: (l: Layer) => l is T, group: GroupLayer = this._doc.root): T[] {
+    const out: T[] = [];
+    for (const child of group.children) {
+      if (pred(child)) out.push(child);
+      if (child.type === "group") out.push(...this._collect(pred, child));
+    }
+    return out;
+  }
+
+  /** trouve un bloc de `size` canaux libres (pas de recouvrement avec un spot/lyre existant, tout le document), en partant de `suggestion`. */
+  private _nextFreeChannel(size: number, suggestion: number): number {
+    const ranges = this._collect<SpotLayer | LyreLayer>((l): l is SpotLayer | LyreLayer => l.type === "spot" || l.type === "lyre")
+      .map((l) => ({ start: l.baseChannel, end: l.baseChannel + fixtureDmxChannels(l).length - 1 }));
+    let candidate = suggestion;
+    for (;;) {
+      const overlap = ranges.find((r) => candidate <= r.end && candidate + size - 1 >= r.start);
+      if (!overlap) return candidate;
+      candidate = overlap.end + 1;
+    }
+  }
+
+  /** canaux DMX bruts (spots/lyres du groupe actif) → entités eHuB (id = canal, R = valeur). */
+  private _fixtureChannels(): Map<number, number> {
+    const map = new Map<number, number>();
+    for (const l of this._activeGroup().children) {
+      if ((l.type === "spot" || l.type === "lyre") && l.visible) {
+        for (const { channel, value } of fixtureDmxChannels(l)) map.set(channel, value);
+      }
+    }
+    return map;
+  }
+
+  /** pousse les canaux DMX courants au moteur (indépendant de la pile de rendu — pas de sortie visuelle sur le mur). */
+  private _pushFixtures(): void {
+    this._engine?.setFixtureChannels(this._fixtureChannels());
+  }
+
   /** reconstruit la pile moteur du groupe actif : calques shader + un calque scène3d agrégé. */
   private _push(): void {
     const engine = this._engine;
@@ -422,6 +516,7 @@ export class Editor {
     if (!engine || !scene3d) return;
 
     scene3d.setShapes(this._shapeInputs());
+    this._pushFixtures();
 
     const stack: EngineLayer[] = [];
     let sceneAdded = false;
@@ -431,7 +526,7 @@ export class Editor {
       } else if (child.type === "shape") {
         if (!sceneAdded) { stack.push(scene3d); sceneAdded = true; }
       }
-      // group/image/video : non rendus en tranche 1 (navigables seulement)
+      // group/image/video/spot/lyre : non rendus sur le mur (navigables / repère visuel seulement)
     }
     // ordre d'affichage (haut = avant) → ordre moteur inversé (le haut rend en dernier)
     engine.setLayers([...stack].reverse());

@@ -1,6 +1,6 @@
-import { createSignal, Show, type JSX } from "solid-js";
+import { createMemo, createSignal, Show, type Accessor, type JSX } from "solid-js";
 import type { Editor } from "@core/Editor.ts";
-import type { Fill, GroupLayer, Layer, RGB, ShaderLayer, ShapeLayer, Vec3 } from "@domain/Layer.ts";
+import type { Fill, GroupLayer, Layer, LyreLayer, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
 import { fromStore } from "@ui/solid/store.ts";
 import { solidPanel } from "@ui/solid/mount.ts";
 import { Checkbox, ColorField, MediaField, NumberField, Row, Section, Segmented, Slider, TextField } from "@ui/solid/controls.tsx";
@@ -37,14 +37,16 @@ function Inspector(props: { editor: Editor }): JSX.Element {
   const selectedId = fromStore(editor, () => editor.selectedId);
   return (
     <Show when={selectedId()} keyed fallback={<div class="insp-empty">Aucune sélection</div>}>
-      <NodeBody editor={editor} node={editor.selected} />
+      {/* `selectedId` sert aussi de "ping" de changement (fromStore : équivaut toujours à changé) — passé
+          en `changed` pour que les champs puissent se resynchroniser sur des éditions externes (gizmo 3D). */}
+      <NodeBody editor={editor} node={editor.selected} changed={selectedId} />
     </Show>
   );
 }
 
 /** `node` est stable pendant la vie de cette instance (recréée à chaque sélection via `keyed`). */
-function NodeBody(props: { editor: Editor; node: Layer | null }): JSX.Element {
-  const { editor, node } = props;
+function NodeBody(props: { editor: Editor; node: Layer | null; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
   if (!node) return <div class="insp-empty">Aucune sélection</div>;
   return (
     <>
@@ -53,7 +55,7 @@ function NodeBody(props: { editor: Editor; node: Layer | null }): JSX.Element {
         <Row label="Nom"><TextField value={node.name} onInput={(v) => editor.setName(node.id, v)} /></Row>
       </Section>
       <Show when={node.type === "shape"}>
-        <ShapeBody editor={editor} node={node as ShapeLayer} />
+        <ShapeBody editor={editor} node={node as ShapeLayer} changed={changed} />
       </Show>
       <Show when={node.type === "shader"}>
         <ShaderBody editor={editor} node={node as ShaderLayer} />
@@ -61,7 +63,24 @@ function NodeBody(props: { editor: Editor; node: Layer | null }): JSX.Element {
       <Show when={node.type === "group"}>
         <GroupBody editor={editor} node={node as GroupLayer} />
       </Show>
+      <Show when={node.type === "spot"}>
+        <SpotBody editor={editor} node={node as SpotLayer} changed={changed} />
+      </Show>
+      <Show when={node.type === "lyre"}>
+        <LyreBody editor={editor} node={node as LyreLayer} changed={changed} />
+      </Show>
     </>
+  );
+}
+
+/** Slider pour un canal DMX brut (0-255) : la valeur affichée/renvoyée est l'octet, pas le 0..1 normalisé. */
+function ByteSlider(props: { value: number; onInput: (v: number) => void }): JSX.Element {
+  return (
+    <Slider
+      value={props.value / 255}
+      format={(v) => `${Math.round(v * 255)}`}
+      onInput={(v) => props.onInput(Math.round(v * 255))}
+    />
   );
 }
 
@@ -127,26 +146,34 @@ function FillFields(props: { editor: Editor; id: string; fill: Fill }): JSX.Elem
   );
 }
 
-function ShapeBody(props: { editor: Editor; node: ShapeLayer }): JSX.Element {
-  const { editor, node } = props;
+/**
+ * `node.transform` est mutable et pas réactif en lecture directe : sans ces memos,
+ * un changement fait ailleurs (gizmo 3D, outils du viewport) ne se reflèterait pas
+ * ici tant que la sélection ne change pas (même mécanisme que le fix Outliner : on
+ * accroche `changed()` pour forcer la relecture à chaque émission de l'éditeur).
+ */
+function ShapeBody(props: { editor: Editor; node: ShapeLayer; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
   const id = node.id;
-  const t = node.transform;
+  const position = createMemo(() => { changed(); return node.transform.position; });
+  const rotation = createMemo(() => { changed(); return node.transform.rotation; });
+  const scale = createMemo(() => { changed(); return node.transform.scale; });
   return (
     <>
       <Section title="Transform">
         <Row label="Position">
-          <Vec3Field value={t.position} step={0.01} onInput={(a, v) => editor.setTransform(id, { position: axisPatch(a, v) })} />
+          <Vec3Field value={position()} step={0.01} onInput={(a, v) => editor.setTransform(id, { position: axisPatch(a, v) })} />
         </Row>
         <Row label="Rotation">
           <Vec3Field
-            value={{ x: t.rotation.x * R2D, y: t.rotation.y * R2D, z: t.rotation.z * R2D }}
+            value={{ x: rotation().x * R2D, y: rotation().y * R2D, z: rotation().z * R2D }}
             step={1}
             format={(v) => `${v.toFixed(0)}°`}
             onInput={(a, v) => editor.setTransform(id, { rotation: axisPatch(a, v * D2R) })}
           />
         </Row>
         <Row label="Échelle">
-          <Vec3Field value={t.scale} step={0.01} onInput={(a, v) => editor.setTransform(id, { scale: axisPatch(a, v) })} />
+          <Vec3Field value={scale()} step={0.01} onInput={(a, v) => editor.setTransform(id, { scale: axisPatch(a, v) })} />
         </Row>
       </Section>
       <Section title="Apparence">
@@ -204,6 +231,97 @@ function GroupBody(props: { editor: Editor; node: GroupLayer }): JSX.Element {
         <Slider value={node.opacity} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
       </Row>
     </Section>
+  );
+}
+
+/** Bouton de suppression, commun aux fixtures (spot/lyre supprimables comme tout calque). */
+function DeleteRow(props: { editor: Editor; id: string }): JSX.Element {
+  return (
+    <Row label=" ">
+      <button type="button" class="insp-danger insp-control" onClick={() => props.editor.deleteLayer(props.id)}>
+        Supprimer
+      </button>
+    </Row>
+  );
+}
+
+/** Projecteur statique (doc prof) : position = repère visuel seul, pas de calcul sur le mur. */
+function SpotBody(props: { editor: Editor; node: SpotLayer; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
+  const id = node.id;
+  const position = createMemo(() => { changed(); return node.transform.position; });
+  const baseChannel = createMemo(() => { changed(); return node.baseChannel; });
+  const channels = createMemo(() => { changed(); return node.channels; });
+  return (
+    <>
+      <Section title="Position (repère visuel)">
+        <Row label="Position">
+          <Vec3Field value={position()} step={0.01} onInput={(a, v) => editor.setTransform(id, { position: axisPatch(a, v) })} />
+        </Row>
+      </Section>
+      <Section title="Adressage DMX">
+        <Row label="Canal base">
+          <NumberField value={baseChannel()} step={1} format={(v) => `${Math.round(v)}`} onInput={(v) => editor.setFixtureBaseChannel(id, v)} />
+        </Row>
+        <Row label=""><div class="insp-hint">Canaux {baseChannel()}-{baseChannel() + 3} : R, G, B, W</div></Row>
+      </Section>
+      <Section title="Couleur">
+        <Row label="Couleur">
+          <ColorField
+            value={{ r: channels().r / 255, g: channels().g / 255, b: channels().b / 255 }}
+            onInput={(c) => editor.setSpotChannels(id, { r: Math.round(c.r * 255), g: Math.round(c.g * 255), b: Math.round(c.b * 255) })}
+          />
+        </Row>
+        <Row label="Blanc"><ByteSlider value={channels().w} onInput={(v) => editor.setSpotChannels(id, { w: v })} /></Row>
+      </Section>
+      <Section title="Danger"><DeleteRow editor={editor} id={id} /></Section>
+    </>
+  );
+}
+
+/** Lyre (13 canaux DMX bruts). */
+function LyreBody(props: { editor: Editor; node: LyreLayer; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
+  const id = node.id;
+  const position = createMemo(() => { changed(); return node.transform.position; });
+  const baseChannel = createMemo(() => { changed(); return node.baseChannel; });
+  const channels = createMemo(() => { changed(); return node.channels; });
+  const set = (patch: Partial<LyreLayer["channels"]>): void => editor.setLyreChannels(id, patch);
+  return (
+    <>
+      <Section title="Position (repère visuel)">
+        <Row label="Position">
+          <Vec3Field value={position()} step={0.01} onInput={(a, v) => editor.setTransform(id, { position: axisPatch(a, v) })} />
+        </Row>
+      </Section>
+      <Section title="Adressage DMX">
+        <Row label="Canal base">
+          <NumberField value={baseChannel()} step={1} format={(v) => `${Math.round(v)}`} onInput={(v) => editor.setFixtureBaseChannel(id, v)} />
+        </Row>
+        <Row label=""><div class="insp-hint">Bloc de 13 canaux : {baseChannel()}-{baseChannel() + 12}</div></Row>
+      </Section>
+      <Section title="Mouvement">
+        <Row label="Pan"><ByteSlider value={channels().pan} onInput={(v) => set({ pan: v })} /></Row>
+        <Row label="Pan fin"><ByteSlider value={channels().panFine} onInput={(v) => set({ panFine: v })} /></Row>
+        <Row label="Tilt"><ByteSlider value={channels().tilt} onInput={(v) => set({ tilt: v })} /></Row>
+        <Row label="Tilt fin"><ByteSlider value={channels().tiltFine} onInput={(v) => set({ tiltFine: v })} /></Row>
+        <Row label="Vitesse"><ByteSlider value={channels().speed} onInput={(v) => set({ speed: v })} /></Row>
+      </Section>
+      <Section title="Couleur & effets">
+        <Row label="Dimmer"><ByteSlider value={channels().dimmer} onInput={(v) => set({ dimmer: v })} /></Row>
+        <Row label="Strobe"><ByteSlider value={channels().strobe} onInput={(v) => set({ strobe: v })} /></Row>
+        <Row label="Couleur">
+          <ColorField
+            value={{ r: channels().r / 255, g: channels().g / 255, b: channels().b / 255 }}
+            onInput={(c) => set({ r: Math.round(c.r * 255), g: Math.round(c.g * 255), b: Math.round(c.b * 255) })}
+          />
+        </Row>
+        <Row label="Blanc"><ByteSlider value={channels().w} onInput={(v) => set({ w: v })} /></Row>
+        <Row label="Spécial"><ByteSlider value={channels().special} onInput={(v) => set({ special: v })} /></Row>
+        <Row label="Reset"><ByteSlider value={channels().reset} onInput={(v) => set({ reset: v })} /></Row>
+      </Section>
+      <Section title="Danger"><DeleteRow editor={editor} id={id} /></Section>
+    </>
   );
 }
 

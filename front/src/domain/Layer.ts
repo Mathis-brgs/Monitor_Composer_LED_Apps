@@ -29,7 +29,45 @@ export interface ShapeLayer extends LayerBase { type: "shape"; shape: ShapeKind;
 export interface GroupLayer extends LayerBase { type: "group"; children: Layer[]; }
 export interface ImageLayer extends LayerBase { type: "image"; assetId: string; }
 export interface VideoLayer extends LayerBase { type: "video"; assetId: string; }
-export type Layer = ShaderLayer | ShapeLayer | GroupLayer | ImageLayer | VideoLayer;
+
+/**
+ * Appareils DMX du show (doc prof) : adressés en canaux bruts sur le 4e
+ * contrôleur (192.168.1.48), univers 33 — routés par le Go via des entités
+ * eHuB dont l'ID = numéro de canal (1-indexé) et dont seule la composante R
+ * porte la valeur (0-255). Aucun rendu sur le mur : simple repère visuel
+ * dans l'éditeur 3D (voir `transform.position`).
+ */
+export interface SpotChannels { r: number; g: number; b: number; w: number; }
+export interface LyreChannels {
+  pan: number; panFine: number; tilt: number; tiltFine: number;
+  speed: number; dimmer: number; strobe: number;
+  r: number; g: number; b: number; w: number;
+  special: number; reset: number;
+}
+/** Projecteur statique : `baseChannel` = 1er de ses 4 canaux (R/G/B/W) — éditable si le patch DMX change. */
+export interface SpotLayer extends LayerBase { type: "spot"; baseChannel: number; channels: SpotChannels; }
+/** Lyre (tête mobile) : `baseChannel` = 1er de ses 13 canaux — éditable si le patch DMX change. */
+export interface LyreLayer extends LayerBase { type: "lyre"; baseChannel: number; channels: LyreChannels; }
+
+export type Layer = ShaderLayer | ShapeLayer | GroupLayer | ImageLayer | VideoLayer | SpotLayer | LyreLayer;
+
+/** Suggestions de départ (doc prof), purement indicatives — `baseChannel` reste libre et modifiable ensuite. */
+export const SPOT_DEFAULT_BASE = 1;
+export const LYRE_DEFAULT_BASES = [10, 30, 50, 70] as const;
+export const SPOT_CHANNEL_COUNT = 4;
+export const LYRE_CHANNEL_COUNT = 13;
+const LYRE_CHANNEL_ORDER: (keyof LyreChannels)[] = [
+  "pan", "panFine", "tilt", "tiltFine", "speed", "dimmer", "strobe", "r", "g", "b", "w", "special", "reset",
+];
+
+/** Canaux DMX bruts (numéro 1-indexé → valeur 0-255) d'un spot/lyre, prêts pour l'encodage eHuB. */
+export function fixtureDmxChannels(l: SpotLayer | LyreLayer): { channel: number; value: number }[] {
+  if (l.type === "spot") {
+    const { r, g, b, w } = l.channels;
+    return [r, g, b, w].map((value, i) => ({ channel: l.baseChannel + i, value }));
+  }
+  return LYRE_CHANNEL_ORDER.map((key, i) => ({ channel: l.baseChannel + i, value: l.channels[key] }));
+}
 
 /** Couleur représentative d'un fill (wireframe/vignette) : couleur unie, moyenne pour un dégradé, blanc pour un média. */
 export function fillPreviewColor(fill: Fill): RGB {
@@ -60,6 +98,18 @@ export function makeShape(id: string, shape: ShapeKind, name: string): ShapeLaye
 }
 export function makeShaderLayer(id: string, shader: ShaderId, name: string): ShaderLayer {
   return { ...base(id, name), type: "shader", shader, params: {}, color: WHITE() };
+}
+/** Éteint par défaut (sécurité physique : pas de flash inattendu à la création). */
+export function makeSpot(id: string, name: string, baseChannel: number): SpotLayer {
+  return { ...base(id, name), type: "spot", baseChannel, channels: { r: 0, g: 0, b: 0, w: 0 } };
+}
+export function makeLyre(id: string, name: string, baseChannel: number): LyreLayer {
+  return {
+    ...base(id, name),
+    type: "lyre",
+    baseChannel,
+    channels: { pan: 127, panFine: 0, tilt: 127, tiltFine: 0, speed: 0, dimmer: 0, strobe: 0, r: 0, g: 0, b: 0, w: 0, special: 0, reset: 0 },
+  };
 }
 
 /** Recherche en profondeur d'un nœud par id (null si absent). */

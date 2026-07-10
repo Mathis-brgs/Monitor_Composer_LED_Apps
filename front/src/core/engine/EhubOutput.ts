@@ -11,6 +11,15 @@ import { encodeConfig, encodeUpdate, gzipBrowser, type EhubEntity, type EhubRang
 // même si le payload compresse mal.
 const MAX_ENTITIES_PER_MESSAGE = 200;
 
+// Spots/lyres (doc prof) : entités eHuB dont l'ID = canal DMX brut (1-indexé,
+// R = valeur) — routées par le Go vers le 4e contrôleur/univers 33 quel que
+// soit le groupe eHuB choisi ici (le routage ne dépend que de l'ID, pas de
+// l'en-tête). Groupe arbitraire dédié pour ne pas les mélanger aux entités du
+// mur. Plage 1-82 : couvre le projecteur statique (1-4) et les 4 lyres
+// (10-22, 30-42, 50-62, 70-82).
+const FIXTURE_EHUB_GROUP = 99;
+const FIXTURE_CHANNEL_MAX = 82;
+
 /**
  * Site unique de SORTIE : lit la render target (readback GPU→CPU), construit les
  * messages eHuB `update` par groupe (1 univers eHuB = 1 contrôleur) et les pousse
@@ -22,6 +31,7 @@ export class EhubOutput {
   private _busy = false; // tick() : ignore l'appel si un readback est déjà en cours (best-effort temps réel, on droppe la frame plutôt que d'empiler)
   private _pending: Promise<void> | null = null; // opération d'envoi en cours (tick ou blackout) — sendBlackout s'y enchaîne pour rester TOUJOURS le dernier paquet envoyé
   private readonly _byGroup = new Map<number, FixtureEntity[]>();
+  private _fixtureChannels: ReadonlyMap<number, number> = new Map();
 
   constructor(
     private readonly _renderer: WebGPURenderer,
@@ -32,6 +42,11 @@ export class EhubOutput {
     for (const group of _fixture.groups()) {
       this._byGroup.set(group, _fixture.entities.filter((e) => e.group === group));
     }
+  }
+
+  /** Canaux DMX bruts courants (spots/lyres), envoyés au prochain tick avec les entités du mur. */
+  setFixtureChannels(values: ReadonlyMap<number, number>): void {
+    this._fixtureChannels = values;
   }
 
   async tick(): Promise<void> {
@@ -58,6 +73,11 @@ export class EhubOutput {
         return { id: e.ehubId, r: rgba[o], g: rgba[o + 1], b: rgba[o + 2], w: 0 };
       });
       this._transport.send(await encodeUpdate(group, payload, gzipBrowser));
+    }
+
+    if (this._fixtureChannels.size > 0) {
+      const payload: EhubEntity[] = [...this._fixtureChannels].map(([channel, value]) => ({ id: channel, r: value, g: 0, b: 0, w: 0 }));
+      this._transport.send(await encodeUpdate(FIXTURE_EHUB_GROUP, payload, gzipBrowser));
     }
   }
 
@@ -88,6 +108,10 @@ export class EhubOutput {
         this._transport.send(await encodeUpdate(group, chunk, gzipBrowser));
       }
     }
+
+    // spots/lyres aussi (dimmer/couleur/etc. à 0) : sinon ils restent figés sur leur dernière valeur
+    const fixturePayload: EhubEntity[] = Array.from({ length: FIXTURE_CHANNEL_MAX }, (_, i) => ({ id: i + 1, r: 0, g: 0, b: 0, w: 0 }));
+    this._transport.send(await encodeUpdate(FIXTURE_EHUB_GROUP, fixturePayload, gzipBrowser));
   }
 
   /** Envoie la config des plages de contrôleurs au routage Go. */

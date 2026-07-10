@@ -54,6 +54,11 @@ export class Engine {
     await this._output.sendConfig();
   }
 
+  /** canaux DMX bruts courants (spots/lyres) : envoyés au prochain tick, en plus des entités LED. */
+  setFixtureChannels(values: ReadonlyMap<number, number>): void {
+    this._output.setFixtureChannels(values);
+  }
+
   /** texture de sortie (RT) — consommée par les previews */
   get texture(): Texture {
     return this.stack.target.texture;

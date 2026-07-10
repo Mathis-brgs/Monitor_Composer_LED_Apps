@@ -15,6 +15,8 @@ export function rgbToCss(c: RGB): string {
 export function thumbBg(l: Layer): string {
   if (l.type === "shader") return SHADER_THUMB[l.shader];
   if (l.type === "shape") return rgbToCss(fillPreviewColor(l.fill));
+  if (l.type === "spot") return rgbToCss({ r: l.channels.r / 255, g: l.channels.g / 255, b: l.channels.b / 255 });
+  if (l.type === "lyre") return rgbToCss({ r: l.channels.r / 255, g: l.channels.g / 255, b: l.channels.b / 255 });
   return "var(--row-hi)";
 }
 
@@ -26,5 +28,7 @@ export function subtitle(l: Layer): string {
     case "group": return `${l.children.length} calques`;
     case "image": return "Image";
     case "video": return "Vidéo";
+    case "spot": return "Projecteur statique";
+    case "lyre": return `Lyre · canaux ${l.baseChannel}-${l.baseChannel + 12}`;
   }
 }
