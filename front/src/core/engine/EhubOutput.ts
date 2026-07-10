@@ -3,6 +3,14 @@ import type { Fixture, FixtureEntity } from "@domain/Fixture.ts";
 import type { Transport } from "@core/transport.ts";
 import { encodeUpdate, gzipBrowser, type EhubEntity } from "@core/ehub.ts";
 
+// Un groupe entier (~4096 entités) tient largement dans les 65 Ko max d'un
+// message eHuB, mais dépasse la taille qu'un datagramme UDP peut envoyer d'un
+// coup (EMSGSIZE dès ~16 Ko sur boucle locale macOS, une vraie carte Ethernet
+// est encore plus stricte avec sa MTU ~1500o). sendBlackout découpe donc en
+// plusieurs messages `update`, 200 entités brutes = 1200o, marge de sécurité
+// même si le payload compresse mal.
+const MAX_ENTITIES_PER_MESSAGE = 200;
+
 /**
  * Site unique de SORTIE : lit la render target (readback GPU→CPU), construit les
  * messages eHuB `update` par groupe (1 univers eHuB = 1 contrôleur) et les pousse
@@ -44,6 +52,29 @@ export class EhubOutput {
           return { id: e.ehubId, r: rgba[o], g: rgba[o + 1], b: rgba[o + 2], w: 0 };
         });
         this._transport.send(await encodeUpdate(group, payload, gzipBrowser));
+      }
+    } finally {
+      this._busy = false;
+    }
+  }
+
+  /**
+   * Envoie une frame entièrement noire (éteint le mur), sans lire le rendu.
+   * Utilisé à la sortie du mode LIVE : sans ça, le mur resterait figé sur la
+   * dernière image envoyée au lieu de s'éteindre. Découpé en plusieurs
+   * messages UDP par groupe pour rester sous la taille qu'un datagramme peut
+   * transporter d'un coup (voir MAX_ENTITIES_PER_MESSAGE).
+   */
+  async sendBlackout(): Promise<void> {
+    if (this._busy || !this._transport.connected) return;
+    this._busy = true;
+    try {
+      for (const [group, entities] of this._byGroup) {
+        const payload: EhubEntity[] = entities.map((e) => ({ id: e.ehubId, r: 0, g: 0, b: 0, w: 0 }));
+        for (let i = 0; i < payload.length; i += MAX_ENTITIES_PER_MESSAGE) {
+          const chunk = payload.slice(i, i + MAX_ENTITIES_PER_MESSAGE);
+          this._transport.send(await encodeUpdate(group, chunk, gzipBrowser));
+        }
       }
     } finally {
       this._busy = false;

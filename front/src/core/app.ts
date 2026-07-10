@@ -5,13 +5,14 @@ import { AssetStore } from "./AssetStore.ts";
 import { Engine } from "./engine/Engine.ts";
 import { Clock } from "./Clock.ts";
 import { Editor } from "./Editor.ts";
+import { LiveState } from "./LiveState.ts";
 import type { AppContext } from "./AppContext.ts";
 import { ASSET_MANIFEST } from "@assets/assets.manifest.ts";
 import { createProject, type Project } from "@domain/Project.ts";
 import { WallFixture } from "@domain/fixtures/WallFixture.ts";
 import type { View } from "@views/View.ts";
 
-const EHUB_HZ = 40;
+const EHUB_HZ = 24;
 
 /**
  * Composition root : charge la config, précharge les assets, construit le
@@ -30,6 +31,7 @@ export class App {
     project: Project = createProject(),
     clock: Clock = new Clock(),
     editor: Editor = new Editor(),
+    live: LiveState = new LiveState(),
   ): Promise<App> {
     const renderer = await createRenderer(canvas);
 
@@ -47,7 +49,16 @@ export class App {
     const engine = new Engine(renderer, fixture, transport);
     editor.attach(engine);
 
-    const app = new App({ renderer, project, assets, engine, transport, clock, editor });
+    const app = new App({
+      renderer,
+      project,
+      assets,
+      engine,
+      transport,
+      clock,
+      editor,
+      live,
+    });
     app._start();
     return app;
   }
@@ -65,7 +76,15 @@ export class App {
   }
 
   private _start(): void {
-    window.setInterval(() => void this.context.engine.output(), 1000 / EHUB_HZ);
+    // N'envoie la scène que si LIVE est actif. À la sortie du LIVE (et à
+    // l'état initial, off par défaut), on pousse une frame noire pour ne pas
+    // laisser le mur figé sur la dernière image envoyée.
+    window.setInterval(() => {
+      if (this.context.live.live) void this.context.engine.output();
+    }, 1000 / EHUB_HZ);
+    this.context.live.subscribe((state) => {
+      if (!state.live) void this.context.engine.blackout();
+    });
     this._runtime.start();
   }
 

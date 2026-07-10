@@ -44,6 +44,11 @@ export class Engine {
     await this._output.tick();
   }
 
+  /** Éteint le mur (frame noire), utilisé à la sortie du mode LIVE. */
+  async blackout(): Promise<void> {
+    await this._output.sendBlackout();
+  }
+
   /** texture de sortie (RT) — consommée par les previews */
   get texture(): Texture {
     return this.stack.target.texture;

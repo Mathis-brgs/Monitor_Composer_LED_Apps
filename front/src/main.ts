@@ -4,6 +4,7 @@ import "@styles/shell.css";
 import { App } from "@core/app.ts";
 import { Clock } from "@core/Clock.ts";
 import { Editor } from "@core/Editor.ts";
+import { LiveState } from "@core/LiveState.ts";
 import { AppShell } from "@ui/AppShell.ts";
 import { DEFAULT_SPACE, type SpaceId } from "@ui/workspace/spaces.ts";
 import { createProject } from "@domain/Project.ts";
@@ -37,12 +38,13 @@ if (!(root instanceof HTMLElement)) {
 const project = createProject();
 const clock = new Clock();
 const editor = new Editor();
-const shell = new AppShell({ project, clock, editor });
+const live = new LiveState();
+const shell = new AppShell({ project, clock, editor, live });
 root.appendChild(shell.element);
 
 // Shell (DOM pur) monté ; le moteur WebGPU rend dans le canvas du viewport (non bloquant).
 const dismissLoader = shell.showViewportLoader();
-App.create(shell.viewportCanvas, project, clock, editor)
+App.create(shell.viewportCanvas, project, clock, editor, live)
   .then((app) => {
     dismissLoader();
     app.setView(VIEW_FOR_SPACE[DEFAULT_SPACE](), shell.viewportHost);

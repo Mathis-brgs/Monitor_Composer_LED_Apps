@@ -1,4 +1,5 @@
 import type { Clock } from "@core/Clock.ts";
+import type { LiveState } from "@core/LiveState.ts";
 
 const FPS = 40;
 
@@ -12,8 +13,9 @@ export class TransportControls {
   readonly element: HTMLElement;
   private readonly _btn: HTMLButtonElement;
   private readonly _time: HTMLElement;
+  private readonly _liveBtn: HTMLButtonElement;
 
-  constructor(clock: Clock) {
+  constructor(clock: Clock, live: LiveState) {
     this.element = document.createElement("div");
     this.element.className = "tab-bar__transport";
 
@@ -28,15 +30,21 @@ export class TransportControls {
     const sep = document.createElement("span");
     sep.className = "transport-sep";
 
-    const live = document.createElement("span");
-    live.className = "live";
+    // Bouton LIVE : n'envoie la scène au routeur (eHuB) que lorsqu'il est
+    // actif. À la désactivation, une frame noire est poussée pour éteindre
+    // le mur au lieu de le laisser figé (voir App._start / Engine.blackout).
+    this._liveBtn = document.createElement("button");
+    this._liveBtn.type = "button";
+    this._liveBtn.className = "live";
     const dot = document.createElement("span");
     dot.className = "live-dot";
-    live.append(dot, document.createTextNode("Live"));
+    this._liveBtn.append(dot, document.createTextNode("Live"));
+    this._liveBtn.addEventListener("click", () => live.toggle());
 
-    this.element.append(this._btn, this._time, sep, live);
+    this.element.append(this._btn, this._time, sep, this._liveBtn);
 
     clock.subscribe((c) => this._sync(c));
+    live.subscribe((l) => this._syncLive(l));
   }
 
   private _sync(clock: Clock): void {
@@ -44,6 +52,12 @@ export class TransportControls {
     this._btn.innerHTML = clock.playing ? PAUSE_SVG : PLAY_SVG;
     this._btn.setAttribute("aria-label", clock.playing ? "Pause" : "Lecture");
     this._time.textContent = formatTimecode(clock.time);
+  }
+
+  private _syncLive(live: LiveState): void {
+    this._liveBtn.classList.toggle("live--active", live.live);
+    this._liveBtn.setAttribute("aria-pressed", String(live.live));
+    this._liveBtn.setAttribute("aria-label", live.live ? "Couper le direct" : "Passer en direct");
   }
 }
 
