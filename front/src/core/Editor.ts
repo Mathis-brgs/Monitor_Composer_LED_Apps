@@ -141,6 +141,33 @@ export class Editor {
     this._emit();
   }
 
+  deleteLayer(id: string): void {
+    const parent = findParent(this._doc.root, id);
+    if (!parent) return;
+
+    const idx = parent.children.findIndex((c) => c.id === id);
+    if (idx !== -1) {
+      parent.children.splice(idx, 1);
+      
+      // Libérer le calque shader du cache en RAM
+      this._shaderLive.delete(id);
+      
+      // Si la couche supprimée était sélectionnée, on réinitialise la sélection
+      if (this._doc.selectedId === id) {
+        this._doc.selectedId = null;
+      }
+      
+      this._push();
+      this._emit();
+    }
+  }
+
+  deleteSelected(): void {
+    if (this._doc.selectedId) {
+      this.deleteLayer(this._doc.selectedId);
+    }
+  }
+
   // ———————————————————————————————— Création ————————————————————————————————
 
   addShape(kind: ShapeKind): string {
