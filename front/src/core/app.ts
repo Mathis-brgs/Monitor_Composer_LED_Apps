@@ -11,16 +11,10 @@ import { createProject, serializeProject, deserializeProject, type Project } fro
 import { WallFixture } from "@domain/fixtures/WallFixture.ts";
 import type { View } from "@views/View.ts";
 
-const EHUB_HZ = 24; // limite fixee par le prof : 24 fps max
-
-/**
- * Composition root : charge la config, précharge les assets, construit le
- * document, crée le device + le moteur, puis monte les vues avec le contexte.
- */
 export class App {
   private readonly _runtime: Runtime;
-  private readonly _views: View[] = [];
-  private _active: View | null = null;
+  private _view: View | null = null;
+  private _ehubIntervalId: any = null;
   
   /** Callback déclenché après le chargement réussi d'un projet pour actualiser l'IHM */
   public onProjectLoaded?: () => void;
@@ -49,6 +43,7 @@ export class App {
     // TODO: résoudre la fixture depuis project.config.fixture via un registre
     const fixture = new WallFixture();
     const engine = new Engine(renderer, fixture, transport, project);
+    editor.attach(engine);
 
     const app = new App({ renderer, project, assets, engine, transport, clock, editor });
     app._start();
@@ -66,8 +61,6 @@ export class App {
     this._view?.unmount();
     this._view = view;
     view.mount(this.context, host);
-    this._views.push(view);
-    if (view.render) this._active = view;
   }
 
   async loadProject(): Promise<void> {
@@ -82,9 +75,18 @@ export class App {
       p.config = loaded.config;
       p.composition = loaded.composition;
       p.objects = loaded.objects;
+      p.document = loaded.document;
 
       // Mettre à jour l'IP / Port cible du transport eHuB
       this.context.transport.updateTarget(p.config.ehub.host, p.config.ehub.port);
+
+      // Charger le document dans l'éditeur s'il est présent
+      if (loaded.document) {
+        this.context.editor.loadDocument(loaded.document);
+      }
+
+      // Mettre à jour la fréquence d'envoi eHuB
+      this.updateFrequency(p.config.frequency ?? 24);
 
       // Envoyer le paquet de config eHuB au routage Go
       await this.sendEhubConfig();
@@ -101,6 +103,7 @@ export class App {
 
   async saveProject(): Promise<void> {
     try {
+      this.context.project.document = this.context.editor.getDocument();
       const json = serializeProject(this.context.project);
       await window.led?.saveProject(json, this.context.project.config.name);
       console.log("Projet sauvegardé avec succès");
@@ -114,8 +117,20 @@ export class App {
     await this.context.engine.sendConfig();
   }
 
+  updateFrequency(hz: number): void {
+    this.context.project.config.frequency = hz;
+    if (this._ehubIntervalId !== null) {
+      window.clearInterval(this._ehubIntervalId);
+    }
+    this._ehubIntervalId = window.setInterval(
+      () => void this.context.engine.output(),
+      1000 / hz
+    );
+    console.log(`Fréquence d'envoi eHuB mise à jour : ${hz} Hz`);
+  }
+
   private _start(): void {
-    window.setInterval(() => void this.context.engine.output(), 1000 / EHUB_HZ);
+    this.updateFrequency(this.context.project.config.frequency ?? 24);
     this._runtime.start();
   }
 

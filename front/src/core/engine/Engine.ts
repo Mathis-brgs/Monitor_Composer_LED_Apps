@@ -5,8 +5,7 @@ import type { Project } from "@domain/Project.ts";
 import { LayerStack } from "./LayerStack.ts";
 import { CompositePass } from "./passes.ts";
 import { EhubOutput } from "./EhubOutput.ts";
-import { createLayer } from "./layers/index.ts";
-import { LAYER_ID, type Layer } from "./layers/Layer.ts";
+import type { Layer } from "./layers/Layer.ts";
 
 /**
  * Moteur headless : compose les couches → render target 128×128 → readback →
@@ -22,7 +21,7 @@ export class Engine {
     private readonly _renderer: WebGPURenderer,
     readonly fixture: Fixture,
     transport: Transport,
-    private readonly _project: Project,
+    _project: Project,
   ) {
     this.stack = new LayerStack(fixture.width, fixture.height);
     this.stack.setLayers([]); // fond noir (pas de couches actives)

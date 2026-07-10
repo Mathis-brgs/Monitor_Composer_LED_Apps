@@ -81,6 +81,21 @@ export class ConfigPanel {
       this._app.context.transport.updateTarget(config.ehub.host, ev.value);
     });
 
+    if (config.frequency === undefined) {
+      config.frequency = 24;
+    }
+
+    fEhub.addBinding(config, "frequency", {
+      label: "Fréquence (Hz)",
+      step: 1,
+      min: 1,
+      max: 60,
+    }).on("change", (ev) => {
+      if (ev.value !== undefined) {
+        this._app.updateFrequency(ev.value);
+      }
+    });
+
     const btnSendConfig = fEhub.addButton({ title: "Envoyer Config eHuB" });
     btnSendConfig.on("click", async () => {
       await this._app.sendEhubConfig();

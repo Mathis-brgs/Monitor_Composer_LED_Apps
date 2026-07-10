@@ -1,12 +1,14 @@
 import { DEFAULT_CONFIG, type ProjectConfig } from "./ProjectConfig.ts";
 import { EMPTY_COMPOSITION, type Composition } from "./Composition.ts";
 import type { SceneObject } from "./SceneObject.ts";
+import type { Document } from "./Layer.ts";
 
 /** Document projet = config + composition + objets. Chargeable/sauvable en JSON (P1). */
 export interface Project {
   config: ProjectConfig;
   composition: Composition;
   objects: SceneObject[];
+  document?: Document;
 }
 
 export function createProject(config: ProjectConfig = DEFAULT_CONFIG): Project {
@@ -32,11 +34,14 @@ export function deserializeProject(json: string): Project {
       port: parsed.config?.ehub?.port ?? DEFAULT_CONFIG.ehub.port,
     },
     drawings: parsed.config?.drawings ?? {},
+    frequency: parsed.config?.frequency ?? DEFAULT_CONFIG.frequency,
   };
 
   const composition: Composition = parsed.composition ?? EMPTY_COMPOSITION;
   const objects: SceneObject[] = parsed.objects ?? [];
+  const document = parsed.document;
 
-  return { config, composition, objects };
+  return { config, composition, objects, document };
 }
+
 
