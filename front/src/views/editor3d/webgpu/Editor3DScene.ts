@@ -28,7 +28,7 @@ import { positionWorld, texture } from "three/tsl";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { TransformControls } from "three/addons/controls/TransformControls.js";
 import type { Editor } from "@core/Editor.ts";
-import type { ShapeKind, ShapeLayer } from "@domain/Layer.ts";
+import { fillPreviewColor, type ShapeKind, type ShapeLayer } from "@domain/Layer.ts";
 import { LED_FILL } from "@core/engine/led.ts";
 
 const N = 128;
@@ -243,7 +243,8 @@ export class Editor3DScene {
       const selected = s.id === selectedId;
       const unit = unitGeometry(s.shape);
       const wf = new WireframeGeometry(unit);
-      const color = selected ? ACCENT : new Color(s.color.r, s.color.g, s.color.b);
+      const preview = fillPreviewColor(s.fill);
+      const color = selected ? ACCENT : new Color(preview.r, preview.g, preview.b);
       const mesh = new LineSegments(wf, helperMaterial(color, selected ? HELPER_LIT : HELPER_DIM));
       applyTransform(mesh, s);
       this._objects.add(mesh);

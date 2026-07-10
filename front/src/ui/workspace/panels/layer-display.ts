@@ -1,4 +1,4 @@
-import type { Layer, RGB, ShaderId } from "@domain/Layer.ts";
+import { fillPreviewColor, type Layer, type RGB, type ShaderId } from "@domain/Layer.ts";
 
 /** Dégradés de vignette par shader (pour compositor + inspecteur). */
 export const SHADER_THUMB: Record<ShaderId, string> = {
@@ -14,7 +14,7 @@ export function rgbToCss(c: RGB): string {
 /** Fond de la vignette d'un calque selon son type. */
 export function thumbBg(l: Layer): string {
   if (l.type === "shader") return SHADER_THUMB[l.shader];
-  if (l.type === "shape") return rgbToCss(l.color);
+  if (l.type === "shape") return rgbToCss(fillPreviewColor(l.fill));
   return "var(--row-hi)";
 }
 

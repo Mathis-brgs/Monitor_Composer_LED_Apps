@@ -2,7 +2,7 @@ import type { Engine } from "./engine/Engine.ts";
 import {
   makeGroup, makeShape, makeShaderLayer, findLayer, findGroup, findParent, groupChildren,
   type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer,
-  type RGB, type Vec3, type ShapeKind, type ShaderId, type BlendMode,
+  type RGB, type Vec3, type ShapeKind, type ShaderId, type BlendMode, type Fill,
 } from "@domain/Layer.ts";
 
 /** Patch de transform : chaque canal (position/rotation/échelle) partiellement modifiable. */
@@ -14,7 +14,14 @@ import { createLayer } from "./engine/layers/index.ts";
 import type { Layer as EngineLayer } from "./engine/layers/Layer.ts";
 import { Scene3DLayer } from "./engine/layers/Scene3D.layer.ts";
 import { SolidLayer } from "./engine/layers/Solid.layer.ts";
-import { countLit, type ShapeInput } from "./engine/shapes.ts";
+import { countLit, type ShapeFill, type ShapeInput } from "./engine/shapes.ts";
+
+/** Pixels décodés d'une image (ou d'une frame vidéo) — mis en cache hors du document (non sérialisable). */
+interface DecodedBitmap { data: Uint8ClampedArray; width: number; height: number; }
+/** Résolution de secours tant qu'une image/vidéo n'est pas encore décodée. */
+const FALLBACK_FILL: ShapeFill = { kind: "solid", color: { r: 1, g: 1, b: 1 } };
+/** Taille d'échantillonnage d'une frame vidéo : suffisant pour un mur LED, coûte peu à relire chaque frame. */
+const VIDEO_SAMPLE_SIZE = 64;
 
 export type EditorListener = () => void;
 
@@ -39,11 +46,11 @@ function seedDocument(): Document {
 
   const sphere = makeShape("sphere-1", "sphere", "Sphère 01");
   sphere.transform = { position: { x: -0.28, y: 0.12, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 0.34, y: 0.34, z: 0.34 } };
-  sphere.color = { r: 1, g: 0.541, b: 0.239 };
+  sphere.fill = { type: "solid", color: { r: 1, g: 0.541, b: 0.239 } };
 
   const box = makeShape("box-1", "box", "Cube 01");
   box.transform = { position: { x: 0.42, y: -0.14, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 0.26, y: 0.26, z: 0.26 } };
-  box.color = { r: 1, g: 0.541, b: 0.239 };
+  box.fill = { type: "solid", color: { r: 1, g: 0.541, b: 0.239 } };
 
   root.children.push(sweep, plasma, solid, sphere, box);
   return { root, activeGroupId: "root", selectedId: "plasma-1" };
@@ -62,6 +69,11 @@ export class Editor {
   private _engine: Engine | null = null;
   private _counter = 0;
   private _tool: EditorTool = "select";
+
+  // fills image/vidéo : décodage async + lecture, mis en cache hors du document (par id de shape)
+  private readonly _imagePixels = new Map<string, DecodedBitmap>();
+  private readonly _videoEls = new Map<string, HTMLVideoElement>();
+  private _videoSampleCanvas: HTMLCanvasElement | null = null;
 
   // ————————————————————————————————— Lecture —————————————————————————————————
 
@@ -145,7 +157,7 @@ export class Editor {
       rotation: { x: 0, y: 0, z: 0 },
       scale: { x: 0.3, y: 0.3, z: 0.3 },
     };
-    shape.color = { r: 1, g: 0.541, b: 0.239 };
+    shape.fill = { type: "solid", color: { r: 1, g: 0.541, b: 0.239 } };
     this._activeGroup().children.push(shape);
     this._doc.selectedId = shape.id;
     this._push();
@@ -239,18 +251,36 @@ export class Editor {
     this._emit();
   }
 
+  /** Couleur d'un calque shader (le fond "Couleur unie"). Pour une shape, voir `setFill`. */
   setColor(id: string, color: RGB): void {
     const layer = findLayer(this._doc.root, id);
-    if (!layer) return;
-    if (layer.type === "shape") {
-      layer.color = color;
-      this._recomputeScene();
-    } else if (layer.type === "shader") {
-      layer.color = color;
-      const live = this._shaderLive.get(id);
-      if (live instanceof SolidLayer) live.setColor(color.r, color.g, color.b);
-    }
+    if (!layer || layer.type !== "shader") return;
+    layer.color = color;
+    const live = this._shaderLive.get(id);
+    if (live instanceof SolidLayer) live.setColor(color.r, color.g, color.b);
     this._emit();
+  }
+
+  /** Remplissage d'une shape : couleur unie, dégradé, image ou vidéo (voir `Fill`). */
+  setFill(id: string, fill: Fill): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "shape") return;
+    layer.fill = fill;
+
+    if (fill.type === "video") this._ensureVideoPlayback(id, fill.dataUrl);
+    else this._teardownVideo(id);
+
+    if (fill.type === "image") this._decodeImage(id, fill.dataUrl);
+    else this._imagePixels.delete(id);
+
+    this._recomputeScene();
+    this._emit();
+  }
+
+  /** appelé chaque frame moteur : ré-échantillonne les shapes tant qu'une vidéo est en lecture. */
+  tick(): void {
+    if (this._videoEls.size === 0) return;
+    this._recomputeScene();
   }
 
   subscribe(listener: EditorListener): () => void {
@@ -265,7 +295,79 @@ export class Editor {
   }
 
   private _toInput(s: ShapeLayer): ShapeInput {
-    return { kind: s.shape, position: s.transform.position, rotation: s.transform.rotation, scale: s.transform.scale, color: s.color, opacity: s.opacity };
+    return { kind: s.shape, position: s.transform.position, rotation: s.transform.rotation, scale: s.transform.scale, fill: this._resolveFill(s), opacity: s.opacity };
+  }
+
+  /** Résout le `Fill` (modèle, sérialisable) en `ShapeFill` (pixels prêts pour le rasterizeur). */
+  private _resolveFill(s: ShapeLayer): ShapeFill {
+    const fill = s.fill;
+    switch (fill.type) {
+      case "solid":
+        return { kind: "solid", color: fill.color };
+      case "gradient":
+        return { kind: "gradient", from: fill.from, to: fill.to, angle: fill.angle };
+      case "image": {
+        const bmp = this._imagePixels.get(s.id);
+        return bmp ? { kind: "bitmap", ...bmp } : FALLBACK_FILL;
+      }
+      case "video":
+        return this._sampleVideoFrame(s.id) ?? FALLBACK_FILL;
+    }
+  }
+
+  /** Décode une image (data URL) en pixels CPU via un canvas hors-écran, met en cache par id de shape. */
+  private _decodeImage(id: string, dataUrl: string): void {
+    if (!dataUrl) { this._imagePixels.delete(id); return; }
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0);
+      const { data, width, height } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      this._imagePixels.set(id, { data, width, height });
+      this._recomputeScene();
+      this._emit();
+    };
+    img.src = dataUrl;
+  }
+
+  /** Crée/relance un <video> caché (loop, muet) pour une shape en fill vidéo. */
+  private _ensureVideoPlayback(id: string, dataUrl: string): void {
+    if (!dataUrl) { this._teardownVideo(id); return; }
+    const existing = this._videoEls.get(id);
+    if (existing && existing.src === dataUrl) return;
+    existing?.pause();
+    const el = document.createElement("video");
+    el.src = dataUrl;
+    el.loop = true;
+    el.muted = true;
+    el.playsInline = true;
+    void el.play().catch(() => {}); // autoplay peut être refusé avant interaction — pas bloquant
+    this._videoEls.set(id, el);
+  }
+
+  private _teardownVideo(id: string): void {
+    const el = this._videoEls.get(id);
+    if (!el) return;
+    el.pause();
+    this._videoEls.delete(id);
+  }
+
+  /** Dessine la frame vidéo courante dans un canvas partagé et relit les pixels (par id de shape). */
+  private _sampleVideoFrame(id: string): ShapeFill | null {
+    const el = this._videoEls.get(id);
+    if (!el || el.readyState < 2 || el.videoWidth === 0) return null;
+    const canvas = this._videoSampleCanvas ?? (this._videoSampleCanvas = document.createElement("canvas"));
+    canvas.width = VIDEO_SAMPLE_SIZE;
+    canvas.height = VIDEO_SAMPLE_SIZE;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(el, 0, 0, VIDEO_SAMPLE_SIZE, VIDEO_SAMPLE_SIZE);
+    const { data } = ctx.getImageData(0, 0, VIDEO_SAMPLE_SIZE, VIDEO_SAMPLE_SIZE);
+    return { kind: "bitmap", data, width: VIDEO_SAMPLE_SIZE, height: VIDEO_SAMPLE_SIZE };
   }
 
   private _shapeInputs(): ShapeInput[] {

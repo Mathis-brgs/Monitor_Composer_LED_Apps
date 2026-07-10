@@ -1247,6 +1247,41 @@ body {
   border: var(--stroke-hairline) solid var(--line);
 }
 
+.insp-media {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-8);
+  background: var(--row);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  min-height: 26px;
+}
+
+.insp-media__hint {
+  font-size: var(--fs-3);
+  color: var(--dim);
+}
+
+.insp-media__preview {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-xs);
+  border: var(--stroke-hairline) solid var(--line);
+  background-size: cover;
+  background-position: center;
+  flex: 0 0 auto;
+}
+
+.insp-media__input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .insp-select {
   display: flex;
   align-items: center;

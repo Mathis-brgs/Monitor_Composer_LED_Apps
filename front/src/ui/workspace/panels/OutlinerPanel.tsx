@@ -40,6 +40,7 @@ function LayerRow(props: { editor: Editor; layer: Layer; changed: Accessor<unkno
   const opacity = createMemo(() => { changed(); return `${Math.round(layer.opacity * 100)}%`; });
   const thumb = createMemo(() => { changed(); return thumbBg(layer); });
   const sub = createMemo(() => { changed(); return subtitle(layer); });
+  const name = createMemo(() => { changed(); return layer.name; });
 
   return (
     <div
@@ -60,7 +61,7 @@ function LayerRow(props: { editor: Editor; layer: Layer; changed: Accessor<unkno
       </button>
       <div class="layer__thumb" style={{ background: thumb() }} />
       <div class="layer__info">
-        <div class="layer__name">{layer.name}</div>
+        <div class="layer__name">{name()}</div>
         <div class="layer__type">{sub()}</div>
       </div>
       <div class="layer__meta">

@@ -11,6 +11,6 @@ export interface ProjectConfig {
 export const DEFAULT_CONFIG: ProjectConfig = {
   name: "new project",
   fixture: "wall",
-  ehub: { host: "192.168.1.62", port: 8765 },
+  ehub: { host: "127.0.0.1", port: 8765 },
   frequency: 24,
 };

@@ -13,7 +13,7 @@ test("aucune shape → tout transparent", () => {
 });
 
 test("un cube couvrant tout → LEDs opaques à sa couleur", () => {
-  const shapes: ShapeInput[] = [{ kind: "box", position: pos(), scale: scl(4), color: { r: 1, g: 0, b: 0 } }];
+  const shapes: ShapeInput[] = [{ kind: "box", position: pos(), scale: scl(4), fill: { kind: "solid", color: { r: 1, g: 0, b: 0 } } }];
   const buf = rasterizeShapes(shapes, W, H);
   let redOpaque = 0;
   for (let i = 0; i < W * H; i++) {
@@ -24,8 +24,8 @@ test("un cube couvrant tout → LEDs opaques à sa couleur", () => {
 
 test("avant-plan gagne : dernier shape écrase", () => {
   const shapes: ShapeInput[] = [
-    { kind: "box", position: pos(), scale: scl(4), color: { r: 1, g: 0, b: 0 } },
-    { kind: "box", position: pos(), scale: scl(4), color: { r: 0, g: 0, b: 1 } },
+    { kind: "box", position: pos(), scale: scl(4), fill: { kind: "solid", color: { r: 1, g: 0, b: 0 } } },
+    { kind: "box", position: pos(), scale: scl(4), fill: { kind: "solid", color: { r: 0, g: 0, b: 1 } } },
   ];
   const buf = rasterizeShapes(shapes, W, H);
   assert.equal(buf[2], 255); // bleu du 2e
@@ -33,7 +33,7 @@ test("avant-plan gagne : dernier shape écrase", () => {
 });
 
 test("échelle non-uniforme : bande horizontale (ellipsoïde plat)", () => {
-  const shapes: ShapeInput[] = [{ kind: "sphere", position: pos(), scale: { x: 4, y: 0.5, z: 4 }, color: { r: 0, g: 1, b: 0 } }];
+  const shapes: ShapeInput[] = [{ kind: "sphere", position: pos(), scale: { x: 4, y: 0.5, z: 4 }, fill: { kind: "solid", color: { r: 0, g: 1, b: 0 } } }];
   const buf = rasterizeShapes(shapes, W, H);
   const litRow1 = buf[(1 * W + 0) * 4 + 3];  // j=1 (y=-0.33) → dans la bande
   const darkRow0 = buf[(0 * W + 0) * 4 + 3]; // j=0 (y=-1) → hors bande
@@ -43,7 +43,7 @@ test("échelle non-uniforme : bande horizontale (ellipsoïde plat)", () => {
 
 test("rotation Z 45° : le collider tourne (losange), pas un carré axis-aligned", () => {
   const W2 = 9, H2 = 9; // coords : x = -1 + 0.25 i, y = 1 - 0.25 j
-  const flat: ShapeInput = { kind: "box", position: pos(), scale: { x: 0.6, y: 0.6, z: 1 }, color: { r: 1, g: 1, b: 1 } };
+  const flat: ShapeInput = { kind: "box", position: pos(), scale: { x: 0.6, y: 0.6, z: 1 }, fill: { kind: "solid", color: { r: 1, g: 1, b: 1 } } };
   const spun: ShapeInput = { ...flat, rotation: { x: 0, y: 0, z: Math.PI / 4 } };
   const alpha = (buf: Uint8Array, i: number, j: number): number => buf[(j * W2 + i) * 4 + 3];
 
@@ -59,7 +59,7 @@ test("rotation Z 45° : le collider tourne (losange), pas un carré axis-aligned
 });
 
 test("opacité : module la luminosité de la LED (pas l'alpha)", () => {
-  const shapes: ShapeInput[] = [{ kind: "box", position: pos(), scale: scl(4), color: { r: 1, g: 1, b: 1 }, opacity: 0.5 }];
+  const shapes: ShapeInput[] = [{ kind: "box", position: pos(), scale: scl(4), fill: { kind: "solid", color: { r: 1, g: 1, b: 1 } }, opacity: 0.5 }];
   const buf = rasterizeShapes(shapes, 2, 2);
   assert.equal(buf[0], 128); // 255 * 0.5
   assert.equal(buf[3], 255); // LED toujours présente
@@ -67,7 +67,7 @@ test("opacité : module la luminosité de la LED (pas l'alpha)", () => {
 
 test("cône : triangle (base large en bas, apex étroit en haut)", () => {
   const W2 = 9, H2 = 9; // y = 1 - 0.25 j ; apex en +Y (j faible), base en -Y (j élevé)
-  const cone: ShapeInput = { kind: "cone", position: pos(), scale: { x: 0.8, y: 0.8, z: 0.8 }, color: { r: 1, g: 1, b: 1 } };
+  const cone: ShapeInput = { kind: "cone", position: pos(), scale: { x: 0.8, y: 0.8, z: 0.8 }, fill: { kind: "solid", color: { r: 1, g: 1, b: 1 } } };
   const a = (buf: Uint8Array, i: number, j: number): number => buf[(j * W2 + i) * 4 + 3];
   const b = rasterizeShapes([cone], W2, H2);
   assert.equal(a(b, 6, 7), 255); // (0.5, -0.75) proche base → dans le cône
@@ -76,7 +76,7 @@ test("cône : triangle (base large en bas, apex étroit en haut)", () => {
 
 test("tore : anneau allumé, centre éteint", () => {
   const W2 = 9, H2 = 9;
-  const torus: ShapeInput = { kind: "torus", position: pos(), scale: { x: 1, y: 1, z: 1 }, color: { r: 1, g: 1, b: 1 } };
+  const torus: ShapeInput = { kind: "torus", position: pos(), scale: { x: 1, y: 1, z: 1 }, fill: { kind: "solid", color: { r: 1, g: 1, b: 1 } } };
   const a = (buf: Uint8Array, i: number, j: number): number => buf[(j * W2 + i) * 4 + 3];
   const b = rasterizeShapes([torus], W2, H2);
   assert.equal(a(b, 4, 4), 0);   // centre (0,0) → trou du tore

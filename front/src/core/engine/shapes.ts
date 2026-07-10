@@ -1,11 +1,22 @@
 import type { RGB, ShapeKind, Vec3 } from "@domain/Layer.ts";
 
+/**
+ * Remplissage résolu (prêt pour le rasterizeur, pas de dépendance async) : couleur
+ * unie, dégradé linéaire (coordonnées locales, angle en radians), ou bitmap déjà
+ * décodé (image statique ou frame vidéo courante — même représentation une fois
+ * en pixels).
+ */
+export type ShapeFill =
+  | { kind: "solid"; color: RGB }
+  | { kind: "gradient"; from: RGB; to: RGB; angle: number }
+  | { kind: "bitmap"; data: Uint8ClampedArray; width: number; height: number };
+
 export interface ShapeInput {
   kind: ShapeKind;
   position: Vec3;
   rotation?: Vec3;  // Euler XYZ (rad) ; absent/nul = pas de rotation
   scale: Vec3;      // demi-dimensions (box) ou rayons (sphère → ellipsoïde), unités mur [-1, 1]
-  color: RGB;
+  fill: ShapeFill;
   opacity?: number; // 0..1 ; module la luminosité de la LED (absent = 1)
 }
 
@@ -33,16 +44,18 @@ function invRotate(r: Vec3, x: number, y: number, z: number): [number, number, n
   ];
 }
 
-/** Vrai si la LED (x,y,z) est dans la shape (monde → local : translation, rotation inverse, échelle). */
-function contains(s: ShapeInput, x: number, y: number, z: number): boolean {
+/** Coordonnées locales (monde → local : translation, rotation inverse, échelle) d'un point pour une shape. */
+function localCoords(s: ShapeInput, x: number, y: number, z: number): [number, number, number] {
   let qx = x - s.position.x;
   let qy = y - s.position.y;
   let qz = z - s.position.z;
   const r = s.rotation;
   if (r && (r.x !== 0 || r.y !== 0 || r.z !== 0)) [qx, qy, qz] = invRotate(r, qx, qy, qz);
-  const lx = qx / s.scale.x;
-  const ly = qy / s.scale.y;
-  const lz = qz / s.scale.z;
+  return [qx / s.scale.x, qy / s.scale.y, qz / s.scale.z];
+}
+
+/** Vrai si le point local (lx,ly,lz) est dans la shape. */
+function containsLocal(s: ShapeInput, lx: number, ly: number, lz: number): boolean {
   switch (s.kind) {
     case "sphere":
       return lx * lx + ly * ly + lz * lz < 1;
@@ -64,6 +77,35 @@ function contains(s: ShapeInput, x: number, y: number, z: number): boolean {
   }
 }
 
+function clamp01(v: number): number {
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/** Couleur résolue d'un fill au point local (lx,ly) — [-1,1] ≈ étendue de la shape. */
+function resolveFillColor(fill: ShapeFill, lx: number, ly: number): RGB {
+  switch (fill.kind) {
+    case "solid":
+      return fill.color;
+    case "gradient": {
+      const dx = Math.cos(fill.angle), dy = Math.sin(fill.angle);
+      const t = clamp01((lx * dx + ly * dy + 1) / 2);
+      return {
+        r: fill.from.r + (fill.to.r - fill.from.r) * t,
+        g: fill.from.g + (fill.to.g - fill.from.g) * t,
+        b: fill.from.b + (fill.to.b - fill.from.b) * t,
+      };
+    }
+    case "bitmap": {
+      const u = clamp01((lx + 1) / 2);
+      const v = clamp01((1 - ly) / 2); // ligne 0 du bitmap = haut de l'image
+      const px = Math.min(fill.width - 1, Math.floor(u * fill.width));
+      const py = Math.min(fill.height - 1, Math.floor(v * fill.height));
+      const o = (py * fill.width + px) * 4;
+      return { r: fill.data[o] / 255, g: fill.data[o + 1] / 255, b: fill.data[o + 2] / 255 };
+    }
+  }
+}
+
 /**
  * Rend les shapes en RGBA8 (longueur w*h*4). Pour chaque LED (grille [-1,1]), le
  * dernier shape qui la contient donne sa couleur (avant-plan gagne) ; sinon alpha 0.
@@ -77,13 +119,18 @@ export function rasterizeShapes(shapes: readonly ShapeInput[], w: number, h: num
     for (let i = 0; i < w; i++) {
       const x = (i / (w - 1)) * 2 - 1;
       let hit: ShapeInput | null = null;
-      for (const s of shapes) if (contains(s, x, y, 0)) hit = s; // dernier gagne
+      let hlx = 0, hly = 0;
+      for (const s of shapes) {
+        const [lx, ly, lz] = localCoords(s, x, y, 0);
+        if (containsLocal(s, lx, ly, lz)) { hit = s; hlx = lx; hly = ly; } // dernier gagne
+      }
       if (!hit) continue;
       const a = hit.opacity ?? 1; // opacité = luminosité de la LED (le mur 3D ignore l'alpha)
+      const color = resolveFillColor(hit.fill, hlx, hly);
       const k = (j * w + i) * 4;
-      buf[k] = Math.round(hit.color.r * 255 * a);
-      buf[k + 1] = Math.round(hit.color.g * 255 * a);
-      buf[k + 2] = Math.round(hit.color.b * 255 * a);
+      buf[k] = Math.round(color.r * 255 * a);
+      buf[k + 1] = Math.round(color.g * 255 * a);
+      buf[k + 2] = Math.round(color.b * 255 * a);
       buf[k + 3] = 255;
     }
   }
@@ -98,7 +145,8 @@ export function countLit(shapes: readonly ShapeInput[], w: number, h: number): n
     for (let i = 0; i < w; i++) {
       const x = (i / (w - 1)) * 2 - 1;
       for (const s of shapes) {
-        if (contains(s, x, y, 0)) { n++; break; }
+        const [lx, ly, lz] = localCoords(s, x, y, 0);
+        if (containsLocal(s, lx, ly, lz)) { n++; break; }
       }
     }
   }

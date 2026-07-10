@@ -19,8 +19,8 @@ const MAX_ENTITIES_PER_MESSAGE = 200;
  * ⚠ Y-flip possible du readback à vérifier sur le vrai rendu (origine bas/haut).
  */
 export class EhubOutput {
-  private _busy = false; // garde le readback GPU de tick(), indépendant de sendBlackout
-  private _blackoutBusy = false;
+  private _busy = false; // tick() : ignore l'appel si un readback est déjà en cours (best-effort temps réel, on droppe la frame plutôt que d'empiler)
+  private _pending: Promise<void> | null = null; // opération d'envoi en cours (tick ou blackout) — sendBlackout s'y enchaîne pour rester TOUJOURS le dernier paquet envoyé
   private readonly _byGroup = new Map<number, FixtureEntity[]>();
 
   constructor(
@@ -37,25 +37,27 @@ export class EhubOutput {
   async tick(): Promise<void> {
     if (this._busy || !this._transport.connected) return;
     this._busy = true;
-    try {
-      const w = this._fixture.width;
-      const rgba = (await this._renderer.readRenderTargetPixelsAsync(
-        this._target,
-        0,
-        0,
-        w,
-        this._fixture.height,
-      )) as Uint8Array;
+    const work = this._doTick().finally(() => { this._busy = false; });
+    this._pending = work;
+    return work;
+  }
 
-      for (const [group, entities] of this._byGroup) {
-        const payload: EhubEntity[] = entities.map((e) => {
-          const o = (e.y * w + e.x) * 4;
-          return { id: e.ehubId, r: rgba[o], g: rgba[o + 1], b: rgba[o + 2], w: 0 };
-        });
-        this._transport.send(await encodeUpdate(group, payload, gzipBrowser));
-      }
-    } finally {
-      this._busy = false;
+  private async _doTick(): Promise<void> {
+    const w = this._fixture.width;
+    const rgba = (await this._renderer.readRenderTargetPixelsAsync(
+      this._target,
+      0,
+      0,
+      w,
+      this._fixture.height,
+    )) as Uint8Array;
+
+    for (const [group, entities] of this._byGroup) {
+      const payload: EhubEntity[] = entities.map((e) => {
+        const o = (e.y * w + e.x) * 4;
+        return { id: e.ehubId, r: rgba[o], g: rgba[o + 1], b: rgba[o + 2], w: 0 };
+      });
+      this._transport.send(await encodeUpdate(group, payload, gzipBrowser));
     }
   }
 
@@ -65,20 +67,26 @@ export class EhubOutput {
    * dernière image envoyée au lieu de s'éteindre. Découpé en plusieurs
    * messages UDP par groupe pour rester sous la taille qu'un datagramme peut
    * transporter d'un coup (voir MAX_ENTITIES_PER_MESSAGE).
+   *
+   * Attend d'abord un éventuel tick() en cours : sinon le readback GPU en vol
+   * peut renvoyer sa frame "allumée" APRÈS le noir (course gagnée au hasard
+   * selon le timing GPU), et le mur reste partiellement allumé.
    */
   async sendBlackout(): Promise<void> {
-    if (this._blackoutBusy || !this._transport.connected) return;
-    this._blackoutBusy = true;
-    try {
-      for (const [group, entities] of this._byGroup) {
-        const payload: EhubEntity[] = entities.map((e) => ({ id: e.ehubId, r: 0, g: 0, b: 0, w: 0 }));
-        for (let i = 0; i < payload.length; i += MAX_ENTITIES_PER_MESSAGE) {
-          const chunk = payload.slice(i, i + MAX_ENTITIES_PER_MESSAGE);
-          this._transport.send(await encodeUpdate(group, chunk, gzipBrowser));
-        }
+    if (!this._transport.connected) return;
+    if (this._pending) await this._pending.catch(() => {});
+    const work = this._doBlackout();
+    this._pending = work;
+    await work;
+  }
+
+  private async _doBlackout(): Promise<void> {
+    for (const [group, entities] of this._byGroup) {
+      const payload: EhubEntity[] = entities.map((e) => ({ id: e.ehubId, r: 0, g: 0, b: 0, w: 0 }));
+      for (let i = 0; i < payload.length; i += MAX_ENTITIES_PER_MESSAGE) {
+        const chunk = payload.slice(i, i + MAX_ENTITIES_PER_MESSAGE);
+        this._transport.send(await encodeUpdate(group, chunk, gzipBrowser));
       }
-    } finally {
-      this._blackoutBusy = false;
     }
   }
 

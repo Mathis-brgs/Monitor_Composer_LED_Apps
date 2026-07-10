@@ -1,9 +1,9 @@
-import { Show, type JSX } from "solid-js";
+import { createSignal, Show, type JSX } from "solid-js";
 import type { Editor } from "@core/Editor.ts";
-import type { GroupLayer, Layer, ShaderLayer, ShapeLayer, Vec3 } from "@domain/Layer.ts";
+import type { Fill, GroupLayer, Layer, RGB, ShaderLayer, ShapeLayer, Vec3 } from "@domain/Layer.ts";
 import { fromStore } from "@ui/solid/store.ts";
 import { solidPanel } from "@ui/solid/mount.ts";
-import { Checkbox, ColorField, NumberField, Row, Section, Segmented, Slider, TextField } from "@ui/solid/controls.tsx";
+import { Checkbox, ColorField, MediaField, NumberField, Row, Section, Segmented, Slider, TextField } from "@ui/solid/controls.tsx";
 import { subtitle, thumbBg } from "./layer-display.ts";
 import type { Panel } from "../Panel.ts";
 
@@ -65,6 +65,68 @@ function NodeBody(props: { editor: Editor; node: Layer | null }): JSX.Element {
   );
 }
 
+const DEFAULT_FILL_COLOR: RGB = { r: 1, g: 0.541, b: 0.239 };
+const FILL_TYPES: Fill["type"][] = ["solid", "gradient", "image", "video"];
+
+/**
+ * Champs du remplissage d'une shape, contextuels au type courant. Signal local
+ * (comme `ColorField`/`Slider` du reste de l'inspecteur) : `node.fill` n'est pas
+ * réactif en lecture, donc changer de type de remplissage doit mettre à jour cet
+ * état local pour que les champs correspondants s'affichent immédiatement.
+ */
+function FillFields(props: { editor: Editor; id: string; fill: Fill }): JSX.Element {
+  const { editor, id } = props;
+  const [fill, setFill] = createSignal(props.fill);
+  const emit = (next: Fill): void => {
+    setFill(next);
+    editor.setFill(id, next);
+  };
+  const asSolid = () => fill() as Extract<Fill, { type: "solid" }>;
+  const asGradient = () => fill() as Extract<Fill, { type: "gradient" }>;
+  const asImage = () => fill() as Extract<Fill, { type: "image" }>;
+  const asVideo = () => fill() as Extract<Fill, { type: "video" }>;
+  return (
+    <>
+      <Row label="Remplissage">
+        <Segmented
+          options={["Couleur", "Dégradé", "Image", "Vidéo"]}
+          active={FILL_TYPES.indexOf(fill().type)}
+          onChange={(i) => {
+            const type = FILL_TYPES[i];
+            if (type === "solid") emit({ type, color: DEFAULT_FILL_COLOR });
+            else if (type === "gradient") emit({ type, from: DEFAULT_FILL_COLOR, to: { r: 0.11, g: 0.055, b: 0.024 }, angle: 0 });
+            else emit({ type, dataUrl: "" });
+          }}
+        />
+      </Row>
+      <Show when={fill().type === "solid"}>
+        <Row label="Couleur"><ColorField value={asSolid().color} onInput={(c) => emit({ type: "solid", color: c })} /></Row>
+      </Show>
+      <Show when={fill().type === "gradient"}>
+        <Row label="Couleur A"><ColorField value={asGradient().from} onInput={(c) => emit({ ...asGradient(), from: c })} /></Row>
+        <Row label="Couleur B"><ColorField value={asGradient().to} onInput={(c) => emit({ ...asGradient(), to: c })} /></Row>
+        <Row label="Angle">
+          <Slider
+            value={(asGradient().angle / (Math.PI * 2)) % 1}
+            format={(v) => `${Math.round(v * 360)}°`}
+            onInput={(v) => emit({ ...asGradient(), angle: v * Math.PI * 2 })}
+          />
+        </Row>
+      </Show>
+      <Show when={fill().type === "image"}>
+        <Row label="Image">
+          <MediaField kind="image" value={asImage().dataUrl || undefined} onInput={(dataUrl) => emit({ type: "image", dataUrl })} />
+        </Row>
+      </Show>
+      <Show when={fill().type === "video"}>
+        <Row label="Vidéo">
+          <MediaField kind="video" value={asVideo().dataUrl || undefined} onInput={(dataUrl) => emit({ type: "video", dataUrl })} />
+        </Row>
+      </Show>
+    </>
+  );
+}
+
 function ShapeBody(props: { editor: Editor; node: ShapeLayer }): JSX.Element {
   const { editor, node } = props;
   const id = node.id;
@@ -88,7 +150,7 @@ function ShapeBody(props: { editor: Editor; node: ShapeLayer }): JSX.Element {
         </Row>
       </Section>
       <Section title="Apparence">
-        <Row label="Couleur"><ColorField value={node.color} onInput={(c) => editor.setColor(id, c)} /></Row>
+        <FillFields editor={editor} id={id} fill={node.fill} />
         <Row label="Opacité">
           <Slider value={node.opacity} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
         </Row>
