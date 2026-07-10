@@ -2,7 +2,7 @@
 export interface LedBridge {
   sendEhub(data: Uint8Array): void;
   setEhubTarget(host: string, port: number): void;
-  loadProject(): Promise<string | null>;
+  loadProject(): Promise<{ content: string; filePath: string } | null>;
   saveProject(json: string, defaultName?: string): Promise<void>;
 }
 

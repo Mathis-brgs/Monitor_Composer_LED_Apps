@@ -65,10 +65,10 @@ export class App {
 
   async loadProject(): Promise<void> {
     try {
-      const json = await window.led?.loadProject();
-      if (!json) return; // Annulé par l'utilisateur
+      const res = await window.led?.loadProject();
+      if (!res) return; // Annulé par l'utilisateur
 
-      const loaded = deserializeProject(json);
+      const loaded = deserializeProject(res.content);
       
       // Mettre à jour le projet en place à chaud (pour garder la référence de context.project)
       const p = this.context.project;
@@ -76,6 +76,11 @@ export class App {
       p.composition = loaded.composition;
       p.objects = loaded.objects;
       p.document = loaded.document;
+
+      // Extraire le nom du fichier du chemin pour le nom du projet
+      const fileName = res.filePath.split(/[\\/]/).pop() || "new project";
+      const projectName = fileName.replace(/\.json$/i, "");
+      (p.config as any).name = projectName;
 
       // Mettre à jour l'IP / Port cible du transport eHuB
       this.context.transport.updateTarget(p.config.ehub.host, p.config.ehub.port);

@@ -10,7 +10,6 @@ import { createProject } from "@domain/Project.ts";
 import type { View } from "@views/View.ts";
 import { Editor3DView } from "@views/editor3d/Editor3DView.ts";
 import { Preview2DView } from "@views/preview2d/Preview2DView.ts";
-import { ConfigPanel } from "@views/editor/ui/ConfigPanel.ts";
 
 /**
  * Vue moteur (contenu du canvas) par espace. Un seul canvas partagé : l'espace
@@ -49,8 +48,8 @@ App.create(shell.viewportCanvas, project, clock, editor)
     app.setView(VIEW_FOR_SPACE[DEFAULT_SPACE](), shell.viewportHost);
     shell.onSpaceChange = (id) => app.setView(VIEW_FOR_SPACE[id](), shell.viewportHost);
 
-    // Initialiser le panneau de configuration flottant
-    new ConfigPanel(app);
+    // Connecter l'application au shell (barre de menus)
+    shell.setApp(app);
   })
   .catch((err: unknown) => {
     dismissLoader();

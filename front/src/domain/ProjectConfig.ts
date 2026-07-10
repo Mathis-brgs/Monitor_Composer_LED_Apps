@@ -15,7 +15,7 @@ export interface ProjectConfig {
 }
 
 export const DEFAULT_CONFIG: ProjectConfig = {
-  name: "Nouveau projet",
+  name: "new project",
   fixture: "wall",
   controllers: [
     { ip: "192.168.1.45" },
