@@ -62,11 +62,14 @@ export async function encodeUpdate(
   return out;
 }
 
-/** Payload `config` non compressé : plages (8 o chacune). */
-export function buildConfigPayload(ranges: EhubRange[]): Uint8Array {
-  const buf = new Uint8Array(ranges.length * 8);
-  const dv = new DataView(buf.buffer);
-  let o = 0;
+/** Message `config` : en-tête (6 o) + plages (8 o chacune). */
+export function encodeConfig(universe: number, ranges: EhubRange[]): Uint8Array {
+  const out = new Uint8Array(6 + ranges.length * 8);
+  const dv = new DataView(out.buffer);
+  out.set(MAGIC, 0);
+  out[4] = TYPE_CONFIG;
+  out[5] = universe & 0xff;
+  let o = 6;
   for (const r of ranges) {
     dv.setUint16(o, r.startSextet, LE);
     dv.setUint16(o + 2, r.startEntity, LE);
@@ -74,24 +77,6 @@ export function buildConfigPayload(ranges: EhubRange[]): Uint8Array {
     dv.setUint16(o + 6, r.endEntity, LE);
     o += 8;
   }
-  return buf;
-}
-
-/** Message `config` : en-tête (10 o) + payload GZip (même format que `update`). */
-export async function encodeConfig(
-  universe: number,
-  ranges: EhubRange[],
-  gzip: Gzip,
-): Promise<Uint8Array> {
-  const compressed = await gzip(buildConfigPayload(ranges));
-  const out = new Uint8Array(10 + compressed.length);
-  const dv = new DataView(out.buffer);
-  out.set(MAGIC, 0);
-  out[4] = TYPE_CONFIG;
-  out[5] = universe & 0xff;
-  dv.setUint16(6, ranges.length, LE);
-  dv.setUint16(8, compressed.length, LE);
-  out.set(compressed, 10);
   return out;
 }
 

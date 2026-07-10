@@ -6,5 +6,5 @@ contextBridge.exposeInMainWorld("led", {
   sendEhub: (data: Uint8Array) => ipcRenderer.send("ehub:send", data),
   setEhubTarget: (host: string, port: number) => ipcRenderer.send("ehub:target", { host, port }),
   loadProject: () => ipcRenderer.invoke("project:load"),
-  saveProject: (json: string, defaultName?: string) => ipcRenderer.invoke("project:save", json, defaultName),
+  saveProject: (json: string) => ipcRenderer.invoke("project:save", json),
 });

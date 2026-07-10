@@ -1,11 +1,11 @@
 import type { Texture, WebGPURenderer } from "three/webgpu";
 import type { Fixture } from "@domain/Fixture.ts";
 import type { Transport } from "../transport.ts";
-import type { Project } from "@domain/Project.ts";
 import { LayerStack } from "./LayerStack.ts";
 import { CompositePass } from "./passes.ts";
 import { EhubOutput } from "./EhubOutput.ts";
-import type { Layer } from "./layers/Layer.ts";
+import { createLayer } from "./layers/index.ts";
+import { LAYER_ID, type Layer } from "./layers/Layer.ts";
 
 /**
  * Moteur headless : compose les couches → render target 128×128 → readback →
@@ -19,14 +19,14 @@ export class Engine {
 
   constructor(
     private readonly _renderer: WebGPURenderer,
-    readonly fixture: Fixture,
+    fixture: Fixture,
     transport: Transport,
     _project: Project,
   ) {
     this.stack = new LayerStack(fixture.width, fixture.height);
-    this.stack.setLayers([]); // fond noir (pas de couches actives)
+    this.stack.setLayers([createLayer(LAYER_ID.PLASMA, "plasma-1")]); // contenu par défaut (provisoire)
     this._composite = new CompositePass(this.stack);
-    this._output = new EhubOutput(_renderer, this.stack.target, fixture, transport, _project);
+    this._output = new EhubOutput(_renderer, this.stack.target, fixture, transport);
   }
 
   /** remplace la pile de couches (piloté par l'éditeur). */
@@ -43,11 +43,6 @@ export class Engine {
   /** ~40 Hz (découplé) : readback RT → eHuB → transport */
   async output(): Promise<void> {
     await this._output.tick();
-  }
-
-  /** envoie la config des plages de contrôleurs au routage Go */
-  async sendConfig(): Promise<void> {
-    await this._output.sendConfig();
   }
 
   /** texture de sortie (RT) — consommée par les previews */

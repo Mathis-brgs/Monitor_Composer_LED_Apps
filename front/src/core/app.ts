@@ -7,9 +7,11 @@ import { Clock } from "./Clock.ts";
 import { Editor } from "./Editor.ts";
 import type { AppContext } from "./AppContext.ts";
 import { ASSET_MANIFEST } from "@assets/assets.manifest.ts";
-import { createProject, serializeProject, deserializeProject, type Project } from "@domain/Project.ts";
+import { createProject, type Project } from "@domain/Project.ts";
 import { WallFixture } from "@domain/fixtures/WallFixture.ts";
 import type { View } from "@views/View.ts";
+
+const EHUB_HZ = 40;
 
 export class App {
   private readonly _runtime: Runtime;
@@ -47,7 +49,6 @@ export class App {
 
     const app = new App({ renderer, project, assets, engine, transport, clock, editor });
     app._start();
-    app.sendEhubConfig().catch((err) => console.error("Erreur d'envoi config eHuB initiale :", err));
     return app;
   }
 

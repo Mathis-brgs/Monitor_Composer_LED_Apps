@@ -38,6 +38,7 @@ export class MenuBar {
     dots.className = "wordmark__dots";
     for (let i = 0; i < 4; i++) {
       const cell = document.createElement("i");
+      // seules les cellules en diagonale sont allumées (cf. proto)
       cell.className = i === 0 || i === 3 ? "wordmark__cell wordmark__cell--on" : "wordmark__cell";
       dots.appendChild(cell);
     }
