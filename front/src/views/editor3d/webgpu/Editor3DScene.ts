@@ -141,11 +141,14 @@ export class Editor3DScene {
 
     // g/r/s = outil déplacer/tourner/échelle ; Échap = curseur. Ignore si on tape dans un champ.
     this._onKey = (e: KeyboardEvent): void => {
-      if (e.target instanceof HTMLInputElement) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.key === "g") this._editor.setTool("translate");
       else if (e.key === "r") this._editor.setTool("rotate");
       else if (e.key === "s") this._editor.setTool("scale");
       else if (e.key === "Escape") this._editor.setTool("select");
+      else if (e.key === "Delete" || e.key === "Del") {
+        this._editor.deleteSelected();
+      }
     };
     window.addEventListener("keydown", this._onKey);
 
