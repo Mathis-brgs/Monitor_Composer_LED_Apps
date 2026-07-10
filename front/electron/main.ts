@@ -6,7 +6,7 @@ import dgram from "node:dgram";
 import { readFile, writeFile } from "node:fs/promises";
 
 const udp = dgram.createSocket("udp4");
-let ehubTarget = { host: "127.0.0.1", port: 8765 }; // routeur Go — port À CONFIRMER avec Mathis
+let ehubTarget = { host: "127.0.0.1", port: 8765 }; 
 let win: BrowserWindow | null = null;
 
 function createWindow(): void {
@@ -42,13 +42,14 @@ ipcMain.on("ehub:target", (_e, target: { host: string; port: number }) => {
 });
 
 // --- Projet : ouverture/sauvegarde disque (P1) ---
-ipcMain.handle("project:load", async (): Promise<string | null> => {
+ipcMain.handle("project:load", async (): Promise<{ content: string; filePath: string } | null> => {
   const res = await dialog.showOpenDialog({
     filters: [{ name: "Projet LED", extensions: ["json"] }],
     properties: ["openFile"],
   });
   if (res.canceled || !res.filePaths[0]) return null;
-  return readFile(res.filePaths[0], "utf8");
+  const content = await readFile(res.filePaths[0], "utf8");
+  return { content, filePath: res.filePaths[0] };
 });
 ipcMain.handle("project:save", async (_e, json: string): Promise<void> => {
   const res = await dialog.showSaveDialog({

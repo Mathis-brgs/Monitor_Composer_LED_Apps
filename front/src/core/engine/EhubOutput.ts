@@ -1,7 +1,7 @@
 import type { RenderTarget, WebGPURenderer } from "three/webgpu";
 import type { Fixture, FixtureEntity } from "@domain/Fixture.ts";
 import type { Transport } from "@core/transport.ts";
-import { encodeUpdate, gzipBrowser, type EhubEntity } from "@core/ehub.ts";
+import { encodeConfig, encodeUpdate, gzipBrowser, type EhubEntity, type EhubRange } from "@core/ehub.ts";
 
 // Un groupe entier (~4096 entités) tient largement dans les 65 Ko max d'un
 // message eHuB, mais dépasse la taille qu'un datagramme UDP peut envoyer d'un
@@ -19,7 +19,8 @@ const MAX_ENTITIES_PER_MESSAGE = 200;
  * ⚠ Y-flip possible du readback à vérifier sur le vrai rendu (origine bas/haut).
  */
 export class EhubOutput {
-  private _busy = false;
+  private _busy = false; // garde le readback GPU de tick(), indépendant de sendBlackout
+  private _blackoutBusy = false;
   private readonly _byGroup = new Map<number, FixtureEntity[]>();
 
   constructor(
@@ -66,8 +67,8 @@ export class EhubOutput {
    * transporter d'un coup (voir MAX_ENTITIES_PER_MESSAGE).
    */
   async sendBlackout(): Promise<void> {
-    if (this._busy || !this._transport.connected) return;
-    this._busy = true;
+    if (this._blackoutBusy || !this._transport.connected) return;
+    this._blackoutBusy = true;
     try {
       for (const [group, entities] of this._byGroup) {
         const payload: EhubEntity[] = entities.map((e) => ({ id: e.ehubId, r: 0, g: 0, b: 0, w: 0 }));
@@ -77,7 +78,30 @@ export class EhubOutput {
         }
       }
     } finally {
-      this._busy = false;
+      this._blackoutBusy = false;
+    }
+  }
+
+  /** Envoie la config des plages de contrôleurs au routage Go. */
+  async sendConfig(): Promise<void> {
+    if (!this._transport.connected) return;
+    for (const [group, entities] of this._byGroup) {
+      const sortedIds = entities.map((e) => e.ehubId).sort((a, b) => a - b);
+      const fixtureRanges = this._fixture.ranges(group);
+
+      const ranges: EhubRange[] = fixtureRanges.map((r) => {
+        const startSextet = sortedIds.indexOf(r.startEntity);
+        const endSextet = sortedIds.indexOf(r.endEntity);
+        return {
+          startSextet,
+          startEntity: r.startEntity,
+          endSextet,
+          endEntity: r.endEntity,
+        };
+      });
+
+      const configPacket = await encodeConfig(group, ranges, gzipBrowser);
+      this._transport.send(configPacket);
     }
   }
 }

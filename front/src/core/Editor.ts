@@ -55,7 +55,7 @@ function seedDocument(): Document {
  * de l'UI ; convention subscribe/notify (compatible pont Solid `fromStore`).
  */
 export class Editor {
-  private readonly _doc = seedDocument();
+  private _doc = seedDocument();
   private readonly _listeners = new Set<EditorListener>();
   private readonly _shaderLive = new Map<string, EngineLayer>();
   private _scene3d: Scene3DLayer | null = null;
@@ -76,6 +76,16 @@ export class Editor {
   /** nœud sélectionné (n'importe où dans l'arbre). */
   get selected(): Layer | null {
     return this._doc.selectedId ? findLayer(this._doc.root, this._doc.selectedId) : null;
+  }
+
+  getDocument(): Document {
+    return this._doc;
+  }
+
+  loadDocument(doc: Document): void {
+    this._doc = doc;
+    this._push();
+    this._emit();
   }
 
   // ————————————————————————————————— Moteur ——————————————————————————————————

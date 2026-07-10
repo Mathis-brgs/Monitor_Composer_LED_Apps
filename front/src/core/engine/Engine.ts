@@ -19,7 +19,7 @@ export class Engine {
 
   constructor(
     private readonly _renderer: WebGPURenderer,
-    fixture: Fixture,
+    readonly fixture: Fixture,
     transport: Transport,
   ) {
     this.stack = new LayerStack(fixture.width, fixture.height);
@@ -47,6 +47,11 @@ export class Engine {
   /** Éteint le mur (frame noire), utilisé à la sortie du mode LIVE. */
   async blackout(): Promise<void> {
     await this._output.sendBlackout();
+  }
+
+  /** envoie la config des plages de contrôleurs au routage Go */
+  async sendConfig(): Promise<void> {
+    await this._output.sendConfig();
   }
 
   /** texture de sortie (RT) — consommée par les previews */

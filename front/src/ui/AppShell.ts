@@ -2,6 +2,7 @@ import type { Project } from "@domain/Project.ts";
 import type { Clock } from "@core/Clock.ts";
 import type { Editor } from "@core/Editor.ts";
 import type { LiveState } from "@core/LiveState.ts";
+import type { App } from "@core/app.ts";
 import { MenuBar } from "./frame/MenuBar.ts";
 import { TabBar } from "./frame/TabBar.ts";
 import { StatusBar } from "./frame/StatusBar.ts";
@@ -22,6 +23,7 @@ export interface AppShellOptions {
 export class AppShell {
   readonly element: HTMLElement;
   readonly viewportCanvas: HTMLCanvasElement;
+  readonly menuBar: MenuBar;
 
   /** Notifié quand l'espace actif change : la root y branche le switch de vue moteur. */
   onSpaceChange?: (id: SpaceId) => void;
@@ -40,15 +42,23 @@ export class AppShell {
     this._workspace.setSpace(this._activeSpace);
 
     this._tabBar = new TabBar(this._activeSpace, opts.clock, opts.live, (id) => this._selectSpace(id));
+    this.menuBar = new MenuBar(config);
 
     this.element = document.createElement("div");
     this.element.className = "shell";
     this.element.append(
-      new MenuBar(config).element,
+      this.menuBar.element,
       this._tabBar.element,
       this._workspace.element,
       new StatusBar(config).element,
     );
+  }
+
+  setApp(app: App): void {
+    this.menuBar.setApp(app);
+    app.onProjectLoaded = () => {
+      this.menuBar.setProjectName(app.context.project.config.name);
+    };
   }
 
   /** Hôte du canvas moteur (le body du viewport) pour la vue WebGPU. */

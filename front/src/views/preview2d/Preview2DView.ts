@@ -19,6 +19,8 @@ export class Preview2DView implements View {
   }
 
   render(): void {
-    if (this._ctx && this._scene) this._scene.render(this._ctx.renderer);
+    if (this._ctx && this._scene) {
+      this._scene.render(this._ctx.renderer);
+    }
   }
 }
