@@ -45,5 +45,6 @@ test("makeShape a un transform et une couleur par défaut", () => {
   assert.equal(s.type, "shape");
   assert.equal(s.transform.scale.x > 0, true);
   assert.equal(s.showHelper, true);
-  assert.equal(typeof s.color.r, "number");
+  assert.equal(s.fill.type, "solid");
+  assert.equal(s.fill.type === "solid" && typeof s.fill.color.r, "number");
 });

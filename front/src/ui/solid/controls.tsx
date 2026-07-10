@@ -1,4 +1,4 @@
-import { createSignal, For, type JSX } from "solid-js";
+import { createSignal, For, Show, type JSX } from "solid-js";
 import type { RGB } from "@domain/Layer.ts";
 import { createIcon } from "@ui/icons/Icon.ts";
 import { hexToRgb, rgbToHex } from "./color.ts";
@@ -188,6 +188,44 @@ export function TextField(props: { value: string; onInput?: (v: string) => void 
       value={props.value}
       onChange={(e) => props.onInput?.((e.currentTarget as HTMLInputElement).value)}
     />
+  );
+}
+
+export interface MediaFieldProps {
+  kind: "image" | "video";
+  /** data URL actuelle (aperçu), absente si rien n'est choisi encore */
+  value?: string;
+  onInput?: (dataUrl: string) => void;
+}
+
+/** Sélecteur de fichier (image/vidéo) → data URL lue en local (aperçu + callback). */
+export function MediaField(props: MediaFieldProps): JSX.Element {
+  let input!: HTMLInputElement;
+  const pick = (): void => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => props.onInput?.(reader.result as string);
+    reader.readAsDataURL(file);
+  };
+  return (
+    <div class="insp-media insp-control" onClick={() => input.click()}>
+      <Show
+        when={props.value}
+        fallback={<span class="insp-media__hint">Choisir {props.kind === "image" ? "une image" : "une vidéo"}…</span>}
+      >
+        <Show when={props.kind === "image"} fallback={<span class="insp-media__hint">Vidéo chargée ✓</span>}>
+          <div class="insp-media__preview" style={{ "background-image": `url(${props.value})` }} />
+        </Show>
+      </Show>
+      <input
+        ref={input}
+        type="file"
+        accept={props.kind === "image" ? "image/*" : "video/*"}
+        class="insp-media__input"
+        onChange={pick}
+      />
+    </div>
   );
 }
 
