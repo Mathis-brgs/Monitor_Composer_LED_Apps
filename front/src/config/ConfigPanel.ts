@@ -144,15 +144,6 @@ export class ConfigPanel {
     }).on("change", () => {
       this._app.restartAutosaveTimer();
     });
-
-    // --- Dossier Contrôleurs ---
-    const fControllers = this._pane.addFolder({ title: "Contrôleurs Physiques" });
-
-    config.controllers.forEach((ctrl, index) => {
-      fControllers.addBinding(ctrl, "ip", {
-        label: `Ctrl ${index + 1} (.${45 + index})`,
-      });
-    });
   }
 
   dispose(): void {
