@@ -1101,6 +1101,20 @@ body {
   cursor: ew-resize;
 }
 
+.insp-field__input {
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  background: none;
+  border: none;
+  outline: none;
+  font: inherit;
+  font-size: var(--fs-3);
+  color: var(--txt);
+  text-align: center;
+  cursor: text;
+}
+
 .insp-color {
   display: flex;
   align-items: center;
@@ -1307,6 +1321,26 @@ body {
   height: 0;
   opacity: 0;
   pointer-events: none;
+}
+
+.insp-hint {
+  font-size: var(--fs-3);
+  color: var(--faint);
+}
+
+.insp-danger {
+  padding: var(--space-4) var(--space-8);
+  background: none;
+  border: var(--stroke-hairline) solid #c24444;
+  border-radius: var(--radius-sm);
+  color: #e57373;
+  font: inherit;
+  font-size: var(--fs-3);
+  cursor: pointer;
+}
+
+.insp-danger:hover {
+  background: rgba(194, 68, 68, 0.12);
 }
 
 .insp-select {

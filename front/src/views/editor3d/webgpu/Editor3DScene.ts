@@ -39,6 +39,7 @@ const ACCENT = new Color(0xff8a3d);
 const HELPER_DIM = 0.28;  // opacité des helpers non sélectionnés (discrets)
 const HELPER_LIT = 0.9;   // opacité du helper sélectionné
 const CLICK_PX = 5;       // tolérance clic vs drag (sélection au clic)
+const FIXTURE_MARKER_RADIUS = 0.06; // repère visuel spot/lyre (position seule, pas de calcul sur le mur)
 
 export type OrientAxis = "x" | "y" | "z" | "-x" | "-y" | "-z";
 
@@ -253,15 +254,39 @@ export class Editor3DScene {
       this._objects.add(mesh);
       unit.dispose();
     }
+
+    for (const l of this._editor.children) {
+      if (l.type !== "spot" && l.type !== "lyre") continue;
+      if (!l.visible) continue;
+      const p = l.transform.position;
+
+      // cible de raycast (même volume simple pour les deux, pas de forme physique à représenter)
+      const pick = new Mesh(new SphereGeometry(FIXTURE_MARKER_RADIUS, 12, 8), this._pickMat);
+      pick.position.set(p.x, p.y, p.z);
+      pick.userData.id = l.id;
+      this._picks.add(pick);
+
+      const selected = l.id === selectedId;
+      const c = l.channels;
+      const color = selected ? ACCENT : new Color(c.r / 255, c.g / 255, c.b / 255);
+      const marker = new Mesh(new SphereGeometry(FIXTURE_MARKER_RADIUS, 12, 8), fixtureMarkerMaterial(color, selected ? HELPER_LIT : HELPER_DIM));
+      marker.position.set(p.x, p.y, p.z);
+      this._objects.add(marker);
+    }
     this._syncGizmo();
   }
 
-  /** positionne le proxy sur l'objet sélectionné et (dé)tache le gizmo selon l'outil (hors drag). */
+  /**
+   * positionne le proxy sur l'objet sélectionné et (dé)tache le gizmo selon l'outil (hors drag).
+   * spot/lyre : repère visuel seul → déplacement autorisé, pas de rotation/échelle (rien à en faire).
+   */
   private _syncGizmo(): void {
     if (this._dragging) return;
     const sel = this._editor.selected;
     const tool = this._editor.tool;
-    const active = tool !== "select" && sel !== null && sel.type === "shape" && sel.visible;
+    const isShape = sel !== null && sel.type === "shape" && tool !== "select";
+    const isFixture = sel !== null && (sel.type === "spot" || sel.type === "lyre") && tool === "translate";
+    const active = sel !== null && sel.visible && (isShape || isFixture);
     if (active && sel) {
       const t = sel.transform;
       this._proxy.position.set(t.position.x, t.position.y, t.position.z);
@@ -277,13 +302,17 @@ export class Editor3DScene {
   /** drag du gizmo → écrit le transform dans le store (qui met à jour wireframe + collision). */
   private _commitGizmo(): void {
     const sel = this._editor.selected;
-    if (!sel || sel.type !== "shape") return;
+    if (!sel) return;
     const p = this._proxy;
-    this._editor.setTransform(sel.id, {
-      position: { x: p.position.x, y: p.position.y, z: p.position.z },
-      rotation: { x: p.rotation.x, y: p.rotation.y, z: p.rotation.z },
-      scale: { x: p.scale.x, y: p.scale.y, z: p.scale.z },
-    });
+    if (sel.type === "shape") {
+      this._editor.setTransform(sel.id, {
+        position: { x: p.position.x, y: p.position.y, z: p.position.z },
+        rotation: { x: p.rotation.x, y: p.rotation.y, z: p.rotation.z },
+        scale: { x: p.scale.x, y: p.scale.y, z: p.scale.z },
+      });
+    } else if (sel.type === "spot" || sel.type === "lyre") {
+      this._editor.setTransform(sel.id, { position: { x: p.position.x, y: p.position.y, z: p.position.z } });
+    }
   }
 
   /** clic (pas un drag) → sélectionne la shape sous le curseur, sinon désélectionne. */
@@ -306,6 +335,8 @@ export class Editor3DScene {
       if (child instanceof LineSegments || child instanceof Mesh) {
         child.geometry.dispose();
         if (child instanceof LineSegments) (child.material as LineBasicNodeMaterial).dispose();
+        // Mesh dont le matériau est partagé (_pickMat, cibles de raycast) : ne pas le disposer ici.
+        else if (child.material !== this._pickMat) (child.material as MeshBasicNodeMaterial).dispose();
       }
     }
     group.clear();
@@ -327,6 +358,15 @@ function lineMaterial(hex: number): LineBasicNodeMaterial {
 
 function helperMaterial(color: Color, opacity: number): LineBasicNodeMaterial {
   const m = new LineBasicNodeMaterial();
+  m.color = color;
+  m.transparent = true;
+  m.opacity = opacity;
+  return m;
+}
+
+/** Petite sphère pleine (pas de wireframe) pour le repère visuel d'un spot/lyre. */
+function fixtureMarkerMaterial(color: Color, opacity: number): MeshBasicNodeMaterial {
+  const m = new MeshBasicNodeMaterial();
   m.color = color;
   m.transparent = true;
   m.opacity = opacity;

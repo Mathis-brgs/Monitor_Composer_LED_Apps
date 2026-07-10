@@ -47,6 +47,16 @@ export class ToolbarOverlay {
       this._root.appendChild(btn);
     }
 
+    this._root.appendChild(divider());
+
+    const spotBtn = toolButton("spotlight", "Projecteur statique (1 seul, canaux 1-4)");
+    spotBtn.addEventListener("click", () => editor.addSpot());
+    this._root.appendChild(spotBtn);
+
+    const lyreBtn = toolButton("lyre", "Lyre (tête mobile, 4 max)");
+    lyreBtn.addEventListener("click", () => editor.addLyre());
+    this._root.appendChild(lyreBtn);
+
     host.appendChild(this._root);
 
     const sync = (): void => {
