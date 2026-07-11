@@ -193,6 +193,10 @@ body {
   border-color: var(--acc-border);
 }
 
+.transport-btn--active {
+  color: var(--acc);
+}
+
 .transport-sep {
   width: var(--stroke-hairline);
   height: 18px;
