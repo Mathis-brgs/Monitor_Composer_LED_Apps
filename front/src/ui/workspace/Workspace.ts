@@ -13,14 +13,14 @@ import { createOutlinerPanel } from "./panels/OutlinerPanel.tsx";
 import { ViewportPanel } from "./panels/ViewportPanel.ts";
 import { PreviewPanel } from "./panels/PreviewPanel.ts";
 import { createInspectorPanel } from "./panels/InspectorPanel.tsx";
-import { TimelinePanel } from "./panels/TimelinePanel.ts";
+import { createTimelinePanel } from "./panels/TimelinePanel.tsx";
 
 const PANEL_FACTORIES: Record<PanelId, (ctx: PanelContext) => Panel> = {
   outliner: (ctx) => createOutlinerPanel(ctx.editor),
   viewport: (ctx) => new ViewportPanel(ctx.canvas),
   preview: (ctx) => new PreviewPanel(ctx.canvas),
   inspector: (ctx) => createInspectorPanel(ctx.editor),
-  timeline: (ctx) => new TimelinePanel(ctx.clock),
+  timeline: (ctx) => createTimelinePanel(ctx.clock),
 };
 
 const STORAGE_PREFIX = "led.layout.";
