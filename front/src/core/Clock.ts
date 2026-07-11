@@ -81,9 +81,34 @@ export class Clock {
     }
   }
 
+  /** Place le temps (secondes), clampé à [0, duration]. */
   seek(time: number): void {
-    this._time = Math.max(0, time);
+    const dur = this.duration;
+    let t = Math.max(0, time);
+    if (dur > 0) t = Math.min(t, dur);
+    this._time = t;
     this._emit();
+  }
+
+  /** Place le playhead à un frame donné, clampé à [0, durationFrames]. */
+  seekFrame(frame: number): void {
+    const f = clamp(Math.round(frame), 0, this._durationFrames);
+    this._time = this.frameToTime(f);
+    this._emit();
+  }
+
+  /** Décale de `delta` frames et met en pause (navigation image par image). */
+  stepFrame(delta: number): void {
+    this._playing = false;
+    this.seekFrame(this.frame + delta);
+  }
+
+  goToStart(): void {
+    this.seekFrame(0);
+  }
+
+  goToEnd(): void {
+    this.seekFrame(this._durationFrames);
   }
 
   reset(): void {
@@ -123,4 +148,8 @@ export class Clock {
   private _emit(): void {
     for (const listener of this._listeners) listener(this);
   }
+}
+
+function clamp(value: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, value));
 }

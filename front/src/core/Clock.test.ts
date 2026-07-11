@@ -72,3 +72,44 @@ test("advance sans effet si en pause ou dt <= 0", () => {
   c.advance(-1);
   assert.equal(c.time, 0);
 });
+
+test("seekFrame clampe [0, durationFrames]", () => {
+  const c = new Clock();
+  c.configure({ fps: 24, durationFrames: 100 });
+  c.seekFrame(-5);
+  assert.equal(c.frame, 0);
+  c.seekFrame(150);
+  assert.equal(c.frame, 100);
+  c.seekFrame(50);
+  assert.equal(c.frame, 50);
+});
+
+test("stepFrame décale d'un frame et met en pause", () => {
+  const c = new Clock();
+  c.configure({ fps: 24, durationFrames: 100 });
+  c.play();
+  c.seekFrame(10);
+  c.stepFrame(1);
+  assert.equal(c.frame, 11);
+  assert.equal(c.playing, false);
+  c.stepFrame(-3);
+  assert.equal(c.frame, 8);
+});
+
+test("goToStart / goToEnd vont au frame 0 / durationFrames", () => {
+  const c = new Clock();
+  c.configure({ fps: 24, durationFrames: 100 });
+  c.goToEnd();
+  assert.equal(c.frame, 100);
+  c.goToStart();
+  assert.equal(c.frame, 0);
+});
+
+test("seek clampe [0, duration]", () => {
+  const c = new Clock();
+  c.configure({ fps: 24, durationFrames: 24 }); // 1 s
+  c.seek(-1);
+  assert.equal(c.time, 0);
+  c.seek(5);
+  assert.equal(c.time, 1);
+});
