@@ -39,6 +39,7 @@ export class App {
     live: LiveState = new LiveState(),
   ): Promise<App> {
     const renderer = await createRenderer(canvas);
+    clock.configure({ fps: project.config.frequency ?? 24 });
 
     const assets = new AssetStore();
     await assets.load(ASSET_MANIFEST);
@@ -109,6 +110,7 @@ export class App {
 
       // Mettre à jour la fréquence d'envoi eHuB
       this.updateFrequency(p.config.frequency ?? 24);
+      this.context.clock.configure({ fps: p.config.frequency ?? 24 });
 
       // Envoyer le paquet de config eHuB au routage Go
       await this.sendEhubConfig();

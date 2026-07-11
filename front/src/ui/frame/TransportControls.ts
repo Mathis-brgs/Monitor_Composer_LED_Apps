@@ -1,8 +1,6 @@
 import type { Clock } from "@core/Clock.ts";
 import type { LiveState } from "@core/LiveState.ts";
 
-const FPS = 40;
-
 const PLAY_SVG =
   '<svg width="9" height="9" viewBox="0 0 10 10" aria-hidden="true"><path d="M1 1 9 5 1 9Z" fill="currentColor"/></svg>';
 const PAUSE_SVG =
@@ -51,7 +49,7 @@ export class TransportControls {
     this._btn.classList.toggle("transport-btn--playing", clock.playing);
     this._btn.innerHTML = clock.playing ? PAUSE_SVG : PLAY_SVG;
     this._btn.setAttribute("aria-label", clock.playing ? "Pause" : "Lecture");
-    this._time.textContent = formatTimecode(clock.time);
+    this._time.textContent = formatTimecode(clock.time, clock.fps);
   }
 
   private _syncLive(live: LiveState): void {
@@ -61,11 +59,11 @@ export class TransportControls {
   }
 }
 
-/** MM:SS:FF (frames à 40 fps). */
-function formatTimecode(time: number): string {
-  const totalFrames = Math.floor(time * FPS);
-  const frames = totalFrames % FPS;
-  const totalSeconds = Math.floor(totalFrames / FPS);
+/** MM:SS:FF (frames au fps de composition). */
+function formatTimecode(time: number, fps: number): string {
+  const totalFrames = Math.floor(time * fps);
+  const frames = totalFrames % fps;
+  const totalSeconds = Math.floor(totalFrames / fps);
   const seconds = totalSeconds % 60;
   const minutes = Math.floor(totalSeconds / 60);
   return `${pad(minutes)}:${pad(seconds)}:${pad(frames)}`;
