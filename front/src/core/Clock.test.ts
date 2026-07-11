@@ -41,3 +41,34 @@ test("setLoop change le mode", () => {
   c.setLoop("loop");
   assert.equal(c.loop, "loop");
 });
+
+test("advance boucle off : clamp à la durée + auto-pause en fin", () => {
+  const c = new Clock();
+  c.configure({ fps: 24, durationFrames: 24 }); // 1 s
+  c.play();
+  c.advance(2); // dépassement
+  assert.equal(c.time, 1);
+  assert.equal(c.playing, false);
+});
+
+test("advance boucle loop : wrap modulo durée, reste en lecture", () => {
+  const c = new Clock();
+  c.configure({ fps: 24, durationFrames: 24 }); // 1 s
+  c.setLoop("loop");
+  c.play();
+  c.advance(1.5);
+  assert.ok(Math.abs(c.time - 0.5) < 1e-9, `time=${c.time}`);
+  assert.equal(c.playing, true);
+});
+
+test("advance sans effet si en pause ou dt <= 0", () => {
+  const c = new Clock();
+  c.configure({ fps: 24, durationFrames: 240 });
+  c.advance(1); // pas en lecture
+  assert.equal(c.time, 0);
+  c.play();
+  c.advance(0);
+  assert.equal(c.time, 0);
+  c.advance(-1);
+  assert.equal(c.time, 0);
+});

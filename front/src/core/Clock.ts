@@ -44,12 +44,22 @@ export class Clock {
     return this._loop;
   }
 
-  /** Avance le temps de `deltaTime` s — sans effet si en pause. */
+  /**
+   * Avance le temps de `deltaTime` s (sans effet si en pause / dt <= 0).
+   * En boucle : wrap modulo la durée. Sinon : clamp à la fin + auto-pause.
+   */
   advance(deltaTime: number): void {
-    if (this._playing && deltaTime > 0) {
-      this._time += deltaTime;
-      this._emit();
+    if (!this._playing || deltaTime <= 0) return;
+    let t = this._time + deltaTime;
+    const dur = this.duration;
+    if (this._loop === "loop") {
+      if (dur > 0) t %= dur;
+    } else if (dur > 0 && t >= dur) {
+      t = dur;
+      this._playing = false;
     }
+    this._time = Math.max(0, t);
+    this._emit();
   }
 
   toggle(): void {
