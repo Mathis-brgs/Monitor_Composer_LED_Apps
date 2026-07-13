@@ -1179,6 +1179,25 @@ body {
   min-width: 0;
 }
 
+.key-dot {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border: var(--stroke-hairline) solid var(--line);
+  background: transparent;
+  transform: rotate(45deg);
+  cursor: pointer;
+}
+
+.key-dot:hover {
+  border-color: var(--acc-border);
+}
+
+.key-dot--on {
+  background: var(--acc);
+  border-color: var(--acc);
+}
+
 .insp-fields {
   display: flex;
   gap: var(--space-6);

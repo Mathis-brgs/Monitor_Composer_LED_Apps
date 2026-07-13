@@ -15,6 +15,19 @@ function axisPatch(axis: Axis, v: number): Partial<Vec3> {
   return axis === "x" ? { x: v } : axis === "y" ? { y: v } : { z: v };
 }
 
+/** Diamant d'animation d'une propriété (groupe de canaux) : plein si animée, clic = toggle. */
+function KeyDot(props: { editor: Editor; id: string; channels: string[] }): JSX.Element {
+  const on = fromStore(props.editor, () => props.channels.some((c) => props.editor.isAnimated(props.id, c)));
+  return (
+    <div
+      class="key-dot"
+      classList={{ "key-dot--on": on() }}
+      title="Animer cette propriété (keyframe au frame courant)"
+      onClick={() => props.editor.toggleAnimated(props.id, props.channels)}
+    />
+  );
+}
+
 /** Trois champs numériques (X/Y/Z) sur une ligne. */
 function Vec3Field(props: {
   value: Vec3;
@@ -119,7 +132,10 @@ function FillFields(props: { editor: Editor; id: string; fill: Fill }): JSX.Elem
         />
       </Row>
       <Show when={fill().type === "solid"}>
-        <Row label="Couleur"><ColorField value={asSolid().color} onInput={(c) => emit({ type: "solid", color: c })} /></Row>
+        <Row label="Couleur">
+          <ColorField value={asSolid().color} onInput={(c) => emit({ type: "solid", color: c })} />
+          <KeyDot editor={editor} id={id} channels={["color.r", "color.g", "color.b"]} />
+        </Row>
       </Show>
       <Show when={fill().type === "gradient"}>
         <Row label="Couleur A"><ColorField value={asGradient().from} onInput={(c) => emit({ ...asGradient(), from: c })} /></Row>
@@ -163,6 +179,7 @@ function ShapeBody(props: { editor: Editor; node: ShapeLayer; changed: Accessor<
       <Section title="Transform">
         <Row label="Position">
           <Vec3Field value={position()} step={0.01} onInput={(a, v) => editor.setTransform(id, { position: axisPatch(a, v) })} />
+          <KeyDot editor={editor} id={id} channels={["position.x", "position.y", "position.z"]} />
         </Row>
         <Row label="Rotation">
           <Vec3Field
@@ -171,15 +188,18 @@ function ShapeBody(props: { editor: Editor; node: ShapeLayer; changed: Accessor<
             format={(v) => `${v.toFixed(0)}°`}
             onInput={(a, v) => editor.setTransform(id, { rotation: axisPatch(a, v * D2R) })}
           />
+          <KeyDot editor={editor} id={id} channels={["rotation.x", "rotation.y", "rotation.z"]} />
         </Row>
         <Row label="Échelle">
           <Vec3Field value={scale()} step={0.01} onInput={(a, v) => editor.setTransform(id, { scale: axisPatch(a, v) })} />
+          <KeyDot editor={editor} id={id} channels={["scale.x", "scale.y", "scale.z"]} />
         </Row>
       </Section>
       <Section title="Apparence">
         <FillFields editor={editor} id={id} fill={node.fill} />
         <Row label="Opacité">
           <Slider value={node.opacity} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
+          <KeyDot editor={editor} id={id} channels={["opacity"]} />
         </Row>
         <Row label="Helper"><Checkbox checked={node.showHelper} onChange={(v) => editor.setShowHelper(id, v)} /></Row>
       </Section>
@@ -193,12 +213,24 @@ function ShaderBody(props: { editor: Editor; node: ShaderLayer }): JSX.Element {
   return (
     <Section title={node.name}>
       <Show when={node.shader === "plasma"}>
-        <Row label="Vitesse"><Slider value={node.params.speed ?? 0} onInput={(v) => editor.setParam(id, "speed", v)} /></Row>
-        <Row label="Détail"><Slider value={node.params.detail ?? 0} onInput={(v) => editor.setParam(id, "detail", v)} /></Row>
-        <Row label="Contraste"><Slider value={node.params.contrast ?? 0} onInput={(v) => editor.setParam(id, "contrast", v)} /></Row>
+        <Row label="Vitesse">
+          <Slider value={node.params.speed ?? 0} onInput={(v) => editor.setParam(id, "speed", v)} />
+          <KeyDot editor={editor} id={id} channels={["param.speed"]} />
+        </Row>
+        <Row label="Détail">
+          <Slider value={node.params.detail ?? 0} onInput={(v) => editor.setParam(id, "detail", v)} />
+          <KeyDot editor={editor} id={id} channels={["param.detail"]} />
+        </Row>
+        <Row label="Contraste">
+          <Slider value={node.params.contrast ?? 0} onInput={(v) => editor.setParam(id, "contrast", v)} />
+          <KeyDot editor={editor} id={id} channels={["param.contrast"]} />
+        </Row>
       </Show>
       <Show when={node.shader === "solid"}>
-        <Row label="Couleur"><ColorField value={node.color} onInput={(c) => editor.setColor(id, c)} /></Row>
+        <Row label="Couleur">
+          <ColorField value={node.color} onInput={(c) => editor.setColor(id, c)} />
+          <KeyDot editor={editor} id={id} channels={["color.r", "color.g", "color.b"]} />
+        </Row>
       </Show>
       <Row label="Fusion">
         <Segmented
@@ -209,6 +241,7 @@ function ShaderBody(props: { editor: Editor; node: ShaderLayer }): JSX.Element {
       </Row>
       <Row label="Opacité">
         <Slider value={node.opacity} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
+        <KeyDot editor={editor} id={id} channels={["opacity"]} />
       </Row>
     </Section>
   );
