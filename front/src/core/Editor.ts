@@ -16,6 +16,8 @@ import type { Layer as EngineLayer } from "./engine/layers/Layer.ts";
 import { Scene3DLayer } from "./engine/layers/Scene3D.layer.ts";
 import { SolidLayer } from "./engine/layers/Solid.layer.ts";
 import { countLit, type ShapeFill, type ShapeInput } from "./engine/shapes.ts";
+import { Animator } from "./Animator.ts";
+import type { Composition } from "@domain/Composition.ts";
 
 /** Pixels décodés d'une image (ou d'une frame vidéo) — mis en cache hors du document (non sérialisable). */
 interface DecodedBitmap { data: Uint8ClampedArray; width: number; height: number; }
@@ -70,6 +72,9 @@ export class Editor {
   private _engine: Engine | null = null;
   private _counter = 0;
   private _tool: EditorTool = "select";
+  private _frame = 0;              // dernier frame évalué (instant courant pour l'auto-key)
+  private _sceneDirty = false;     // un canal de shape a changé → 1 seul recompute par frame
+  private readonly _animator = new Animator((id, channel, value) => this._applyChannel(id, channel, value));
 
   // fills image/vidéo : décodage async + lecture, mis en cache hors du document (par id de shape)
   private readonly _imagePixels = new Map<string, DecodedBitmap>();
@@ -101,6 +106,14 @@ export class Editor {
     this._emit();
   }
 
+  loadComposition(comp: Composition): void {
+    this._animator.load(comp);
+  }
+
+  getComposition(): Composition {
+    return this._animator.composition;
+  }
+
   // ————————————————————————————————— Moteur ——————————————————————————————————
 
   /** Branche le moteur : crée le calque scène3d + pousse la pile du groupe actif. */
@@ -122,6 +135,25 @@ export class Editor {
   setTool(tool: EditorTool): void {
     if (tool === this._tool) return;
     this._tool = tool;
+    this._emit();
+  }
+
+  /** Une propriété (canal) est-elle animée ? (état du diamant inspecteur) */
+  isAnimated(id: string, channel: string): boolean {
+    return this._animator.isAnimated(id, channel);
+  }
+
+  /**
+   * Active/désactive l'animation d'une propriété (groupe de canaux). Si au moins un
+   * canal est animé → tout supprimer ; sinon → créer une track par canal avec une
+   * clé = valeur courante, au frame courant.
+   */
+  toggleAnimated(id: string, channels: string[]): void {
+    const anyOn = channels.some((c) => this._animator.isAnimated(id, c));
+    for (const c of channels) {
+      if (anyOn) this._animator.removeChannel(id, c);
+      else this._animator.addChannel(id, c, this._frame, this._readChannel(id, c) ?? 0);
+    }
     this._emit();
   }
 
@@ -152,6 +184,7 @@ export class Editor {
       
       // Libérer le calque shader du cache en RAM
       this._shaderLive.delete(id);
+      this._animator.dropLayer(id);
       
       // Si la couche supprimée était sélectionnée, on réinitialise la sélection
       if (this._doc.selectedId === id) {
@@ -296,6 +329,7 @@ export class Editor {
     const live = this._shaderLive.get(id);
     if (live) live.opacity = opacity;
     if (layer.type === "shape") this._recomputeScene(); // opacité LED = luminosité (temps réel)
+    this._animator.autoKey(id, "opacity", this._frame, opacity);
     this._emit();
   }
 
@@ -313,6 +347,7 @@ export class Editor {
     if (!layer || layer.type !== "shader") return;
     layer.params[key] = value;
     this._shaderLive.get(id)?.setParam(key, value);
+    this._animator.autoKey(id, "param." + key, this._frame, value);
   }
 
   setTransform(id: string, patch: TransformPatch): void {
@@ -324,6 +359,15 @@ export class Editor {
       rotation: { ...t.rotation, ...patch.rotation },
       scale: { ...t.scale, ...patch.scale },
     };
+    if (patch.position) for (const a of ["x", "y", "z"] as const) {
+      if (patch.position[a] !== undefined) this._animator.autoKey(id, "position." + a, this._frame, patch.position[a]!);
+    }
+    if (patch.rotation) for (const a of ["x", "y", "z"] as const) {
+      if (patch.rotation[a] !== undefined) this._animator.autoKey(id, "rotation." + a, this._frame, patch.rotation[a]!);
+    }
+    if (patch.scale) for (const a of ["x", "y", "z"] as const) {
+      if (patch.scale[a] !== undefined) this._animator.autoKey(id, "scale." + a, this._frame, patch.scale[a]!);
+    }
     if (layer.type === "shape") this._recomputeScene();
     this._emit();
   }
@@ -349,6 +393,9 @@ export class Editor {
     layer.color = color;
     const live = this._shaderLive.get(id);
     if (live instanceof SolidLayer) live.setColor(color.r, color.g, color.b);
+    this._animator.autoKey(id, "color.r", this._frame, color.r);
+    this._animator.autoKey(id, "color.g", this._frame, color.g);
+    this._animator.autoKey(id, "color.b", this._frame, color.b);
     this._emit();
   }
 
@@ -364,6 +411,11 @@ export class Editor {
     if (fill.type === "image") this._decodeImage(id, fill.dataUrl);
     else this._imagePixels.delete(id);
 
+    if (fill.type === "solid") {
+      this._animator.autoKey(id, "color.r", this._frame, fill.color.r);
+      this._animator.autoKey(id, "color.g", this._frame, fill.color.g);
+      this._animator.autoKey(id, "color.b", this._frame, fill.color.b);
+    }
     this._recomputeScene();
     this._emit();
   }
@@ -384,10 +436,12 @@ export class Editor {
     this._emit();
   }
 
-  /** appelé chaque frame moteur : ré-échantillonne les shapes tant qu'une vidéo est en lecture. */
-  tick(): void {
-    if (this._videoEls.size === 0) return;
-    this._recomputeScene();
+  /** appelé chaque frame moteur : évalue les keyframes puis (au besoin) re-rasterise les shapes. */
+  tick(frame: number): void {
+    this._frame = frame;
+    this._sceneDirty = false;
+    this._animator.evaluate(frame);
+    if (this._sceneDirty || this._videoEls.size > 0) this._recomputeScene();
   }
 
   subscribe(listener: EditorListener): () => void {
@@ -396,6 +450,62 @@ export class Editor {
   }
 
   // ————————————————————————————————— Interne —————————————————————————————————
+
+  /** Écrit la valeur d'un canal scalaire dans le modèle + le moteur (appelé par l'Animator). */
+  private _applyChannel(id: string, channel: string, value: number): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer) return;
+    if (channel === "opacity") {
+      layer.opacity = value;
+      const live = this._shaderLive.get(id);
+      if (live) live.opacity = value;
+      if (layer.type === "shape") this._sceneDirty = true;
+      return;
+    }
+    const dot = channel.indexOf(".");
+    const group = channel.slice(0, dot);
+    const key = channel.slice(dot + 1);
+    if (group === "position" || group === "rotation" || group === "scale") {
+      const axis = key as keyof Vec3;
+      const t = layer.transform;
+      const chan: Vec3 = { ...t[group], [axis]: value } as Vec3;
+      layer.transform = { ...t, [group]: chan };
+      if (layer.type === "shape") this._sceneDirty = true;
+    } else if (group === "param" && layer.type === "shader") {
+      layer.params[key] = value;
+      this._shaderLive.get(id)?.setParam(key, value);
+    } else if (group === "color") {
+      const c = key as keyof RGB;
+      if (layer.type === "shader") {
+        layer.color = { ...layer.color, [c]: value } as RGB;
+        const live = this._shaderLive.get(id);
+        if (live instanceof SolidLayer) live.setColor(layer.color.r, layer.color.g, layer.color.b);
+      } else if (layer.type === "shape" && layer.fill.type === "solid") {
+        layer.fill = { type: "solid", color: { ...layer.fill.color, [c]: value } as RGB };
+        this._sceneDirty = true;
+      }
+    }
+  }
+
+  /** Lit la valeur courante d'un canal (pour la 1re clé). undefined si non applicable. */
+  private _readChannel(id: string, channel: string): number | undefined {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer) return undefined;
+    if (channel === "opacity") return layer.opacity;
+    const dot = channel.indexOf(".");
+    const group = channel.slice(0, dot);
+    const key = channel.slice(dot + 1);
+    if (group === "position" || group === "rotation" || group === "scale") {
+      return layer.transform[group][key as keyof Vec3];
+    }
+    if (group === "param" && layer.type === "shader") return layer.params[key];
+    if (group === "color") {
+      const c = key as keyof RGB;
+      if (layer.type === "shader") return layer.color[c];
+      if (layer.type === "shape" && layer.fill.type === "solid") return layer.fill.color[c];
+    }
+    return undefined;
+  }
 
   private _activeGroup(): GroupLayer {
     return findGroup(this._doc.root, this._doc.activeGroupId) ?? this._doc.root;

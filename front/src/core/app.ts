@@ -175,7 +175,7 @@ export class App {
   private readonly _frame = (frame: Frame): void => {
     const { clock, engine, editor } = this.context;
     clock.advance(frame.deltaTime);
-    editor.tick(); // ré-échantillonne les shapes en fill vidéo (pas de re-rasterize sinon)
+    editor.tick(clock.time); // évalue les keyframes + ré-échantillonne les shapes en fill vidéo
     engine.update(clock.time);
     this._view?.render?.();
   };
