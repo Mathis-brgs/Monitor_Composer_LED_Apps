@@ -54,6 +54,7 @@ export class App {
     const fixture = new WallFixture();
     const engine = new Engine(renderer, fixture, transport);
     editor.attach(engine);
+    editor.loadComposition(project.composition);
 
     const app = new App({
       renderer,
@@ -107,6 +108,7 @@ export class App {
       if (loaded.document) {
         this.context.editor.loadDocument(loaded.document);
       }
+      this.context.editor.loadComposition(p.composition);
 
       // Mettre à jour la fréquence d'envoi eHuB
       this.updateFrequency(p.config.frequency ?? 24);
@@ -128,6 +130,7 @@ export class App {
   async saveProject(): Promise<void> {
     try {
       this.context.project.document = this.context.editor.getDocument();
+      this.context.project.composition = this.context.editor.getComposition();
       const json = serializeProject(this.context.project);
       await window.led?.saveProject(json, this.context.project.config.name);
       console.log("Projet sauvegardé avec succès");
@@ -175,7 +178,7 @@ export class App {
   private readonly _frame = (frame: Frame): void => {
     const { clock, engine, editor } = this.context;
     clock.advance(frame.deltaTime);
-    editor.tick(clock.time); // évalue les keyframes + ré-échantillonne les shapes en fill vidéo
+    editor.tick(clock.frame); // évalue les keyframes au frame courant + fill vidéo
     engine.update(clock.time);
     this._view?.render?.();
   };
