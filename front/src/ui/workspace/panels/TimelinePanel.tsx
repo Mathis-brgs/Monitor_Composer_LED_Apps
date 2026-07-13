@@ -38,10 +38,12 @@ function Timeline(props: { clock: Clock }): JSX.Element {
   const onPointerDown = (e: PointerEvent): void => {
     const target = e.currentTarget as HTMLElement;
     target.setPointerCapture(e.pointerId);
+    target.classList.add("seq__content--scrubbing");
     scrubTo(e.clientX);
     const move = (ev: PointerEvent): void => scrubTo(ev.clientX);
     const up = (ev: PointerEvent): void => {
       target.releasePointerCapture(ev.pointerId);
+      target.classList.remove("seq__content--scrubbing");
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
     };
@@ -80,7 +82,7 @@ function Timeline(props: { clock: Clock }): JSX.Element {
             <span class="seq-meta">
               Durée {duration().toFixed(2)} s · {fps()} FPS
             </span>
-            <button type="button" class="seq__zoom-btn" onClick={fit}>
+            <button type="button" class="seq__zoom-btn" data-tooltip="Ajuster à la fenêtre" onClick={fit}>
               Ajuster
             </button>
           </div>

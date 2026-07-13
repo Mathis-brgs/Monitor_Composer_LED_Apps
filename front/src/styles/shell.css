@@ -197,6 +197,43 @@ body {
   color: var(--acc);
 }
 
+/* — Tooltips instantanés (façon Blender) : nom de l'outil au survol — */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px var(--space-6);
+  background: var(--panel-2);
+  color: var(--txt);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-window);
+  font-size: var(--fs-3);
+  letter-spacing: var(--ls-label);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.06s ease 0.18s;
+  z-index: 50;
+}
+
+[data-tooltip]:hover::after {
+  opacity: 1;
+}
+
+/* barre d'outils viewport = verticale à gauche → tooltip à droite du bouton */
+.viewport-toolbar [data-tooltip]::after {
+  top: 50%;
+  left: calc(100% + 8px);
+  transform: translateY(-50%);
+}
+
 .transport-sep {
   width: var(--stroke-hairline);
   height: 18px;
@@ -586,6 +623,11 @@ body {
   min-width: 100%;
   display: flex;
   flex-direction: column;
+  cursor: ew-resize;
+}
+
+.seq__content--scrubbing {
+  cursor: grabbing;
 }
 
 .seq__names-list--empty {

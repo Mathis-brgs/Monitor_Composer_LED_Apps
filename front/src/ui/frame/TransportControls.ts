@@ -76,10 +76,12 @@ export class TransportControls {
     this._btn.classList.toggle("transport-btn--playing", clock.playing);
     this._btn.innerHTML = clock.playing ? PAUSE_SVG : PLAY_SVG;
     this._btn.setAttribute("aria-label", clock.playing ? "Pause" : "Lecture");
+    this._btn.dataset.tooltip = clock.playing ? "Pause (Espace)" : "Lecture (Espace)";
     this._time.textContent = formatTimecode(clock.time, clock.fps);
     this._loopBtn.classList.toggle("transport-btn--active", clock.loop === "loop");
     this._loopBtn.setAttribute("aria-pressed", String(clock.loop === "loop"));
     this._loopBtn.setAttribute("aria-label", clock.loop === "loop" ? "Boucle activée" : "Boucle désactivée");
+    this._loopBtn.dataset.tooltip = clock.loop === "loop" ? "Boucle (activée)" : "Boucle (désactivée)";
   }
 
   private _syncLive(live: LiveState): void {
@@ -109,6 +111,7 @@ function navBtn(svg: string, label: string, onClick: () => void): HTMLButtonElem
   btn.className = "transport-btn";
   btn.innerHTML = svg;
   btn.setAttribute("aria-label", label);
+  btn.dataset.tooltip = label;
   btn.addEventListener("click", onClick);
   return btn;
 }

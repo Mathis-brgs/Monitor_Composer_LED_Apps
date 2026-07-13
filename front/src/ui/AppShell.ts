@@ -52,6 +52,13 @@ export class AppShell {
       this._workspace.element,
       new StatusBar(config).element,
     );
+
+    // Espace = play/pause global (transport), sauf pendant une saisie de texte.
+    window.addEventListener("keydown", (e) => {
+      if (e.code !== "Space" || isTyping(e.target)) return;
+      e.preventDefault(); // évite l'activation du bouton focus et le scroll
+      opts.clock.toggle();
+    });
   }
 
   setApp(app: App): void {
@@ -98,4 +105,13 @@ export class AppShell {
     this._workspace.setSpace(id); // réattache le canvas dans le leaf viewport/preview du nouvel espace
     this.onSpaceChange?.(id); // puis la root aligne la vue moteur (3D vs composite 2D)
   }
+}
+
+/** Vrai si l'événement vient d'un champ de saisie (ne pas capter les raccourcis globaux). */
+function isTyping(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
+  );
 }
