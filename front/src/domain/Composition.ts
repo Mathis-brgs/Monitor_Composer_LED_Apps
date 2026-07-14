@@ -56,3 +56,10 @@ export function upsertKeyframe(kfs: readonly Keyframe[], kf: Keyframe): Keyframe
 export function removeKeyframe(kfs: readonly Keyframe[], frame: number): Keyframe[] {
   return kfs.filter((k) => k.frame !== frame);
 }
+
+/** Déplace la clé du frame `from` vers `to` (garde valeur+interp), re-trié. No-op si absente. */
+export function moveKeyframe(kfs: readonly Keyframe[], from: number, to: number): Keyframe[] {
+  const k = kfs.find((x) => x.frame === from);
+  if (!k) return kfs.slice();
+  return upsertKeyframe(kfs.filter((x) => x.frame !== from), { frame: to, value: k.value, interp: k.interp });
+}
