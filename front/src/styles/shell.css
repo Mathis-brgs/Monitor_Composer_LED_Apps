@@ -697,6 +697,13 @@ body {
   background: var(--acc);
   border: var(--stroke-hairline) solid var(--app);
   transform: translate(-50%, -50%) rotate(45deg);
+  cursor: grab;
+}
+
+.seq__kf--selected {
+  outline: 2px solid var(--acc);
+  outline-offset: 1px;
+  z-index: 1;
 }
 
 .seq__playhead {
