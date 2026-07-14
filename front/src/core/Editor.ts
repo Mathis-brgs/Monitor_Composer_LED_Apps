@@ -157,6 +157,25 @@ export class Editor {
     this._emit();
   }
 
+  /** Déplace une clé (dope sheet). */
+  moveKeyframe(id: string, channel: string, from: number, to: number): void {
+    this._animator.moveKey(id, channel, from, to);
+    this._emit();
+  }
+
+  /** Supprime une clé (dope sheet). */
+  removeKeyframe(id: string, channel: string, frame: number): void {
+    this._animator.removeKey(id, channel, frame);
+    this._emit();
+  }
+
+  /** Pose une clé au frame donné sur un canal déjà animé (valeur = valeur courante). */
+  addKeyframeAt(id: string, channel: string, frame: number): void {
+    if (!this._animator.isAnimated(id, channel)) return;
+    this._animator.autoKey(id, channel, frame, this._readChannel(id, channel) ?? 0);
+    this._emit();
+  }
+
   enterGroup(id: string): void {
     if (!findGroup(this._doc.root, id)) return;
     this._doc.activeGroupId = id;
@@ -347,7 +366,7 @@ export class Editor {
     if (!layer || layer.type !== "shader") return;
     layer.params[key] = value;
     this._shaderLive.get(id)?.setParam(key, value);
-    this._animator.autoKey(id, "param." + key, this._frame, value);
+    if (this._animator.autoKey(id, "param." + key, this._frame, value)) this._emit();
   }
 
   setTransform(id: string, patch: TransformPatch): void {
