@@ -20,7 +20,7 @@ const PANEL_FACTORIES: Record<PanelId, (ctx: PanelContext) => Panel> = {
   viewport: (ctx) => new ViewportPanel(ctx.canvas),
   preview: (ctx) => new PreviewPanel(ctx.canvas),
   inspector: (ctx) => createInspectorPanel(ctx.editor),
-  timeline: (ctx) => createTimelinePanel(ctx.clock),
+  timeline: (ctx) => createTimelinePanel(ctx.clock, ctx.editor),
 };
 
 const STORAGE_PREFIX = "led.layout.";
