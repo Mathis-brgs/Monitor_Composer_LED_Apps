@@ -1,5 +1,5 @@
 import {
-  EMPTY_COMPOSITION, sampleKeyframes, upsertKeyframe,
+  EMPTY_COMPOSITION, sampleKeyframes, upsertKeyframe, moveKeyframe, removeKeyframe,
   type Composition, type Track,
 } from "../domain/Composition.ts";
 
@@ -47,10 +47,27 @@ export class Animator {
     this._comp.tracks = this._comp.tracks.filter((t) => !(t.layerId === layerId && t.channel === channel));
   }
 
-  /** Pose/met à jour une clé au frame courant — uniquement si le canal est déjà animé. */
-  autoKey(layerId: string, channel: string, frame: number, value: number): void {
+  /** Pose/met à jour une clé au frame courant si le canal est animé. Renvoie true si une NOUVELLE clé a été insérée. */
+  autoKey(layerId: string, channel: string, frame: number, value: number): boolean {
     const t = this._find(layerId, channel);
-    if (t) t.keyframes = upsertKeyframe(t.keyframes, { frame, value, interp: "linear" });
+    if (!t) return false;
+    const existed = t.keyframes.some((k) => k.frame === frame);
+    t.keyframes = upsertKeyframe(t.keyframes, { frame, value, interp: "linear" });
+    return !existed;
+  }
+
+  /** Déplace une clé d'une track (no-op si track/clé absente). */
+  moveKey(layerId: string, channel: string, from: number, to: number): void {
+    const t = this._find(layerId, channel);
+    if (t) t.keyframes = moveKeyframe(t.keyframes, from, to);
+  }
+
+  /** Retire une clé ; supprime la track si elle devient vide (pas de track fantôme). */
+  removeKey(layerId: string, channel: string, frame: number): void {
+    const t = this._find(layerId, channel);
+    if (!t) return;
+    t.keyframes = removeKeyframe(t.keyframes, frame);
+    if (t.keyframes.length === 0) this.removeChannel(layerId, channel);
   }
 
   /** Supprime toutes les tracks d'un calque (à sa suppression). */

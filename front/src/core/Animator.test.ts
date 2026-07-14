@@ -50,3 +50,30 @@ test("removeChannel et dropLayer purgent les tracks", () => {
   anim.dropLayer("L1");
   assert.equal(anim.composition.tracks.length, 0);
 });
+
+test("autoKey renvoie true à l'insertion d'un nouveau frame, false au remplacement", () => {
+  const { anim } = make();
+  anim.addChannel("L1", "opacity", 0, 0);
+  assert.equal(anim.autoKey("L1", "opacity", 10, 1), true);
+  assert.equal(anim.autoKey("L1", "opacity", 10, 0.5), false);
+  assert.equal(anim.autoKey("L2", "opacity", 5, 1), false);
+});
+
+test("removeKey retire la clé ; supprime la track quand elle devient vide", () => {
+  const { anim } = make();
+  anim.addChannel("L1", "opacity", 0, 0);
+  anim.autoKey("L1", "opacity", 10, 1);
+  anim.removeKey("L1", "opacity", 10);
+  assert.equal(anim.composition.tracks[0].keyframes.length, 1);
+  anim.removeKey("L1", "opacity", 0);
+  assert.equal(anim.isAnimated("L1", "opacity"), false);
+  assert.equal(anim.composition.tracks.length, 0);
+});
+
+test("moveKey déplace la clé dans la track", () => {
+  const { anim } = make();
+  anim.addChannel("L1", "opacity", 0, 0.3);
+  anim.moveKey("L1", "opacity", 0, 24);
+  assert.deepEqual(anim.composition.tracks[0].keyframes.map((k) => k.frame), [24]);
+  assert.equal(anim.composition.tracks[0].keyframes[0].value, 0.3);
+});
