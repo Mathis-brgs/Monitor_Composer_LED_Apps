@@ -486,6 +486,8 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .seq__cols {
@@ -516,10 +518,23 @@ body {
   letter-spacing: var(--ls-sub);
 }
 
+/* aligne la liste des noms avec les lanes : la colonne droite empile zoombar + règle */
+.seq__names-spacer {
+  height: var(--status-bar);
+  flex: 0 0 var(--status-bar);
+  border-bottom: var(--stroke-hairline) solid var(--line-2);
+}
+
 .seq__names-list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: none;
+  scrollbar-width: none; /* scroll piloté par la colonne des lanes (barre côté timeline) */
+}
+
+.seq__names-list::-webkit-scrollbar {
+  display: none;
 }
 
 .seq__name {
@@ -614,19 +629,19 @@ body {
   flex: 1;
   min-height: 0;
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: auto;
+  overscroll-behavior: none; /* pas de rebond élastique → pas de désalignement des colonnes */
 }
 
 .seq__content {
   position: relative;
-  height: 100%;
+  min-height: 100%;
   min-width: 100%;
   display: flex;
   flex-direction: column;
-  cursor: ew-resize;
 }
 
-.seq__content--scrubbing {
+.seq__ruler--scrubbing {
   cursor: grabbing;
 }
 
@@ -641,10 +656,14 @@ body {
 }
 
 .seq__ruler {
-  position: relative;
+  position: sticky;
+  top: 0;
+  z-index: 3;
   height: var(--status-bar);
   flex: 0 0 var(--status-bar);
+  background: var(--panel);
   border-bottom: var(--stroke-hairline) solid var(--line-2);
+  cursor: ew-resize;
 }
 
 .seq__mark {
@@ -664,9 +683,6 @@ body {
 
 .seq__lanes {
   position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
 }
 
 .seq__lane {
@@ -704,6 +720,355 @@ body {
   outline: 2px solid var(--acc);
   outline-offset: 1px;
   z-index: 1;
+}
+
+/* forme d'icône selon l'interpolation (façon After Effects) : losange = linéaire (défaut) */
+.seq__kf--hold { transform: translate(-50%, -50%); border-radius: 1px; } /* carré = hold */
+.seq__kf--bezier { transform: translate(-50%, -50%); border-radius: 50%; } /* rond = bézier (ease) */
+
+/* diamants « résumé » sur la barre de calque repliée : lecture seule */
+.seq__kf--summary {
+  width: 7px;
+  height: 7px;
+  opacity: 0.45;
+  pointer-events: none;
+  cursor: default;
+  z-index: 2;
+}
+
+/* — Clip (barre de calque, déplaçable / trimmable) — */
+.seq__clip {
+  cursor: grab;
+}
+
+.seq__clip--full {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
+.seq__clip--selected {
+  border-color: var(--acc-border);
+  box-shadow: inset 0 0 0 1px var(--acc-border);
+}
+
+.seq__clip-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.seq__clip-handle--l { left: -1px; }
+.seq__clip-handle--r { right: -1px; }
+
+.seq__clip-handle:hover {
+  background: var(--acc);
+  opacity: 0.6;
+}
+
+/* — Twirl (triangle de repli/déploiement, façon After Effects) — */
+.seq__twirl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__twirl::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--dim);
+  transition: transform 0.12s ease;
+}
+
+.seq__twirl:hover::before { border-left-color: var(--txt); }
+.seq__twirl--open::before { transform: rotate(90deg); }
+.seq__twirl--empty { cursor: default; }
+.seq__twirl--empty::before { content: none; }
+
+/* — Sous-rangées de canaux (twirl ouvert) : compactes, façon propriété AE — */
+.seq__name--child,
+.seq__lane--child {
+  height: 24px;
+}
+
+.seq__name--child {
+  padding-left: var(--space-10);
+  gap: var(--space-6, 6px);
+  cursor: default;
+}
+
+.seq__name--child .seq__name-label {
+  color: var(--dim);
+  font-size: var(--fs-2, 10px);
+}
+
+.seq__lane--child {
+  background: color-mix(in srgb, var(--line-2) 40%, transparent);
+}
+
+/* — Contrôles de propriété (chrono + navigateur de keyframe), façon After Effects — */
+.seq__prop-ctl {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+}
+
+/* Chronomètre : active/désactive l'animation (l'éteindre supprime toutes les clés de la propriété) */
+.seq__stopwatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__stopwatch:hover { color: var(--txt); }
+.seq__stopwatch--on { color: var(--acc); }
+
+/* Navigateur de keyframe ◄ ◆ ► : ◆ ajoute/retire UNE clé au frame courant (plein si clé présente) */
+.seq__kf-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* diamant de pose : bouton NON tourné (le tooltip reste droit), losange via ::before */
+.seq__kf-nav-dot {
+  position: relative;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__kf-nav-dot::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 1.6px solid var(--acc);
+  transform: rotate(45deg);
+}
+
+.seq__kf-nav-dot--on::before { background: var(--acc); }
+
+/* flèches clé précédente / suivante : triangle via ::before (bouton droit) */
+.seq__kf-nav-arrow {
+  position: relative;
+  flex: 0 0 auto;
+  width: 11px;
+  height: 15px;
+  padding: 0;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__kf-nav-arrow:hover { color: var(--txt); }
+
+.seq__kf-nav-arrow::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+
+.seq__kf-nav-arrow--prev::before { border-right: 6px solid currentColor; }
+.seq__kf-nav-arrow--next::before { border-left: 6px solid currentColor; }
+
+/* — Boîte de sélection multiple (marquee) — */
+.seq__marquee {
+  position: absolute;
+  z-index: 6;
+  background: color-mix(in srgb, var(--acc) 14%, transparent);
+  border: var(--stroke-hairline) solid var(--acc);
+  pointer-events: none;
+}
+
+/* — Éditeur de valeur d'une clé (double-clic sur un diamant) — */
+.seq__kf-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.seq__kf-editor {
+  position: fixed;
+  transform: translate(-50%, calc(-100% - 10px));
+  display: flex;
+  gap: var(--space-6, 6px);
+  padding: var(--space-6, 6px) var(--space-8);
+  background: var(--panel-2);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.seq__kf-editor-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4, 4px);
+}
+
+.seq__kf-editor-field > span {
+  font-size: var(--fs-2, 10px);
+  color: var(--dim);
+}
+
+/* — Menu contextuel d'interpolation (clic-droit sur une clé) — */
+.seq__ctx-menu {
+  position: fixed;
+  min-width: 130px;
+  padding: var(--space-4, 4px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-2);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.seq__ctx-title {
+  padding: 4px var(--space-8) 6px;
+  font-size: var(--fs-3);
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-sub);
+}
+
+.seq__ctx-item {
+  text-align: left;
+  padding: 5px var(--space-8);
+  font-size: var(--fs-2, 11px);
+  color: var(--txt);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.seq__ctx-item:hover {
+  background: var(--row);
+  color: var(--acc);
+}
+
+/* liaison entre keyframes consécutifs d'un canal (façon After Effects) */
+.seq__kf-link {
+  position: absolute;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: var(--acc);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* — Indicateurs de dépôt (réordonnancement z) — */
+.seq__name--drop-before { box-shadow: inset 0 2px 0 var(--acc); }
+.seq__name--drop-after { box-shadow: inset 0 -2px 0 var(--acc); }
+
+/* — Contrôles de calque : pastille de label, solo, verrou — */
+.seq__label-chip {
+  flex: 0 0 auto;
+  width: 4px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 1px;
+  background: var(--line);
+  cursor: pointer;
+}
+
+.seq__label-chip--set { width: 6px; }
+.seq__label-chip:hover { filter: brightness(1.3); }
+
+.seq__solo,
+.seq__lock {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  color: var(--faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__solo {
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 50%;
+}
+
+.seq__solo:hover,
+.seq__lock:hover { color: var(--txt); }
+.seq__solo--on { color: var(--app); background: var(--acc); }
+.seq__lock--on { color: var(--acc); }
+
+.seq__name--locked { opacity: 0.55; }
+.seq__name--locked .seq__name-label { font-style: italic; }
+
+/* palette de couleur de label */
+.seq__label-palette {
+  position: fixed;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+  padding: 7px;
+  background: var(--panel-2);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.seq__label-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: var(--stroke-hairline) solid rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.seq__label-swatch--none {
+  position: relative;
+  background: transparent;
+}
+
+.seq__label-swatch--none::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(45deg, transparent 44%, var(--faint) 44%, var(--faint) 56%, transparent 56%);
 }
 
 .seq__playhead {
