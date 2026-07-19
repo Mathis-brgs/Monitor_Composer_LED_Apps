@@ -4,7 +4,13 @@ import {
   findLayer, findGroup, findParent, groupChildren,
   makeGroup, makeShape, makeShaderLayer, type Document,
   layerActiveAt, moveClip, trimIn, trimOut, wouldCycle,
+  mediaClipLength, mediaClipTimelineOut, mediaClipActiveAt, mediaSourceFrameAt,
+  moveMediaClip, trimMediaIn, trimMediaOut, splitMediaClip, applyMap,
+  type MediaClip,
 } from "./Layer.ts";
+
+const mc = (o: Partial<MediaClip> = {}): MediaClip =>
+  ({ id: "c", sourceIn: 0, sourceOut: 24, timelineIn: 10, speed: 1, ...o });
 
 function doc(): Document {
   const root = makeGroup("root", "Composition");
@@ -82,6 +88,57 @@ test("trimOut bouge out sans passer sous in ni sortir des bornes", () => {
   assert.deepEqual(trimOut(c, 30, 100), { in: 10, out: 30 });
   assert.deepEqual(trimOut(c, 5, 100), { in: 10, out: 10 }); // min 1 frame
   assert.deepEqual(trimOut(c, 200, 100), { in: 10, out: 100 });
+});
+
+test("mediaClip : longueur et fin timeline selon vitesse", () => {
+  assert.equal(mediaClipLength(mc()), 24);
+  assert.equal(mediaClipTimelineOut(mc()), 34);
+  assert.equal(mediaClipLength(mc({ speed: 2 })), 12); // 2x plus rapide → moitié moins long
+});
+
+test("mediaClipActiveAt : in inclus, out exclu", () => {
+  const c = mc();
+  assert.equal(mediaClipActiveAt(c, 9), false);
+  assert.equal(mediaClipActiveAt(c, 10), true);
+  assert.equal(mediaClipActiveAt(c, 33), true);
+  assert.equal(mediaClipActiveAt(c, 34), false);
+});
+
+test("mediaSourceFrameAt : mappe timeline → source, clampé, tient compte de speed", () => {
+  assert.equal(mediaSourceFrameAt(mc(), 10), 0);
+  assert.equal(mediaSourceFrameAt(mc(), 15), 5);
+  assert.equal(mediaSourceFrameAt(mc(), 999), 24); // clamp sourceOut
+  assert.equal(mediaSourceFrameAt(mc({ speed: 2 }), 15), 10); // (15-10)*2
+});
+
+test("moveMediaClip décale timelineIn, borné à ≥ 0", () => {
+  assert.equal(moveMediaClip(mc(), 5).timelineIn, 15);
+  assert.equal(moveMediaClip(mc(), -20).timelineIn, 0);
+});
+
+test("trimMediaIn avance la source en même temps que le bord d'entrée", () => {
+  assert.deepEqual(trimMediaIn(mc(), 14), { id: "c", sourceIn: 4, sourceOut: 24, timelineIn: 14, speed: 1 });
+});
+
+test("trimMediaOut ajuste sourceOut, garde ≥ 1 frame", () => {
+  assert.equal(trimMediaOut(mc(), 20).sourceOut, 10);
+  assert.equal(trimMediaOut(mc(), 10).sourceOut, 1); // sous timelineIn+1 → 1 frame mini
+});
+
+test("splitMediaClip coupe en deux au frame timeline (null hors bornes)", () => {
+  const [l, r] = splitMediaClip(mc(), 18, "c2")!;
+  assert.deepEqual(l, { id: "c", sourceIn: 0, sourceOut: 8, timelineIn: 10, speed: 1 });
+  assert.deepEqual(r, { id: "c2", sourceIn: 8, sourceOut: 24, timelineIn: 18, speed: 1 });
+  assert.equal(splitMediaClip(mc(), 10, "x"), null); // au bord in
+  assert.equal(splitMediaClip(mc(), 34, "x"), null); // au bord out
+});
+
+test("applyMap : remappage linéaire clampé", () => {
+  const m = { inMin: 0, inMax: 1, outMin: 0, outMax: 255 };
+  assert.equal(applyMap(m, 0.5), 127.5);
+  assert.equal(applyMap(m, 2), 255); // clamp haut
+  assert.equal(applyMap(m, -1), 0); // clamp bas
+  assert.equal(applyMap({ inMin: 5, inMax: 5, outMin: 3, outMax: 9 }, 5), 3); // dégénéré → outMin
 });
 
 test("wouldCycle détecte les cycles de parentage", () => {

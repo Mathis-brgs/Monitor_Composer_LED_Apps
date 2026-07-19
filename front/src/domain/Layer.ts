@@ -10,6 +10,41 @@ export interface Transform { position: Vec3; rotation: Vec3; scale: Vec3; }
 /** Fenêtre d'activité d'un calque sur la timeline, en frames. Actif si `in ≤ frame ≤ out`. */
 export interface Clip { in: number; out: number; }
 
+/**
+ * Clip de montage (edit list, façon Premiere) : portion `[sourceIn, sourceOut[` d'une source,
+ * posée à `timelineIn` sur la timeline, jouée à `speed` (1 = temps réel). Tout en frames.
+ * Distinct de `Clip` (simple fenêtre d'activité) : c'est une décision de montage.
+ */
+export interface MediaClip {
+  id: string;
+  sourceIn: number;
+  sourceOut: number;
+  timelineIn: number;
+  speed: number;
+}
+
+/** Remappage linéaire clampé d'une valeur d'entrée vers une sortie (bindings). */
+export interface MapRange { inMin: number; inMax: number; outMin: number; outMax: number; }
+
+/** Association audio-reactive : une feature d'un calque audio pilote un canal (mixée par-dessus les clés). */
+export interface AudioBinding {
+  sourceLayerId: string;
+  feature: "amplitude" | "band" | "beat";
+  /** Bande de fréquence [minHz, maxHz] quand `feature === "band"`. */
+  bandRange?: [number, number];
+  targetChannel: string;
+  map: MapRange;
+}
+
+/** Association spatiale : une région d'un média pilote un canal (fixture / zone du mur). */
+export interface SpatialBinding {
+  mediaLayerId: string;
+  region: { x: number; y: number; w: number; h: number };
+  feature: "luma" | "color";
+  targetChannel: string;
+  map: MapRange;
+}
+
 interface LayerBase {
   id: string;
   name: string;
@@ -27,6 +62,12 @@ interface LayerBase {
   label?: string;
   /** Parent (transform hérité) : le transform monde = transform monde du parent ∘ transform local. */
   parentId?: string;
+  /** Groupe temporel (montage) : hérite la fenêtre active du clip média parent. */
+  mediaGroupId?: string;
+  /** Bindings audio-reactifs : pilotent un canal depuis une feature d'un calque audio. */
+  audioBindings?: AudioBinding[];
+  /** Bindings spatiaux : pilotent un canal depuis une région d'un média. */
+  spatialBindings?: SpatialBinding[];
 }
 
 export interface ShaderLayer extends LayerBase { type: "shader"; shader: ShaderId; params: Record<string, number>; color: RGB; }
@@ -40,8 +81,8 @@ export type Fill =
 
 export interface ShapeLayer extends LayerBase { type: "shape"; shape: ShapeKind; fill: Fill; /** afficher le wireframe (helper d'édition) dans l'Editor 3D */ showHelper: boolean; }
 export interface GroupLayer extends LayerBase { type: "group"; children: Layer[]; }
-export interface ImageLayer extends LayerBase { type: "image"; assetId: string; }
-export interface VideoLayer extends LayerBase { type: "video"; assetId: string; }
+export interface ImageLayer extends LayerBase { type: "image"; assetId: string; /** Montage (edit list) ; absent = source entière. */ clips?: MediaClip[]; }
+export interface VideoLayer extends LayerBase { type: "video"; assetId: string; /** Montage (edit list) ; absent = source entière. */ clips?: MediaClip[]; }
 
 /**
  * Appareils DMX du show (doc prof) : adressés en canaux bruts sur le 4e
@@ -116,6 +157,69 @@ export function trimIn(clip: Clip, frame: number, dur: number): Clip {
 /** Bouge le bord `out`, garde `out ≥ in` (min 1 frame), borné à `[0, dur]`. */
 export function trimOut(clip: Clip, frame: number, dur: number): Clip {
   return { in: clip.in, out: Math.max(clip.in, clampFrame(frame, dur)) };
+}
+
+// ————————————————————————————— Montage média —————————————————————————————
+
+/** Longueur d'un clip de montage sur la timeline (frames), selon la portion source et la vitesse. */
+export function mediaClipLength(c: MediaClip): number {
+  return Math.max(1, Math.round((c.sourceOut - c.sourceIn) / c.speed));
+}
+
+/** Frame de fin sur la timeline (exclusive). */
+export function mediaClipTimelineOut(c: MediaClip): number {
+  return c.timelineIn + mediaClipLength(c);
+}
+
+/** Le clip de montage est-il actif à ce frame de timeline ? (in inclus, out exclu) */
+export function mediaClipActiveAt(c: MediaClip, frame: number): boolean {
+  return frame >= c.timelineIn && frame < mediaClipTimelineOut(c);
+}
+
+/** Frame de la SOURCE à afficher pour un frame de timeline donné (clampé à la portion). */
+export function mediaSourceFrameAt(c: MediaClip, frame: number): number {
+  const local = (frame - c.timelineIn) * c.speed;
+  return Math.max(c.sourceIn, Math.min(c.sourceOut, c.sourceIn + Math.round(local)));
+}
+
+/** Déplace le clip de `delta` frames sur la timeline (borné à ≥ 0). */
+export function moveMediaClip(c: MediaClip, delta: number): MediaClip {
+  return { ...c, timelineIn: Math.max(0, c.timelineIn + Math.round(delta)) };
+}
+
+/** Rogne le bord d'entrée à `frame` (timeline) : avance la source d'autant, garde ≥ 1 frame de source. */
+export function trimMediaIn(c: MediaClip, frame: number): MediaClip {
+  const t = Math.max(0, Math.min(mediaClipTimelineOut(c) - 1, Math.round(frame)));
+  const deltaSource = Math.round((t - c.timelineIn) * c.speed);
+  const sourceIn = Math.max(0, Math.min(c.sourceOut - 1, c.sourceIn + deltaSource));
+  return { ...c, sourceIn, timelineIn: t };
+}
+
+/** Rogne le bord de sortie à `frame` (timeline) : ajuste `sourceOut`, garde ≥ 1 frame.
+ *  La borne haute réelle (durée de la source décodée) est clampée par l'appelant. */
+export function trimMediaOut(c: MediaClip, frame: number): MediaClip {
+  const t = Math.max(c.timelineIn + 1, Math.round(frame));
+  const sourceOut = c.sourceIn + Math.round((t - c.timelineIn) * c.speed);
+  return { ...c, sourceOut: Math.max(c.sourceIn + 1, sourceOut) };
+}
+
+/** Coupe le clip au frame `frame` (timeline) → `[avant, après]`, ou null si hors bornes.
+ *  `newId` = id du 2e clip (la génération d'id reste hors du domaine pur). */
+export function splitMediaClip(c: MediaClip, frame: number, newId: string): [MediaClip, MediaClip] | null {
+  const f = Math.round(frame);
+  if (f <= c.timelineIn || f >= mediaClipTimelineOut(c)) return null;
+  const cutSource = mediaSourceFrameAt(c, f);
+  return [
+    { ...c, sourceOut: cutSource },
+    { ...c, id: newId, sourceIn: cutSource, timelineIn: f },
+  ];
+}
+
+/** Remappage linéaire clampé d'une valeur via une `MapRange` (pour les bindings). */
+export function applyMap(map: MapRange, v: number): number {
+  if (map.inMax === map.inMin) return map.outMin;
+  const t = Math.max(0, Math.min(1, (v - map.inMin) / (map.inMax - map.inMin)));
+  return map.outMin + t * (map.outMax - map.outMin);
 }
 
 /** Parenter `id` à `parentId` créerait-il un cycle ? (parentId a-t-il `id` comme ancêtre, ou chaîne déjà cyclique) */
