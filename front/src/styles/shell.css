@@ -1638,6 +1638,15 @@ body {
   cursor: ew-resize;
 }
 
+.insp-select {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.insp-select:hover { border-color: var(--acc-border); }
+
 .insp-field__input {
   width: 100%;
   padding: 0;

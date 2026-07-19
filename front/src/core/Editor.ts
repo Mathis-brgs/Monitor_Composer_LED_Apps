@@ -1,9 +1,10 @@
+import { Euler, Matrix4, Quaternion, Vector3 } from "three/webgpu";
 import type { Engine } from "./engine/Engine.ts";
 import {
   makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, findLayer, findGroup, findParent, groupChildren,
-  fixtureDmxChannels, layerActiveAt, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
+  fixtureDmxChannels, layerActiveAt, wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
   type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer,
-  type RGB, type Vec3, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type SpotChannels, type LyreChannels,
+  type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type SpotChannels, type LyreChannels,
 } from "@domain/Layer.ts";
 
 /** Patch de transform : chaque canal (position/rotation/échelle) partiellement modifiable. */
@@ -234,12 +235,17 @@ export class Editor {
     if (!tx && !ty && !tz) return [];
     const frames = new Set<number>();
     for (const t of [tx, ty, tz]) if (t) for (const k of t.keyframes) frames.add(k.frame);
-    const base = findLayer(this._doc.root, id)?.transform.position ?? { x: 0, y: 0, z: 0 };
+    const layer = findLayer(this._doc.root, id);
+    const base = layer?.transform.position ?? { x: 0, y: 0, z: 0 };
+    // parenté : le chemin (positions locales keyframées) est exprimé dans l'espace du parent
+    const parentM = layer?.parentId ? this._worldMatrix(layer.parentId) : null;
     const at = (t: Track | undefined, fallback: number, frame: number): number =>
       t && t.keyframes.length ? sampleKeyframes(t.keyframes, frame) : fallback;
-    return [...frames].sort((a, b) => a - b).map((frame) => ({
-      frame, x: at(tx, base.x, frame), y: at(ty, base.y, frame), z: at(tz, base.z, frame),
-    }));
+    return [...frames].sort((a, b) => a - b).map((frame) => {
+      const local = new Vector3(at(tx, base.x, frame), at(ty, base.y, frame), at(tz, base.z, frame));
+      if (parentM) local.applyMatrix4(parentM);
+      return { frame, x: local.x, y: local.y, z: local.z };
+    });
   }
 
   enterGroup(id: string): void {
@@ -470,6 +476,36 @@ export class Editor {
     this._emit();
   }
 
+  /** Parente un calque (transform hérité), ou le détache (null). Refuse un cycle. */
+  setParent(id: string, parentId: string | null): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || id === parentId) return;
+    if (parentId && wouldCycle(this._doc.root, id, parentId)) return;
+    layer.parentId = parentId || undefined;
+    this._recomputeScene();
+    this._emit();
+  }
+
+  /** Transform monde d'un calque (compose la chaîne de parents). */
+  worldTransform(id: string): Transform {
+    const p = new Vector3(), q = new Quaternion(), s = new Vector3();
+    this._worldMatrix(id).decompose(p, q, s);
+    const e = new Euler().setFromQuaternion(q, "XYZ");
+    return { position: { x: p.x, y: p.y, z: p.z }, rotation: { x: e.x, y: e.y, z: e.z }, scale: { x: s.x, y: s.y, z: s.z } };
+  }
+
+  /** Écrit un transform exprimé en monde → stocke le local (monde ÷ parent). Pour le gizmo d'un calque parenté. */
+  setWorldTransform(id: string, world: Transform): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer) return;
+    let local = this._matrixOf(world);
+    if (layer.parentId) local = this._worldMatrix(layer.parentId).invert().multiply(local);
+    const p = new Vector3(), q = new Quaternion(), s = new Vector3();
+    local.decompose(p, q, s);
+    const e = new Euler().setFromQuaternion(q, "XYZ");
+    this.setTransform(id, { position: { x: p.x, y: p.y, z: p.z }, rotation: { x: e.x, y: e.y, z: e.z }, scale: { x: s.x, y: s.y, z: s.z } });
+  }
+
   /** Paramètre d'effet en direct (uniform) — n'émet pas (seuls canvas + contrôle réagissent). */
   setParam(id: string, key: string, value: number): void {
     const layer = findLayer(this._doc.root, id);
@@ -644,8 +680,28 @@ export class Editor {
     return findGroup(this._doc.root, this._doc.activeGroupId) ?? this._doc.root;
   }
 
+  /** Matrice locale (TRS) d'un transform. */
+  private _matrixOf(t: Transform): Matrix4 {
+    return new Matrix4().compose(
+      new Vector3(t.position.x, t.position.y, t.position.z),
+      new Quaternion().setFromEuler(new Euler(t.rotation.x, t.rotation.y, t.rotation.z, "XYZ")),
+      new Vector3(t.scale.x, t.scale.y, t.scale.z),
+    );
+  }
+
+  /** Matrice monde d'un calque (parentWorld * local), en remontant la chaîne (garde anti-cycle). */
+  private _worldMatrix(id: string, guard: Set<string> = new Set()): Matrix4 {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer) return new Matrix4();
+    const local = this._matrixOf(layer.transform);
+    if (!layer.parentId || guard.has(id)) return local;
+    guard.add(id);
+    return this._worldMatrix(layer.parentId, guard).multiply(local);
+  }
+
   private _toInput(s: ShapeLayer): ShapeInput {
-    return { kind: s.shape, position: s.transform.position, rotation: s.transform.rotation, scale: s.transform.scale, fill: this._resolveFill(s), opacity: s.opacity };
+    const w = this.worldTransform(s.id); // transform monde (parenté inclus) pour le rendu sur le mur
+    return { kind: s.shape, position: w.position, rotation: w.rotation, scale: w.scale, fill: this._resolveFill(s), opacity: s.opacity };
   }
 
   /** Résout le `Fill` (modèle, sérialisable) en `ShapeFill` (pixels prêts pour le rasterizeur). */

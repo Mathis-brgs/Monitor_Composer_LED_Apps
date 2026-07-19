@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   findLayer, findGroup, findParent, groupChildren,
   makeGroup, makeShape, makeShaderLayer, type Document,
-  layerActiveAt, moveClip, trimIn, trimOut,
+  layerActiveAt, moveClip, trimIn, trimOut, wouldCycle,
 } from "./Layer.ts";
 
 function doc(): Document {
@@ -82,4 +82,18 @@ test("trimOut bouge out sans passer sous in ni sortir des bornes", () => {
   assert.deepEqual(trimOut(c, 30, 100), { in: 10, out: 30 });
   assert.deepEqual(trimOut(c, 5, 100), { in: 10, out: 10 }); // min 1 frame
   assert.deepEqual(trimOut(c, 200, 100), { in: 10, out: 100 });
+});
+
+test("wouldCycle détecte les cycles de parentage", () => {
+  const root = makeGroup("root", "R");
+  const a = makeShape("a", "box", "A");
+  const b = makeShape("b", "box", "B");
+  const c = makeShape("c", "box", "C");
+  root.children.push(a, b, c);
+  b.parentId = "a"; // b enfant de a
+  c.parentId = "b"; // c enfant de b (a → b → c)
+  assert.equal(wouldCycle(root, "a", "c"), true);  // parenter a à c fermerait la boucle
+  assert.equal(wouldCycle(root, "a", "b"), true);  // idem
+  assert.equal(wouldCycle(root, "c", "a"), false); // c déjà descendant de a, mais pas de cycle
+  assert.equal(wouldCycle(root, "a", "a"), true);  // soi-même
 });

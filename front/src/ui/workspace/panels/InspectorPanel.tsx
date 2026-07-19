@@ -1,4 +1,4 @@
-import { createMemo, createSignal, Show, type Accessor, type JSX } from "solid-js";
+import { createMemo, createSignal, For, Show, type Accessor, type JSX } from "solid-js";
 import type { Editor } from "@core/Editor.ts";
 import type { Fill, GroupLayer, Layer, LyreLayer, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
 import { fromStore } from "@ui/solid/store.ts";
@@ -44,6 +44,28 @@ function Vec3Field(props: {
   );
 }
 
+/** Sélecteur de parent (transform hérité) : « Aucun » + les autres calques du groupe actif. */
+function ParentField(props: { editor: Editor; node: Layer; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
+  const options = createMemo(() => { changed(); return editor.children.filter((l) => l.id !== node.id); });
+  const current = createMemo(() => { changed(); return node.parentId ?? ""; });
+  return (
+    <select
+      class="insp-field insp-field--editable insp-control insp-select"
+      value={current()}
+      onChange={(e) => {
+        editor.setParent(node.id, e.currentTarget.value || null);
+        e.currentTarget.value = node.parentId ?? ""; // resync si refusé (cycle)
+      }}
+    >
+      <option value="">Aucun</option>
+      <For each={options()}>
+        {(l) => <option value={l.id}>{l.name}</option>}
+      </For>
+    </select>
+  );
+}
+
 /** Inspecteur : props du nœud sélectionné, contextuelles à son type. Reconstruit à la sélection. */
 function Inspector(props: { editor: Editor }): JSX.Element {
   const editor = props.editor;
@@ -66,6 +88,7 @@ function NodeBody(props: { editor: Editor; node: Layer | null; changed: Accessor
       <ObjectHeader node={node} />
       <Section title="Général">
         <Row label="Nom"><TextField value={node.name} onInput={(v) => editor.setName(node.id, v)} /></Row>
+        <Row label="Parent"><ParentField editor={editor} node={node} changed={changed} /></Row>
       </Section>
       <Show when={node.type === "shape"}>
         <ShapeBody editor={editor} node={node as ShapeLayer} changed={changed} />

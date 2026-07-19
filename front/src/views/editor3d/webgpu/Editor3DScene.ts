@@ -30,7 +30,7 @@ import { positionWorld, texture } from "three/tsl";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { TransformControls } from "three/addons/controls/TransformControls.js";
 import type { Editor } from "@core/Editor.ts";
-import { fillPreviewColor, type ShapeKind, type ShapeLayer } from "@domain/Layer.ts";
+import { fillPreviewColor, type ShapeKind, type ShapeLayer, type Transform } from "@domain/Layer.ts";
 import { LED_FILL } from "@core/engine/led.ts";
 
 const N = 128;
@@ -261,7 +261,7 @@ export class Editor3DScene {
       // cible de raycast : volume plein invisible (même si le helper est masqué)
       const pickGeo = unitGeometry(s.shape);
       const pick = new Mesh(pickGeo, this._pickMat);
-      applyTransform(pick, s);
+      applyTransform(pick, this._editor.worldTransform(s.id));
       pick.userData.id = s.id;
       this._picks.add(pick);
 
@@ -273,7 +273,7 @@ export class Editor3DScene {
       const preview = fillPreviewColor(s.fill);
       const color = selected ? ACCENT : new Color(preview.r, preview.g, preview.b);
       const mesh = new LineSegments(wf, helperMaterial(color, selected ? HELPER_LIT : HELPER_DIM));
-      applyTransform(mesh, s);
+      applyTransform(mesh, this._editor.worldTransform(s.id));
       this._objects.add(mesh);
       unit.dispose();
     }
@@ -392,7 +392,7 @@ export class Editor3DScene {
     const isFixture = sel !== null && (sel.type === "spot" || sel.type === "lyre") && tool === "translate";
     const active = sel !== null && sel.visible && (isShape || isFixture);
     if (active && sel) {
-      const t = sel.transform;
+      const t = this._editor.worldTransform(sel.id); // gizmo en espace monde (parenté inclus)
       this._proxy.position.set(t.position.x, t.position.y, t.position.z);
       this._proxy.rotation.set(t.rotation.x, t.rotation.y, t.rotation.z);
       this._proxy.scale.set(t.scale.x, t.scale.y, t.scale.z);
@@ -407,16 +407,14 @@ export class Editor3DScene {
   private _commitGizmo(): void {
     const sel = this._editor.selected;
     if (!sel) return;
+    if (sel.type !== "shape" && sel.type !== "spot" && sel.type !== "lyre") return;
     const p = this._proxy;
-    if (sel.type === "shape") {
-      this._editor.setTransform(sel.id, {
-        position: { x: p.position.x, y: p.position.y, z: p.position.z },
-        rotation: { x: p.rotation.x, y: p.rotation.y, z: p.rotation.z },
-        scale: { x: p.scale.x, y: p.scale.y, z: p.scale.z },
-      });
-    } else if (sel.type === "spot" || sel.type === "lyre") {
-      this._editor.setTransform(sel.id, { position: { x: p.position.x, y: p.position.y, z: p.position.z } });
-    }
+    // le proxy est en monde → setWorldTransform reconvertit en local (parenté incluse)
+    this._editor.setWorldTransform(sel.id, {
+      position: { x: p.position.x, y: p.position.y, z: p.position.z },
+      rotation: { x: p.rotation.x, y: p.rotation.y, z: p.rotation.z },
+      scale: { x: p.scale.x, y: p.scale.y, z: p.scale.z },
+    });
   }
 
   /** clic (pas un drag) → sélectionne la shape sous le curseur, sinon désélectionne. */
@@ -447,8 +445,7 @@ export class Editor3DScene {
   }
 }
 
-function applyTransform(o: Object3D, s: ShapeLayer): void {
-  const t = s.transform;
+function applyTransform(o: Object3D, t: Transform): void {
   o.position.set(t.position.x, t.position.y, t.position.z);
   o.rotation.set(t.rotation.x, t.rotation.y, t.rotation.z);
   o.scale.set(t.scale.x, t.scale.y, t.scale.z);
