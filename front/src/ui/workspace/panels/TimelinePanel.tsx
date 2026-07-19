@@ -115,6 +115,26 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
   /** PropRow "virtuel" mono-canal pour un axe (réutilise tous les handlers de propriété). */
   const axProp = (p: PropRow, ax: AxisRow): PropRow =>
     ({ label: `${p.label} ${ax.label}`, channels: [ax.channel], animated: ax.animated, frames: ax.frames, interps: ax.interps, axes: [] });
+
+  // Contrainte de proportions (cadenas/chaîne AE) : éditer un axe applique le ratio aux autres.
+  const [linkedProps, setLinkedProps] = createSignal<Set<string>>(new Set());
+  const isPropLinked = (layerId: string, label: string): boolean => linkedProps().has(`${layerId}|${label}`);
+  const togglePropLink = (layerId: string, label: string): void => {
+    const n = new Set(linkedProps());
+    const k = `${layerId}|${label}`;
+    if (n.has(k)) n.delete(k);
+    else n.add(k);
+    setLinkedProps(n);
+  };
+  /** Édite un canal en gardant les proportions du groupe (ratio ; uniforme si l'ancienne valeur est 0). */
+  const applyLinked = (layerId: string, channels: string[], edited: string, value: number): void => {
+    const old = editor.readChannel(layerId, edited) ?? 0;
+    const ratio = old !== 0 ? value / old : null;
+    for (const ch of channels) {
+      if (ch === edited) editor.setChannelValue(layerId, ch, value);
+      else editor.setChannelValue(layerId, ch, ratio !== null ? (editor.readChannel(layerId, ch) ?? 0) * ratio : value);
+    }
+  };
   // Presse-papier de keyframes (offset relatif au 1er frame copié).
   let clipboard: { layerId: string; channels: string[]; offset: number; values: number[]; interp: Interp }[] = [];
 
@@ -506,16 +526,35 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
     </>
   );
 
-  // Valeur éditable d'une propriété MONO-canal (axe séparé, opacité, param) — édite depuis les pistes.
+  // Valeur éditable d'une propriété : mono-canal (opacité/param/axe) → 1 champ ; multi-canal LIÉ → 1 champ
+  // partagé qui édite tous les axes proportionnellement (façon cadenas Échelle AE).
   const propValue = (row: LayerRow, p: PropRow): JSX.Element => (
-    <Show when={p.channels.length === 1}>
+    <Show when={p.channels.length === 1 || isPropLinked(row.layerId, p.label)}>
       <NumberField
         class="seq__val"
         value={(frame(), version(), editor.readChannel(row.layerId, p.channels[0]) ?? 0)}
         step={0.01}
-        onInput={(v) => editor.setChannelValue(row.layerId, p.channels[0], v)}
+        onInput={(v) =>
+          p.channels.length === 1
+            ? editor.setChannelValue(row.layerId, p.channels[0], v)
+            : applyLinked(row.layerId, p.channels, p.channels[0], v)
+        }
       />
     </Show>
+  );
+
+  // Valeur éditable d'un axe séparé : contraint les autres axes si la propriété est liée.
+  const axisValue = (row: LayerRow, p: PropRow, ax: AxisRow): JSX.Element => (
+    <NumberField
+      class="seq__val"
+      value={(frame(), version(), editor.readChannel(row.layerId, ax.channel) ?? 0)}
+      step={0.01}
+      onInput={(v) =>
+        isPropLinked(row.layerId, p.label)
+          ? applyLinked(row.layerId, p.channels, ax.channel, v)
+          : editor.setChannelValue(row.layerId, ax.channel, v)
+      }
+    />
   );
 
   return (
@@ -600,6 +639,13 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
                                   data-tooltip={isPropExpanded(row.layerId, p.label) ? "Lier les dimensions" : "Séparer les dimensions"}
                                   onClick={(e) => { e.stopPropagation(); togglePropExpand(row.layerId, p.label); }}
                                 />
+                                <button
+                                  type="button"
+                                  class="seq__link"
+                                  classList={{ "seq__link--on": isPropLinked(row.layerId, p.label) }}
+                                  data-tooltip="Contraindre les proportions (X/Y/Z liés)"
+                                  onClick={(e) => { e.stopPropagation(); togglePropLink(row.layerId, p.label); }}
+                                >{createIcon("link", { size: 12 })}</button>
                               </Show>
                               <span class="seq__name-label">{p.label}</span>
                               {propValue(row, p)}
@@ -610,7 +656,7 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
                                   <div class="seq__name seq__name--axis">
                                     {propCtl(row, axProp(p, ax))}
                                     <span class="seq__name-label">{p.label} {ax.label}</span>
-                                    {propValue(row, axProp(p, ax))}
+                                    {axisValue(row, p, ax)}
                                   </div>
                                 )}
                               </For>

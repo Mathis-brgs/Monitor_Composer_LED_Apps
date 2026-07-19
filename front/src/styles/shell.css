@@ -847,6 +847,24 @@ body {
 .seq__subtwirl:hover { color: var(--txt); }
 .seq__subtwirl--open::before { transform: translate(-50%, -50%) rotate(90deg); }
 
+/* cadenas/chaîne : contrainte de proportions (X/Y/Z liés) */
+.seq__link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  color: var(--faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__link:hover { color: var(--txt); }
+.seq__link--on { color: var(--acc); }
+
 .seq__name--axis,
 .seq__lane--axis {
   height: 22px;
