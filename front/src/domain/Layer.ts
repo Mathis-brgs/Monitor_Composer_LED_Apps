@@ -7,6 +7,9 @@ export interface Vec3 { x: number; y: number; z: number; }
 /** Transform façon Blender : position, rotation (Euler XYZ en radians), échelle — par axe. */
 export interface Transform { position: Vec3; rotation: Vec3; scale: Vec3; }
 
+/** Fenêtre d'activité d'un calque sur la timeline, en frames. Actif si `in ≤ frame ≤ out`. */
+export interface Clip { in: number; out: number; }
+
 interface LayerBase {
   id: string;
   name: string;
@@ -14,6 +17,14 @@ interface LayerBase {
   opacity: number;
   blend: BlendMode;
   transform: Transform;
+  /** Fenêtre d'activité (clip). Absent = pleine durée (toujours actif). */
+  clip?: Clip;
+  /** Solo : si au moins un calque du groupe est en solo, seuls les solos rendent. */
+  solo?: boolean;
+  /** Verrou : non sélectionnable / non éditable tant que verrouillé. */
+  locked?: boolean;
+  /** Couleur de label (hex) pour le tri visuel. Absent = pas de label. */
+  label?: string;
 }
 
 export interface ShaderLayer extends LayerBase { type: "shader"; shader: ShaderId; params: Record<string, number>; color: RGB; }
@@ -77,6 +88,32 @@ export function fillPreviewColor(fill: Fill): RGB {
     case "image":
     case "video": return { r: 1, g: 1, b: 1 };
   }
+}
+
+// ————————————————————————————————— Clips —————————————————————————————————
+
+/** Le calque est-il actif à ce frame ? Pas de clip → toujours vrai. */
+export function layerActiveAt(clip: Clip | undefined, frame: number): boolean {
+  return !clip || (frame >= clip.in && frame <= clip.out);
+}
+
+const clampFrame = (f: number, dur: number): number => Math.max(0, Math.min(dur, Math.round(f)));
+
+/** Décale in+out de `delta` frames en gardant la longueur, borné à `[0, dur]`. */
+export function moveClip(clip: Clip, delta: number, dur: number): Clip {
+  const len = clip.out - clip.in;
+  const start = Math.max(0, Math.min(dur - len, clip.in + Math.round(delta)));
+  return { in: start, out: start + len };
+}
+
+/** Bouge le bord `in`, garde `in ≤ out` (min 1 frame), borné à `[0, dur]`. */
+export function trimIn(clip: Clip, frame: number, dur: number): Clip {
+  return { in: Math.min(clip.out, clampFrame(frame, dur)), out: clip.out };
+}
+
+/** Bouge le bord `out`, garde `out ≥ in` (min 1 frame), borné à `[0, dur]`. */
+export function trimOut(clip: Clip, frame: number, dur: number): Clip {
+  return { in: clip.in, out: Math.max(clip.in, clampFrame(frame, dur)) };
 }
 
 /** Document = arbre (racine) + groupe où l'on se trouve + sélection. */

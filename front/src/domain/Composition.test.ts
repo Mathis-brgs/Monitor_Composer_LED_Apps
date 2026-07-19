@@ -31,6 +31,13 @@ test("sampleKeyframes : hold garde la valeur de gauche", () => {
   assert.equal(sampleKeyframes(kfs, 20), 9);
 });
 
+test("sampleKeyframes : bézier = smoothstep (ease aux extrémités, milieu inchangé)", () => {
+  const kfs: Keyframe[] = [{ frame: 0, value: 0, interp: "bezier" }, kf(10, 10)];
+  assert.equal(sampleKeyframes(kfs, 5), 5);            // smoothstep(0.5) = 0.5
+  assert.ok(Math.abs(sampleKeyframes(kfs, 2.5) - 1.5625) < 1e-6); // smoothstep(0.25) = 0.15625
+  assert.ok(sampleKeyframes(kfs, 2.5) < 2.5);          // ease-in : sous la droite linéaire
+});
+
 test("upsertKeyframe : insère trié, remplace au même frame", () => {
   let kfs: Keyframe[] = [];
   kfs = upsertKeyframe(kfs, kf(20, 1));

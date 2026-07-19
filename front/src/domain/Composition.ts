@@ -1,4 +1,4 @@
-export type Interp = "linear" | "hold";
+export type Interp = "linear" | "hold" | "bezier";
 
 /** Une clé : valeur d'un canal scalaire à un frame, + interpolation VERS la clé suivante. */
 export interface Keyframe {
@@ -37,7 +37,9 @@ export function sampleKeyframes(kfs: readonly Keyframe[], frame: number): number
     const b = kfs[i + 1];
     if (frame >= a.frame && frame < b.frame) {
       if (a.interp === "hold") return a.value;
-      const t = (frame - a.frame) / (b.frame - a.frame);
+      const raw = (frame - a.frame) / (b.frame - a.frame);
+      // bézier (auto-ease) = smoothstep ; les tangentes éditables viendront avec le graph editor (slice 5)
+      const t = a.interp === "bezier" ? raw * raw * (3 - 2 * raw) : raw;
       return a.value + (b.value - a.value) * t;
     }
   }
