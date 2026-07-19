@@ -3,8 +3,10 @@ import {
   Color,
   ConeGeometry,
   CylinderGeometry,
+  BufferGeometry,
   Group,
   InstancedMesh,
+  Line,
   LineBasicNodeMaterial,
   LineSegments,
   Matrix4,
@@ -12,6 +14,7 @@ import {
   MeshBasicNodeMaterial,
   Object3D,
   PerspectiveCamera,
+  Plane,
   PlaneGeometry,
   Raycaster,
   Scene,
@@ -20,7 +23,6 @@ import {
   Vector2,
   Vector3,
   WireframeGeometry,
-  type BufferGeometry,
   type Texture,
   type WebGPURenderer,
 } from "three/webgpu";
@@ -72,6 +74,13 @@ export class Editor3DScene {
   private readonly _proxy = new Object3D();
   private readonly _objects = new Group();   // helpers wireframe (visibles + showHelper)
   private readonly _picks = new Group();      // cibles de raycast (invisibles), une par shape visible
+  private readonly _path = new Group();       // motion path du calque sélectionné (ligne + poignées)
+  private readonly _handleGeo = new SphereGeometry(0.03, 12, 8);
+  private readonly _handleMat: MeshBasicNodeMaterial;
+  private _handleDrag: { id: string; frame: number; z: number } | null = null;
+  private readonly _onDownCapture: (e: PointerEvent) => void;
+  private readonly _plane = new Plane();
+  private readonly _hit = new Vector3();
   private readonly _pickMat: MeshBasicNodeMaterial;
   private readonly _leds: InstancedMesh;
   private readonly _raycaster = new Raycaster();
@@ -128,6 +137,13 @@ export class Editor3DScene {
     this._pickMat.depthWrite = false;
     this._scene.add(this._picks);
 
+    // Motion path : poignées de keyframes (petites sphères accent), rendues par-dessus le reste.
+    this._handleMat = new MeshBasicNodeMaterial();
+    this._handleMat.color = ACCENT;
+    this._handleMat.depthTest = false;
+    this._path.renderOrder = 2;
+    this._scene.add(this._path);
+
     // Gizmo de transform : accroché à un proxy positionné sur l'objet sélectionné.
     this._scene.add(this._proxy);
     this._gizmo = new TransformControls(this._camera, renderer.domElement);
@@ -157,6 +173,9 @@ export class Editor3DScene {
     const dom = renderer.domElement;
     this._onDown = (e: PointerEvent): void => { this._downX = e.clientX; this._downY = e.clientY; };
     this._onUp = (e: PointerEvent): void => this._pick(e);
+    // Phase capture : intercepte un clic sur une poignée de motion path AVANT l'orbite / la sélection.
+    this._onDownCapture = (e: PointerEvent): void => this._beginHandleDrag(e);
+    dom.addEventListener("pointerdown", this._onDownCapture, true);
     dom.addEventListener("pointerdown", this._onDown);
     dom.addEventListener("pointerup", this._onUp);
 
@@ -199,10 +218,14 @@ export class Editor3DScene {
     this._unsub();
     window.removeEventListener("keydown", this._onKey);
     const dom = this._renderer.domElement;
+    dom.removeEventListener("pointerdown", this._onDownCapture, true);
     dom.removeEventListener("pointerdown", this._onDown);
     dom.removeEventListener("pointerup", this._onUp);
     this._clearGroup(this._objects);
     this._clearGroup(this._picks);
+    this._clearPath();
+    this._handleGeo.dispose();
+    this._handleMat.dispose();
     this._pickMat.dispose();
     this._gizmo.detach();
     this._gizmo.dispose();
@@ -273,7 +296,88 @@ export class Editor3DScene {
       marker.position.set(p.x, p.y, p.z);
       this._objects.add(marker);
     }
+    this._buildPath(selectedId);
     this._syncGizmo();
+  }
+
+  /** Motion path du calque sélectionné : polyline reliant ses positions keyframées + une poignée par clé. */
+  private _buildPath(selectedId: string | null): void {
+    this._clearPath();
+    if (!selectedId) return;
+    const points = this._editor.motionPath(selectedId);
+    if (points.length === 0) return;
+
+    const vecs = points.map((p) => new Vector3(p.x, p.y, p.z));
+    if (vecs.length >= 2) {
+      const line = new Line(new BufferGeometry().setFromPoints(vecs), pathLineMaterial());
+      line.renderOrder = 2;
+      this._path.add(line);
+    }
+    for (const p of points) {
+      const handle = new Mesh(this._handleGeo, this._handleMat);
+      handle.position.set(p.x, p.y, p.z);
+      handle.renderOrder = 3;
+      handle.userData.id = selectedId;
+      handle.userData.frame = p.frame;
+      this._path.add(handle);
+    }
+  }
+
+  /** Début du drag d'une poignée de keyframe (phase capture → coupe orbite + sélection). */
+  private _beginHandleDrag(e: PointerEvent): void {
+    if (this._path.children.length === 0) return;
+    const rect = this._renderer.domElement.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    this._ndc.set(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this._raycaster.setFromCamera(this._ndc, this._camera);
+    const handles = this._path.children.filter((c) => c.userData.frame !== undefined);
+    const hits = this._raycaster.intersectObjects(handles, false);
+    if (hits.length === 0) return;
+
+    e.stopImmediatePropagation(); // pas d'orbite ni de sélection
+    const h = hits[0].object;
+    this._handleDrag = { id: h.userData.id as string, frame: h.userData.frame as number, z: h.position.z };
+    this._controls.enabled = false;
+    const move = (ev: PointerEvent): void => this._dragHandle(ev);
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      this._handleDrag = null;
+      this._controls.enabled = true;
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  /** Déplace la poignée dans le plan du mur (z constant) → écrit la valeur des clés position.x/y à ce frame. */
+  private _dragHandle(e: PointerEvent): void {
+    const drag = this._handleDrag;
+    if (!drag) return;
+    const rect = this._renderer.domElement.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    this._ndc.set(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this._raycaster.setFromCamera(this._ndc, this._camera);
+    this._plane.set(new Vector3(0, 0, 1), -drag.z); // plan du mur à la profondeur de la clé
+    if (!this._raycaster.ray.intersectPlane(this._plane, this._hit)) return;
+    this._editor.setKeyframeValue(drag.id, "position.x", drag.frame, this._hit.x);
+    this._editor.setKeyframeValue(drag.id, "position.y", drag.frame, this._hit.y);
+  }
+
+  private _clearPath(): void {
+    for (const child of this._path.children) {
+      if (child instanceof Line) {
+        child.geometry.dispose();
+        (child.material as LineBasicNodeMaterial).dispose();
+      }
+      // les poignées (Mesh) partagent _handleGeo/_handleMat → pas de dispose ici
+    }
+    this._path.clear();
   }
 
   /**
@@ -317,7 +421,7 @@ export class Editor3DScene {
 
   /** clic (pas un drag) → sélectionne la shape sous le curseur, sinon désélectionne. */
   private _pick(e: PointerEvent): void {
-    if (this._dragging) return; // relâché après un drag de gizmo
+    if (this._dragging || this._handleDrag) return; // relâché après un drag de gizmo / de poignée
     if (Math.hypot(e.clientX - this._downX, e.clientY - this._downY) > CLICK_PX) return; // c'était un orbit
     const rect = this._renderer.domElement.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
@@ -361,6 +465,16 @@ function helperMaterial(color: Color, opacity: number): LineBasicNodeMaterial {
   m.color = color;
   m.transparent = true;
   m.opacity = opacity;
+  return m;
+}
+
+/** Ligne du motion path : accent, semi-transparente, rendue par-dessus le mur. */
+function pathLineMaterial(): LineBasicNodeMaterial {
+  const m = new LineBasicNodeMaterial();
+  m.color = ACCENT;
+  m.transparent = true;
+  m.opacity = 0.7;
+  m.depthTest = false;
   return m;
 }
 
