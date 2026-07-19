@@ -25,7 +25,8 @@ function clampPps(v: number): number {
   return Math.max(MIN_PPS, Math.min(MAX_PPS, v));
 }
 
-interface PropRow { label: string; channels: string[]; animated: boolean; frames: number[]; interps: Interp[] }
+interface AxisRow { channel: string; label: string; animated: boolean; frames: number[]; interps: Interp[] }
+interface PropRow { label: string; channels: string[]; animated: boolean; frames: number[]; interps: Interp[]; axes: AxisRow[] }
 interface LayerRow { layerId: string; name: string; clip: Clip | undefined; props: PropRow[]; keyframes: number[]; solo: boolean; locked: boolean; label: string | undefined }
 
 const LABEL_COLORS = ["#ff8a3d", "#7fd88a", "#5a9bff", "#c98bff", "#ffd24a", "#ff6b6b", "#4ad9d9", "#9aa0a6"];
@@ -62,7 +63,20 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
           for (const t of chanTracks) { const k = t.keyframes.find((x) => x.frame === f); if (k) return k.interp; }
           return "linear" as Interp;
         });
-        return { label: p.label, channels: p.channels, animated: chanTracks.length > 0, frames, interps };
+        // sous-pistes par axe (X/Y/Z) pour les propriétés multi-canaux (séparer les dimensions)
+        const axes: AxisRow[] = p.channels.length > 1
+          ? p.channels.map((ch) => {
+              const t = chanTracks.find((tt) => tt.channel === ch);
+              return {
+                channel: ch,
+                label: channelShort(ch),
+                animated: !!t,
+                frames: t ? t.keyframes.map((k) => k.frame) : [],
+                interps: t ? t.keyframes.map((k) => k.interp) : [],
+              };
+            })
+          : [];
+        return { label: p.label, channels: p.channels, animated: chanTracks.length > 0, frames, interps, axes };
       });
       const keyframes = [...new Set(props.flatMap((p) => p.frames))].sort((a, b) => a - b);
       return { layerId: l.id, name: l.name, clip: l.clip, props, keyframes, solo: !!l.solo, locked: !!l.locked, label: l.label };
@@ -88,6 +102,19 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
   const [ctxMenu, setCtxMenu] = createSignal<{ layerId: string; channels: string[]; frame: number; x: number; y: number } | null>(null);
   // Palette de couleur de label (clic sur la pastille d'un calque).
   const [labelPalette, setLabelPalette] = createSignal<{ layerId: string; x: number; y: number } | null>(null);
+  // Sous-pistes par axe (X/Y/Z) dépliées, clé = `layerId|label`.
+  const [expandedProps, setExpandedProps] = createSignal<Set<string>>(new Set());
+  const isPropExpanded = (layerId: string, label: string): boolean => expandedProps().has(`${layerId}|${label}`);
+  const togglePropExpand = (layerId: string, label: string): void => {
+    const n = new Set(expandedProps());
+    const k = `${layerId}|${label}`;
+    if (n.has(k)) n.delete(k);
+    else n.add(k);
+    setExpandedProps(n);
+  };
+  /** PropRow "virtuel" mono-canal pour un axe (réutilise tous les handlers de propriété). */
+  const axProp = (p: PropRow, ax: AxisRow): PropRow =>
+    ({ label: `${p.label} ${ax.label}`, channels: [ax.channel], animated: ax.animated, frames: ax.frames, interps: ax.interps, axes: [] });
   // Presse-papier de keyframes (offset relatif au 1er frame copié).
   let clipboard: { layerId: string; channels: string[]; offset: number; values: number[]; interp: Interp }[] = [];
 
@@ -421,6 +448,64 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
     window.addEventListener("pointerup", up);
   };
 
+  // Contrôles d'une propriété (chrono + navigateur) — réutilisé pour l'agrégat ET chaque axe.
+  const propCtl = (row: LayerRow, p: PropRow): JSX.Element => (
+    <div class="seq__prop-ctl">
+      <button
+        type="button"
+        class="seq__stopwatch"
+        classList={{ "seq__stopwatch--on": p.animated }}
+        data-tooltip={p.animated ? "Ne plus animer (supprime les clés)" : "Animer (chrono)"}
+        onClick={(e) => onStopwatch(e, row, p)}
+      >
+        {createIcon("stopwatch", { size: 15 })}
+      </button>
+      <Show when={p.animated}>
+        <span class="seq__kf-nav">
+          <button type="button" class="seq__kf-nav-arrow seq__kf-nav-arrow--prev" data-tooltip="Clé précédente" onClick={(e) => gotoPrevKey(e, p)} />
+          <button
+            type="button"
+            class="seq__kf-nav-dot"
+            classList={{ "seq__kf-nav-dot--on": p.frames.includes(frame()) }}
+            data-tooltip="Ajouter / retirer une clé (frame courant)"
+            onClick={(e) => toggleKeyHere(e, row, p)}
+          />
+          <button type="button" class="seq__kf-nav-arrow seq__kf-nav-arrow--next" data-tooltip="Clé suivante" onClick={(e) => gotoNextKey(e, p)} />
+        </span>
+      </Show>
+    </div>
+  );
+
+  // Contenu d'une lane de propriété (liaisons + diamants) — réutilisé pour l'agrégat ET chaque axe.
+  const kfLane = (row: LayerRow, p: PropRow): JSX.Element => (
+    <>
+      <For each={p.frames.slice(0, -1)}>
+        {(f, i) => (
+          <div class="seq__kf-link" style={{ left: `${framesToPx(f)}px`, width: `${framesToPx(p.frames[i() + 1] - f)}px` }} />
+        )}
+      </For>
+      <For each={p.frames}>
+        {(f, i) => (
+          <div
+            class="seq__kf"
+            classList={{
+              "seq__kf--selected": isSelected(row.layerId, f, p.channels),
+              "seq__kf--hold": p.interps[i()] === "hold",
+              "seq__kf--bezier": p.interps[i()] === "bezier",
+            }}
+            style={{ left: `${framesToPx(f)}px` }}
+            data-layer={row.layerId}
+            data-frame={f}
+            data-channels={p.channels.join(",")}
+            onPointerDown={(e) => onKfDown(e, row, p, f)}
+            onDblClick={(e) => onKfDblClick(e, row, p, f)}
+            onContextMenu={(e) => onKfContext(e, row, p, f)}
+          />
+        )}
+      </For>
+    </>
+  );
+
   return (
     <div class="seq">
       <div class="seq__cols">
@@ -485,33 +570,31 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
                     <Show when={isExpanded(row.layerId)}>
                       <For each={row.props}>
                         {(p) => (
-                          <div class="seq__name seq__name--child">
-                            <div class="seq__prop-ctl">
-                              <button
-                                type="button"
-                                class="seq__stopwatch"
-                                classList={{ "seq__stopwatch--on": p.animated }}
-                                data-tooltip={p.animated ? "Ne plus animer (supprime les clés)" : "Animer (chrono)"}
-                                onClick={(e) => onStopwatch(e, row, p)}
-                              >
-                                {createIcon("stopwatch", { size: 15 })}
-                              </button>
-                              <Show when={p.animated}>
-                                <span class="seq__kf-nav">
-                                  <button type="button" class="seq__kf-nav-arrow seq__kf-nav-arrow--prev" data-tooltip="Clé précédente" onClick={(e) => gotoPrevKey(e, p)} />
-                                  <button
-                                    type="button"
-                                    class="seq__kf-nav-dot"
-                                    classList={{ "seq__kf-nav-dot--on": p.frames.includes(frame()) }}
-                                    data-tooltip="Ajouter / retirer une clé (frame courant)"
-                                    onClick={(e) => toggleKeyHere(e, row, p)}
-                                  />
-                                  <button type="button" class="seq__kf-nav-arrow seq__kf-nav-arrow--next" data-tooltip="Clé suivante" onClick={(e) => gotoNextKey(e, p)} />
-                                </span>
+                          <>
+                            <div class="seq__name seq__name--child">
+                              {propCtl(row, p)}
+                              <Show when={p.axes.length > 0}>
+                                <button
+                                  type="button"
+                                  class="seq__subtwirl"
+                                  classList={{ "seq__subtwirl--open": isPropExpanded(row.layerId, p.label) }}
+                                  data-tooltip="Séparer les dimensions"
+                                  onClick={(e) => { e.stopPropagation(); togglePropExpand(row.layerId, p.label); }}
+                                />
                               </Show>
+                              <span class="seq__name-label">{p.label}</span>
                             </div>
-                            <span class="seq__name-label">{p.label}</span>
-                          </div>
+                            <Show when={p.axes.length > 0 && isPropExpanded(row.layerId, p.label)}>
+                              <For each={p.axes}>
+                                {(ax) => (
+                                  <div class="seq__name seq__name--axis">
+                                    {propCtl(row, axProp(p, ax))}
+                                    <span class="seq__name-label">{p.label} {ax.label}</span>
+                                  </div>
+                                )}
+                              </For>
+                            </Show>
+                          </>
                         )}
                       </For>
                     </Show>
@@ -568,35 +651,20 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
                       <Show when={isExpanded(row.layerId)}>
                         <For each={row.props}>
                           {(p) => (
-                            <div class="seq__lane seq__lane--child" onDblClick={(e) => onPropLaneDblClick(e, row, p)}>
-                              <For each={p.frames.slice(0, -1)}>
-                                {(f, i) => (
-                                  <div
-                                    class="seq__kf-link"
-                                    style={{ left: `${framesToPx(f)}px`, width: `${framesToPx(p.frames[i() + 1] - f)}px` }}
-                                  />
-                                )}
-                              </For>
-                              <For each={p.frames}>
-                                {(f, i) => (
-                                  <div
-                                    class="seq__kf"
-                                    classList={{
-                                      "seq__kf--selected": isSelected(row.layerId, f, p.channels),
-                                      "seq__kf--hold": p.interps[i()] === "hold",
-                                      "seq__kf--bezier": p.interps[i()] === "bezier",
-                                    }}
-                                    style={{ left: `${framesToPx(f)}px` }}
-                                    data-layer={row.layerId}
-                                    data-frame={f}
-                                    data-channels={p.channels.join(",")}
-                                    onPointerDown={(e) => onKfDown(e, row, p, f)}
-                                    onDblClick={(e) => onKfDblClick(e, row, p, f)}
-                                    onContextMenu={(e) => onKfContext(e, row, p, f)}
-                                  />
-                                )}
-                              </For>
-                            </div>
+                            <>
+                              <div class="seq__lane seq__lane--child" onDblClick={(e) => onPropLaneDblClick(e, row, p)}>
+                                {kfLane(row, p)}
+                              </div>
+                              <Show when={p.axes.length > 0 && isPropExpanded(row.layerId, p.label)}>
+                                <For each={p.axes}>
+                                  {(ax) => (
+                                    <div class="seq__lane seq__lane--axis" onDblClick={(e) => onPropLaneDblClick(e, row, axProp(p, ax))}>
+                                      {kfLane(row, axProp(p, ax))}
+                                    </div>
+                                  )}
+                                </For>
+                              </Show>
+                            </>
                           )}
                         </For>
                       </Show>

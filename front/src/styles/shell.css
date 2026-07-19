@@ -817,6 +817,54 @@ body {
   background: color-mix(in srgb, var(--line-2) 40%, transparent);
 }
 
+/* — Séparer les dimensions : sous-twirl sur les propriétés multi-canaux + sous-rangées d'axe — */
+.seq__subtwirl {
+  position: relative;
+  flex: 0 0 auto;
+  width: 12px;
+  height: 14px;
+  padding: 0;
+  color: var(--faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__subtwirl::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 0;
+  height: 0;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-left: 4px solid currentColor;
+  transition: transform 0.1s ease;
+}
+
+.seq__subtwirl:hover { color: var(--txt); }
+.seq__subtwirl--open::before { transform: translate(-50%, -50%) rotate(90deg); }
+
+.seq__name--axis,
+.seq__lane--axis {
+  height: 22px;
+}
+
+.seq__name--axis {
+  padding-left: var(--space-20, 20px);
+}
+
+.seq__name--axis .seq__name-label {
+  color: var(--faint);
+  font-size: var(--fs-2, 10px);
+}
+
+.seq__lane--axis {
+  background: color-mix(in srgb, var(--line-2) 60%, transparent);
+}
+
 /* — Contrôles de propriété (chrono + navigateur de keyframe), façon After Effects — */
 .seq__prop-ctl {
   display: inline-flex;
