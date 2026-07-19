@@ -134,6 +134,7 @@ export interface NumberFieldProps {
   format?: (v: number) => string;   // défaut : 2 décimales
   step?: number;                    // sensibilité du drag (défaut 0.01/px)
   onInput?: (v: number) => void;
+  class?: string;                   // classe additionnelle (ex. variante compacte timeline)
 }
 
 /**
@@ -195,7 +196,7 @@ export function NumberField(props: NumberFieldProps): JSX.Element {
   };
 
   return (
-    <div ref={el} class="insp-field insp-field--editable insp-control" onPointerDown={onPointerDown}>
+    <div ref={el} class={`insp-field insp-field--editable insp-control ${props.class ?? ""}`} onPointerDown={onPointerDown}>
       <Show when={editing()} fallback={format(v())}>
         <input
           ref={input}

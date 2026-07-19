@@ -1056,6 +1056,7 @@ body {
 .seq__label-chip--set { width: 6px; }
 .seq__label-chip:hover { filter: brightness(1.3); }
 
+.seq__eye,
 .seq__solo,
 .seq__lock {
   flex: 0 0 auto;
@@ -1077,10 +1078,28 @@ body {
   border-radius: 50%;
 }
 
+.seq__eye:hover,
 .seq__solo:hover,
 .seq__lock:hover { color: var(--txt); }
+.seq__eye--off { color: var(--line-2); }
 .seq__solo--on { color: var(--app); background: var(--acc); }
 .seq__lock--on { color: var(--acc); }
+
+/* champ valeur compact dans les pistes (édition depuis le panel) */
+.seq__val.insp-field {
+  flex: 0 0 auto;
+  width: 44px;
+  min-width: 0;
+  padding: 1px var(--space-4, 4px);
+  font-size: var(--fs-2, 10px);
+  color: var(--acc);
+  background: transparent;
+  border: none;
+  text-align: right;
+  cursor: text;
+}
+
+.seq__val.insp-field:hover { background: var(--row); }
 
 .seq__name--locked { opacity: 0.55; }
 .seq__name--locked .seq__name-label { font-style: italic; }

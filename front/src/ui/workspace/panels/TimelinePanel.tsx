@@ -27,7 +27,7 @@ function clampPps(v: number): number {
 
 interface AxisRow { channel: string; label: string; animated: boolean; frames: number[]; interps: Interp[] }
 interface PropRow { label: string; channels: string[]; animated: boolean; frames: number[]; interps: Interp[]; axes: AxisRow[] }
-interface LayerRow { layerId: string; name: string; clip: Clip | undefined; props: PropRow[]; keyframes: number[]; solo: boolean; locked: boolean; label: string | undefined }
+interface LayerRow { layerId: string; name: string; clip: Clip | undefined; props: PropRow[]; keyframes: number[]; visible: boolean; solo: boolean; locked: boolean; label: string | undefined }
 
 const LABEL_COLORS = ["#ff8a3d", "#7fd88a", "#5a9bff", "#c98bff", "#ffd24a", "#ff6b6b", "#4ad9d9", "#9aa0a6"];
 
@@ -79,7 +79,7 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
         return { label: p.label, channels: p.channels, animated: chanTracks.length > 0, frames, interps, axes };
       });
       const keyframes = [...new Set(props.flatMap((p) => p.frames))].sort((a, b) => a - b);
-      return { layerId: l.id, name: l.name, clip: l.clip, props, keyframes, solo: !!l.solo, locked: !!l.locked, label: l.label };
+      return { layerId: l.id, name: l.name, clip: l.clip, props, keyframes, visible: l.visible, solo: !!l.solo, locked: !!l.locked, label: l.label };
     });
   });
 
@@ -506,6 +506,18 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
     </>
   );
 
+  // Valeur éditable d'une propriété MONO-canal (axe séparé, opacité, param) — édite depuis les pistes.
+  const propValue = (row: LayerRow, p: PropRow): JSX.Element => (
+    <Show when={p.channels.length === 1}>
+      <NumberField
+        class="seq__val"
+        value={(frame(), version(), editor.readChannel(row.layerId, p.channels[0]) ?? 0)}
+        step={0.01}
+        onInput={(v) => editor.setChannelValue(row.layerId, p.channels[0], v)}
+      />
+    </Show>
+  );
+
   return (
     <div class="seq">
       <div class="seq__cols">
@@ -554,6 +566,13 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
                       <span class="seq__name-label">{row.name}</span>
                       <button
                         type="button"
+                        class="seq__eye"
+                        classList={{ "seq__eye--off": !row.visible }}
+                        data-tooltip={row.visible ? "Masquer" : "Afficher"}
+                        onClick={(e) => { e.stopPropagation(); editor.setVisible(row.layerId, !row.visible); }}
+                      >{createIcon(row.visible ? "eye" : "eye-off", { size: 13 })}</button>
+                      <button
+                        type="button"
                         class="seq__solo"
                         classList={{ "seq__solo--on": row.solo }}
                         data-tooltip="Solo (n'affiche que les calques en solo)"
@@ -578,11 +597,12 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
                                   type="button"
                                   class="seq__subtwirl"
                                   classList={{ "seq__subtwirl--open": isPropExpanded(row.layerId, p.label) }}
-                                  data-tooltip="Séparer les dimensions"
+                                  data-tooltip={isPropExpanded(row.layerId, p.label) ? "Lier les dimensions" : "Séparer les dimensions"}
                                   onClick={(e) => { e.stopPropagation(); togglePropExpand(row.layerId, p.label); }}
                                 />
                               </Show>
                               <span class="seq__name-label">{p.label}</span>
+                              {propValue(row, p)}
                             </div>
                             <Show when={p.axes.length > 0 && isPropExpanded(row.layerId, p.label)}>
                               <For each={p.axes}>
@@ -590,6 +610,7 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
                                   <div class="seq__name seq__name--axis">
                                     {propCtl(row, axProp(p, ax))}
                                     <span class="seq__name-label">{p.label} {ax.label}</span>
+                                    {propValue(row, axProp(p, ax))}
                                   </div>
                                 )}
                               </For>

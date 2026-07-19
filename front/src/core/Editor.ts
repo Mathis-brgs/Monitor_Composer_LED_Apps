@@ -191,6 +191,32 @@ export class Editor {
     this._emit();
   }
 
+  /** Valeur courante d'un canal (valeur évaluée au frame courant) — pour l'affichage dans les pistes. */
+  readChannel(id: string, channel: string): number | undefined {
+    return this._readChannel(id, channel);
+  }
+
+  /**
+   * Édite la valeur d'un canal depuis les pistes : route vers le setter dédié (qui gère la
+   * valeur statique ET l'auto-key si la propriété est animée).
+   */
+  setChannelValue(id: string, channel: string, value: number): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer) return;
+    if (channel === "opacity") { this.setOpacity(id, value); return; }
+    const dot = channel.indexOf(".");
+    const group = channel.slice(0, dot);
+    const key = channel.slice(dot + 1);
+    if (group === "position" || group === "rotation" || group === "scale") {
+      this.setTransform(id, { [group]: { [key]: value } } as TransformPatch);
+    } else if (group === "param") {
+      this.setParam(id, key, value);
+    } else if (group === "color") {
+      if (layer.type === "shader") this.setColor(id, { ...layer.color, [key]: value } as RGB);
+      else if (layer.type === "shape" && layer.fill.type === "solid") this.setFill(id, { type: "solid", color: { ...layer.fill.color, [key]: value } as RGB });
+    }
+  }
+
   /** Valeur d'une clé (canal, frame) — undefined si absente. Pour l'édition de valeur dans la timeline. */
   keyframeValue(id: string, channel: string, frame: number): number | undefined {
     return this._keyframe(id, channel, frame)?.value;
