@@ -1,6 +1,6 @@
 import {
   EMPTY_COMPOSITION, sampleKeyframes, upsertKeyframe, moveKeyframe, removeKeyframe,
-  type Composition, type Track,
+  type Composition, type Interp, type Track,
 } from "../domain/Composition.ts";
 
 /** Applique la valeur d'un canal scalaire à un calque (modèle + moteur). Fourni par l'Editor. */
@@ -51,9 +51,24 @@ export class Animator {
   autoKey(layerId: string, channel: string, frame: number, value: number): boolean {
     const t = this._find(layerId, channel);
     if (!t) return false;
-    const existed = t.keyframes.some((k) => k.frame === frame);
-    t.keyframes = upsertKeyframe(t.keyframes, { frame, value, interp: "linear" });
-    return !existed;
+    const existing = t.keyframes.find((k) => k.frame === frame);
+    // conserve l'interp d'une clé existante (éditer sa valeur ne la repasse pas en linéaire)
+    t.keyframes = upsertKeyframe(t.keyframes, { frame, value, interp: existing?.interp ?? "linear" });
+    return !existing;
+  }
+
+  /** Change l'interpolation d'une clé existante (no-op si track/clé absente). */
+  setInterp(layerId: string, channel: string, frame: number, interp: Interp): void {
+    const t = this._find(layerId, channel);
+    const k = t?.keyframes.find((x) => x.frame === frame);
+    if (t && k) t.keyframes = upsertKeyframe(t.keyframes, { frame, value: k.value, interp });
+  }
+
+  /** Pose une clé complète (valeur + interp) ; crée la track si absente (pour le coller). */
+  putKey(layerId: string, channel: string, frame: number, value: number, interp: Interp): void {
+    let t = this._find(layerId, channel);
+    if (!t) { t = { layerId, channel, keyframes: [] }; this._comp.tracks.push(t); }
+    t.keyframes = upsertKeyframe(t.keyframes, { frame, value, interp });
   }
 
   /** Déplace une clé d'une track (no-op si track/clé absente). */

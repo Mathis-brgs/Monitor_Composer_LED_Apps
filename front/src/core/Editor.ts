@@ -1,9 +1,9 @@
 import type { Engine } from "./engine/Engine.ts";
 import {
   makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, findLayer, findGroup, findParent, groupChildren,
-  fixtureDmxChannels, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
+  fixtureDmxChannels, layerActiveAt, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
   type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer,
-  type RGB, type Vec3, type ShapeKind, type ShaderId, type BlendMode, type Fill, type SpotChannels, type LyreChannels,
+  type RGB, type Vec3, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type SpotChannels, type LyreChannels,
 } from "@domain/Layer.ts";
 
 /** Patch de transform : chaque canal (position/rotation/échelle) partiellement modifiable. */
@@ -17,7 +17,10 @@ import { Scene3DLayer } from "./engine/layers/Scene3D.layer.ts";
 import { SolidLayer } from "./engine/layers/Solid.layer.ts";
 import { countLit, type ShapeFill, type ShapeInput } from "./engine/shapes.ts";
 import { Animator } from "./Animator.ts";
-import type { Composition } from "@domain/Composition.ts";
+import { sampleKeyframes, type Composition, type Interp, type Track } from "@domain/Composition.ts";
+
+/** Un point du chemin d'animation (motion path) : position monde du calque à un frame keyframé. */
+export interface MotionPoint { frame: number; x: number; y: number; z: number; }
 
 /** Pixels décodés d'une image (ou d'une frame vidéo) — mis en cache hors du document (non sérialisable). */
 interface DecodedBitmap { data: Uint8ClampedArray; width: number; height: number; }
@@ -74,6 +77,7 @@ export class Editor {
   private _tool: EditorTool = "select";
   private _frame = 0;              // dernier frame évalué (instant courant pour l'auto-key)
   private _sceneDirty = false;     // un canal de shape a changé → 1 seul recompute par frame
+  private _lastActiveSig = "";     // signature du set de calques actifs (clips) au dernier _push
   private readonly _animator = new Animator((id, channel, value) => this._applyChannel(id, channel, value));
 
   // fills image/vidéo : décodage async + lecture, mis en cache hors du document (par id de shape)
@@ -126,6 +130,7 @@ export class Editor {
   // —————————————————————————————— Navigation ——————————————————————————————
 
   select(id: string | null): void {
+    if (id && findLayer(this._doc.root, id)?.locked) return; // calque verrouillé → pas de sélection
     if (id === this._doc.selectedId) return;
     this._doc.selectedId = id;
     this._emit();
@@ -174,6 +179,67 @@ export class Editor {
     if (!this._animator.isAnimated(id, channel)) return;
     this._animator.autoKey(id, channel, frame, this._readChannel(id, channel) ?? 0);
     this._emit();
+  }
+
+  /** Fixe la valeur d'une clé existante (édition spatiale d'un point du motion path). No-op si le canal n'est pas animé. */
+  setKeyframeValue(id: string, channel: string, frame: number, value: number): void {
+    if (!this._animator.isAnimated(id, channel)) return;
+    this._animator.autoKey(id, channel, frame, value);
+    const layer = findLayer(this._doc.root, id);
+    if (layer?.type === "shape") this._recomputeScene();
+    this._emit();
+  }
+
+  /** Valeur d'une clé (canal, frame) — undefined si absente. Pour l'édition de valeur dans la timeline. */
+  keyframeValue(id: string, channel: string, frame: number): number | undefined {
+    return this._keyframe(id, channel, frame)?.value;
+  }
+
+  /** Interpolation d'une clé (canal, frame) — undefined si absente. */
+  keyframeInterp(id: string, channel: string, frame: number): Interp | undefined {
+    return this._keyframe(id, channel, frame)?.interp;
+  }
+
+  /** Change l'interpolation d'une clé (linéaire / hold / bézier). */
+  setKeyframeInterp(id: string, channel: string, frame: number, interp: Interp): void {
+    this._animator.setInterp(id, channel, frame, interp);
+    const layer = findLayer(this._doc.root, id);
+    if (layer?.type === "shape") this._recomputeScene();
+    this._emit();
+  }
+
+  /** Pose une clé complète (valeur + interp) sur un canal, créant la track au besoin (pour le coller). */
+  putKeyframe(id: string, channel: string, frame: number, value: number, interp: Interp): void {
+    this._animator.putKey(id, channel, frame, value, interp);
+    const layer = findLayer(this._doc.root, id);
+    if (layer?.type === "shape") this._recomputeScene();
+    this._emit();
+  }
+
+  private _keyframe(id: string, channel: string, frame: number) {
+    const t = this._animator.composition.tracks.find((t) => t.layerId === id && t.channel === channel);
+    return t?.keyframes.find((k) => k.frame === frame);
+  }
+
+  /**
+   * Chemin d'animation (motion path) d'un calque : la position monde échantillonnée à chaque
+   * frame keyframé de position.x/y/z. Vide si aucun de ces canaux n'est animé.
+   */
+  motionPath(id: string): MotionPoint[] {
+    const tracks = this._animator.composition.tracks;
+    const track = (channel: string): Track | undefined => tracks.find((t) => t.layerId === id && t.channel === channel);
+    const tx = track("position.x");
+    const ty = track("position.y");
+    const tz = track("position.z");
+    if (!tx && !ty && !tz) return [];
+    const frames = new Set<number>();
+    for (const t of [tx, ty, tz]) if (t) for (const k of t.keyframes) frames.add(k.frame);
+    const base = findLayer(this._doc.root, id)?.transform.position ?? { x: 0, y: 0, z: 0 };
+    const at = (t: Track | undefined, fallback: number, frame: number): number =>
+      t && t.keyframes.length ? sampleKeyframes(t.keyframes, frame) : fallback;
+    return [...frames].sort((a, b) => a - b).map((frame) => ({
+      frame, x: at(tx, base.x, frame), y: at(ty, base.y, frame), z: at(tz, base.z, frame),
+    }));
   }
 
   enterGroup(id: string): void {
@@ -360,6 +426,50 @@ export class Editor {
     this._emit();
   }
 
+  /** Fenêtre d'activité (clip) d'un calque, en frames. Le bornage/matérialisation se fait côté UI (helpers purs). */
+  setClip(id: string, clip: Clip): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer) return;
+    layer.clip = clip;
+    this._push();
+    this._emit();
+  }
+
+  /** Retire le clip d'un calque (retour pleine durée). */
+  clearClip(id: string): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || !layer.clip) return;
+    delete layer.clip;
+    this._push();
+    this._emit();
+  }
+
+  /** Solo : si ≥ 1 calque du groupe est en solo, seuls les solos rendent (mur + DMX). */
+  setSolo(id: string, solo: boolean): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer) return;
+    layer.solo = solo || undefined;
+    this._push();
+    this._emit();
+  }
+
+  /** Verrou : le calque devient non sélectionnable / non éditable (désélectionné s'il l'était). */
+  setLocked(id: string, locked: boolean): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer) return;
+    layer.locked = locked || undefined;
+    if (locked && this._doc.selectedId === id) this._doc.selectedId = null;
+    this._emit();
+  }
+
+  /** Couleur de label (hex) d'un calque, ou undefined pour l'enlever. */
+  setLabel(id: string, color: string | undefined): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer) return;
+    layer.label = color || undefined;
+    this._emit();
+  }
+
   /** Paramètre d'effet en direct (uniform) — n'émet pas (seuls canvas + contrôle réagissent). */
   setParam(id: string, key: string, value: number): void {
     const layer = findLayer(this._doc.root, id);
@@ -460,7 +570,11 @@ export class Editor {
     this._frame = frame;
     this._sceneDirty = false;
     this._animator.evaluate(frame);
-    if (this._sceneDirty || this._videoEls.size > 0) this._recomputeScene();
+    if (this._activeSignature() !== this._lastActiveSig) {
+      this._push(); // un calque a franchi un bord de clip → reconstruit la pile (re-rasterise aussi les shapes)
+    } else if (this._sceneDirty || this._videoEls.size > 0) {
+      this._recomputeScene();
+    }
   }
 
   subscribe(listener: EditorListener): () => void {
@@ -606,9 +720,15 @@ export class Editor {
     return { kind: "bitmap", data, width: VIDEO_SAMPLE_SIZE, height: VIDEO_SAMPLE_SIZE };
   }
 
+  /** Un calque du groupe actif est-il en solo ? (si oui, seuls les solos rendent) */
+  private _anySolo(): boolean {
+    return this._activeGroup().children.some((c) => c.solo);
+  }
+
   private _shapeInputs(): ShapeInput[] {
+    const anySolo = this._anySolo();
     return this._activeGroup().children
-      .filter((l): l is ShapeLayer => l.type === "shape" && l.visible)
+      .filter((l): l is ShapeLayer => l.type === "shape" && l.visible && layerActiveAt(l.clip, this._frame) && (!anySolo || !!l.solo))
       .map((s) => this._toInput(s));
   }
 
@@ -649,8 +769,9 @@ export class Editor {
   /** canaux DMX bruts (spots/lyres du groupe actif) → entités eHuB (id = canal, R = valeur). */
   private _fixtureChannels(): Map<number, number> {
     const map = new Map<number, number>();
+    const anySolo = this._anySolo();
     for (const l of this._activeGroup().children) {
-      if ((l.type === "spot" || l.type === "lyre") && l.visible) {
+      if ((l.type === "spot" || l.type === "lyre") && l.visible && layerActiveAt(l.clip, this._frame) && (!anySolo || l.solo)) {
         for (const { channel, value } of fixtureDmxChannels(l)) map.set(channel, value);
       }
     }
@@ -668,21 +789,34 @@ export class Editor {
     const scene3d = this._scene3d;
     if (!engine || !scene3d) return;
 
-    scene3d.setShapes(this._shapeInputs());
+    const shapes = this._shapeInputs();
+    scene3d.setShapes(shapes);
     this._pushFixtures();
 
+    const anySolo = this._anySolo();
     const stack: EngineLayer[] = [];
     let sceneAdded = false;
     for (const child of this._activeGroup().children) {
       if (child.type === "shader") {
-        stack.push(this._ensureShader(child));
+        if (layerActiveAt(child.clip, this._frame) && (!anySolo || child.solo)) stack.push(this._ensureShader(child));
       } else if (child.type === "shape") {
-        if (!sceneAdded) { stack.push(scene3d); sceneAdded = true; }
+        // un seul calque Scene3D agrégé (position de la 1re shape) tant qu'il reste des shapes actives
+        if (!sceneAdded && shapes.length > 0) { stack.push(scene3d); sceneAdded = true; }
       }
       // group/image/video/spot/lyre : non rendus sur le mur (navigables / repère visuel seulement)
     }
     // ordre d'affichage (haut = avant) → ordre moteur inversé (le haut rend en dernier)
     engine.setLayers([...stack].reverse());
+    this._lastActiveSig = this._activeSignature();
+  }
+
+  /** Signature du set de calques actifs (clips) au frame courant — détecte un franchissement de bord dans `tick`. */
+  private _activeSignature(): string {
+    let sig = "";
+    for (const child of this._activeGroup().children) {
+      if (layerActiveAt(child.clip, this._frame)) sig += child.id + ",";
+    }
+    return sig;
   }
 
   /** engine layer d'un calque shader (créé une fois, réutilisé), synchronisé sur le modèle. */
