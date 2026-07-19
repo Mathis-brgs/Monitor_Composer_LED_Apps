@@ -139,7 +139,7 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
   let clipboard: { layerId: string; channels: string[]; offset: number; values: number[]; interp: Interp }[] = [];
 
   let scroller: HTMLDivElement | undefined;
-  let namesList: HTMLDivElement | undefined;
+  let namesEl: HTMLDivElement | undefined;
   let lanesEl: HTMLDivElement | undefined;
 
   const timeToPx = (t: number): number => t * pps();
@@ -155,17 +155,13 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
     return { left: framesToPx(clip.in), width: framesToPx(clip.out - clip.in + 1) };
   };
 
-  /** Aligne verticalement noms ↔ lanes : les deux colonnes scrollent ensemble. */
-  const syncScroll = (from?: HTMLElement, to?: HTMLElement): void => {
-    if (!from || !to) return;
-    if (Math.abs(to.scrollTop - from.scrollTop) > 0.5) to.scrollTop = from.scrollTop;
-  };
+  /** x écran → x local dans la zone des lanes (== règle). L'épinglage sticky est géré par le layout,
+   *  donc le rect des lanes reflète déjà scroll horizontal + colonne de noms figée. */
+  const contentX = (clientX: number): number =>
+    lanesEl ? clientX - lanesEl.getBoundingClientRect().left : 0;
 
   const scrubTo = (clientX: number): void => {
-    if (!scroller) return;
-    const rect = scroller.getBoundingClientRect();
-    const x = clientX - rect.left + scroller.scrollLeft;
-    clock.seekFrame(clock.timeToFrame(x / pps()));
+    clock.seekFrame(clock.timeToFrame(contentX(clientX) / pps()));
   };
 
   /** Scrub : uniquement sur la règle temporelle (comme After Effects). */
@@ -193,23 +189,20 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
       e.preventDefault();
       scroller.scrollLeft += e.shiftKey ? e.deltaY : e.deltaX;
     }
-    // sinon : scroll vertical natif (overflow-y) → synchronisé avec la colonne des noms
+    // sinon : scroll vertical natif du conteneur unique (noms + lanes défilent ensemble)
   };
 
   const fit = (): void => {
     if (!scroller || duration() <= 0) return;
-    setPps(clampPps(scroller.clientWidth / duration()));
+    const names = namesEl?.offsetWidth ?? 0;
+    setPps(clampPps((scroller.clientWidth - names) / duration()));
   };
 
   onMount(() => requestAnimationFrame(fit));
 
   /** x écran → frame clampé (dans le contenu défilable). */
-  const frameAt = (clientX: number): number => {
-    if (!scroller) return 0;
-    const rect = scroller.getBoundingClientRect();
-    const x = clientX - rect.left + scroller.scrollLeft;
-    return Math.max(0, Math.min(clock.durationFrames, clock.timeToFrame(x / pps())));
-  };
+  const frameAt = (clientX: number): number =>
+    Math.max(0, Math.min(clock.durationFrames, clock.timeToFrame(contentX(clientX) / pps())));
 
   // ————————————————————————————— Clips (barre) —————————————————————————————
 
@@ -559,16 +552,18 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
 
   return (
     <div class="seq">
-      <div class="seq__cols">
-        <div class="seq__names">
-          <div class="seq__subhead">Pistes</div>
-          {/* aligne les rangées de noms avec les lanes (la colonne droite a zoombar + règle) */}
-          <div class="seq__names-spacer" />
-          <Show
-            when={rows().length > 0}
-            fallback={<div class="seq__names-list seq__names-list--empty">Groupe vide</div>}
-          >
-            <div class="seq__names-list" ref={namesList} onScroll={() => syncScroll(namesList, scroller)}>
+      <div class="seq__topbar">
+        <div class="seq__topbar-names">Pistes</div>
+        <div class="seq__topbar-main">
+          <span class="seq-meta">Durée {duration().toFixed(2)} s · {fps()} FPS</span>
+          <button type="button" class="seq__zoom-btn" data-tooltip="Ajuster à la fenêtre" onClick={fit}>Ajuster</button>
+        </div>
+      </div>
+      <div class="seq__scroll" ref={scroller} onWheel={onWheel}>
+        <div class="seq__grid" style={{ "grid-template-columns": `var(--tl-names) minmax(${contentWidth()}px, 1fr)` }}>
+          <div class="seq__names" ref={namesEl}>
+            <div class="seq__corner" />
+            <Show when={rows().length > 0} fallback={<div class="seq__names-empty">Groupe vide</div>}>
               <For each={rows()}>
                 {(row) => (
                   <>
@@ -668,20 +663,9 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
                   </>
                 )}
               </For>
-            </div>
           </Show>
-        </div>
-        <div class="seq__timeline">
-          <div class="seq__zoombar">
-            <span class="seq-meta">
-              Durée {duration().toFixed(2)} s · {fps()} FPS
-            </span>
-            <button type="button" class="seq__zoom-btn" data-tooltip="Ajuster à la fenêtre" onClick={fit}>
-              Ajuster
-            </button>
           </div>
-          <div class="seq__scroller" ref={scroller} onWheel={onWheel} onScroll={() => syncScroll(scroller, namesList)}>
-            <div class="seq__content" style={{ width: `${contentWidth()}px` }}>
+          <div class="seq__timeline">
               <div class="seq__ruler" onPointerDown={onRulerDown}>
                 <For each={marks()}>
                   {(s) => (
@@ -747,7 +731,6 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
               <div class="seq__playhead" style={{ left: `${timeToPx(time())}px` }}>
                 <span class="seq__playhead-tip"></span>
               </div>
-            </div>
           </div>
         </div>
       </div>
