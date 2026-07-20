@@ -349,8 +349,12 @@ function SpotBody(props: { editor: Editor; node: SpotLayer; changed: Accessor<un
             value={{ r: channels().r / 255, g: channels().g / 255, b: channels().b / 255 }}
             onInput={(c) => editor.setSpotChannels(id, { r: Math.round(c.r * 255), g: Math.round(c.g * 255), b: Math.round(c.b * 255) })}
           />
+          <KeyDot editor={editor} id={id} channels={["fx.r", "fx.g", "fx.b"]} />
         </Row>
-        <Row label="Blanc"><ByteSlider value={channels().w} onInput={(v) => editor.setSpotChannels(id, { w: v })} /></Row>
+        <Row label="Blanc">
+          <ByteSlider value={channels().w} onInput={(v) => editor.setSpotChannels(id, { w: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.w"]} />
+        </Row>
       </Section>
       <Section title="Danger"><DeleteRow editor={editor} id={id} /></Section>
     </>
@@ -379,24 +383,55 @@ function LyreBody(props: { editor: Editor; node: LyreLayer; changed: Accessor<un
         <Row label=""><div class="insp-hint">Bloc de 13 canaux : {baseChannel()}-{baseChannel() + 12}</div></Row>
       </Section>
       <Section title="Mouvement">
-        <Row label="Pan"><ByteSlider value={channels().pan} onInput={(v) => set({ pan: v })} /></Row>
-        <Row label="Pan fin"><ByteSlider value={channels().panFine} onInput={(v) => set({ panFine: v })} /></Row>
-        <Row label="Tilt"><ByteSlider value={channels().tilt} onInput={(v) => set({ tilt: v })} /></Row>
-        <Row label="Tilt fin"><ByteSlider value={channels().tiltFine} onInput={(v) => set({ tiltFine: v })} /></Row>
-        <Row label="Vitesse"><ByteSlider value={channels().speed} onInput={(v) => set({ speed: v })} /></Row>
+        <Row label="Pan">
+          <ByteSlider value={channels().pan} onInput={(v) => set({ pan: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.pan"]} />
+        </Row>
+        <Row label="Pan fin">
+          <ByteSlider value={channels().panFine} onInput={(v) => set({ panFine: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.panFine"]} />
+        </Row>
+        <Row label="Tilt">
+          <ByteSlider value={channels().tilt} onInput={(v) => set({ tilt: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.tilt"]} />
+        </Row>
+        <Row label="Tilt fin">
+          <ByteSlider value={channels().tiltFine} onInput={(v) => set({ tiltFine: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.tiltFine"]} />
+        </Row>
+        <Row label="Vitesse">
+          <ByteSlider value={channels().speed} onInput={(v) => set({ speed: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.speed"]} />
+        </Row>
       </Section>
       <Section title="Couleur & effets">
-        <Row label="Dimmer"><ByteSlider value={channels().dimmer} onInput={(v) => set({ dimmer: v })} /></Row>
-        <Row label="Strobe"><ByteSlider value={channels().strobe} onInput={(v) => set({ strobe: v })} /></Row>
+        <Row label="Dimmer">
+          <ByteSlider value={channels().dimmer} onInput={(v) => set({ dimmer: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.dimmer"]} />
+        </Row>
+        <Row label="Strobe">
+          <ByteSlider value={channels().strobe} onInput={(v) => set({ strobe: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.strobe"]} />
+        </Row>
         <Row label="Couleur">
           <ColorField
             value={{ r: channels().r / 255, g: channels().g / 255, b: channels().b / 255 }}
             onInput={(c) => set({ r: Math.round(c.r * 255), g: Math.round(c.g * 255), b: Math.round(c.b * 255) })}
           />
+          <KeyDot editor={editor} id={id} channels={["fx.r", "fx.g", "fx.b"]} />
         </Row>
-        <Row label="Blanc"><ByteSlider value={channels().w} onInput={(v) => set({ w: v })} /></Row>
-        <Row label="Spécial"><ByteSlider value={channels().special} onInput={(v) => set({ special: v })} /></Row>
-        <Row label="Reset"><ByteSlider value={channels().reset} onInput={(v) => set({ reset: v })} /></Row>
+        <Row label="Blanc">
+          <ByteSlider value={channels().w} onInput={(v) => set({ w: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.w"]} />
+        </Row>
+        <Row label="Spécial">
+          <ByteSlider value={channels().special} onInput={(v) => set({ special: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.special"]} />
+        </Row>
+        <Row label="Reset">
+          <ByteSlider value={channels().reset} onInput={(v) => set({ reset: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.reset"]} />
+        </Row>
       </Section>
       <Section title="Danger"><DeleteRow editor={editor} id={id} /></Section>
     </>

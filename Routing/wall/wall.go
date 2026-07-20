@@ -171,7 +171,7 @@ func (f *Frame) GetLED(strip, led int) (r, g, b, w byte) {
 // distinguer les deux mécanismes. Renvoie false si l'entité n'est adressable
 // nulle part (ID inconnu, ou (ip,univers) résolu hors de la config actuelle).
 func (f *Frame) SetEntity(entityID int, r, g, b, w byte) bool {
-	ip, universe, ch, ok := f.cfg.ResolveEntity(entityID)
+	ip, universe, ch, isFixture, ok := f.cfg.ResolveEntity(entityID)
 	if !ok {
 		return false
 	}
@@ -179,7 +179,14 @@ func (f *Frame) SetEntity(entityID int, r, g, b, w byte) bool {
 	if !ok {
 		return false
 	}
-	f.cfg.writeChannels(f.slots[idx].data[:], ch, r, g, b, w)
+	if isFixture {
+		// canal DMX brut (spot/lyre) : un seul octet compte (R). Écrire 3+ octets
+		// comme pour une LED écraserait les 1-2 canaux suivants (ex: Pan puis Pan
+		// fin/Tilt d'une lyre) à chaque mise à jour.
+		f.slots[idx].data[ch] = r
+	} else {
+		f.cfg.writeChannels(f.slots[idx].data[:], ch, r, g, b, w)
+	}
 	f.slots[idx].dirty = true
 	return true
 }

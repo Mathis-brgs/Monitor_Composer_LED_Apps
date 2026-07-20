@@ -27,10 +27,13 @@ export interface MotionPoint { frame: number; x: number; y: number; z: number; }
 
 /** Pixels décodés d'une image (ou d'une frame vidéo) — mis en cache hors du document (non sérialisable). */
 interface DecodedBitmap { data: Uint8ClampedArray; width: number; height: number; }
-/** Résolution de secours tant qu'une image/vidéo n'est pas encore décodée. */
-const FALLBACK_FILL: ShapeFill = { kind: "solid", color: { r: 1, g: 1, b: 1 } };
-/** Taille d'échantillonnage d'une frame vidéo : suffisant pour un mur LED, coûte peu à relire chaque frame. */
-const VIDEO_SAMPLE_SIZE = 64;
+/** Résolution de secours tant qu'une image/vidéo n'est pas encore décodée : noir
+ *  (pas de flash blanc sur le vrai mur pendant le chargement) — le wireframe/helper
+ *  reste visible dans l'éditeur 3D pour situer la forme en attendant. */
+const FALLBACK_FILL: ShapeFill = { kind: "solid", color: { r: 0, g: 0, b: 0 } };
+/** Taille d'échantillonnage d'une frame vidéo : alignée sur la résolution max du mur (128×128),
+ *  sinon le rendu est visiblement pixelisé dès qu'une forme couvre une bonne partie du mur. */
+const VIDEO_SAMPLE_SIZE = 128;
 
 export type EditorListener = () => void;
 
@@ -81,6 +84,7 @@ export class Editor {
   private _tool: EditorTool = "select";
   private _frame = 0;              // dernier frame évalué (instant courant pour l'auto-key)
   private _sceneDirty = false;     // un canal de shape a changé → 1 seul recompute par frame
+  private _fixturesDirty = false;  // un canal fx (spot/lyre) a changé → 1 seul push par frame
   private _lastActiveSig = "";     // signature du set de calques actifs (clips) au dernier _push
   private readonly _animator = new Animator((id, channel, value) => this._applyChannel(id, channel, value));
 
@@ -217,6 +221,9 @@ export class Editor {
     } else if (group === "color") {
       if (layer.type === "shader") this.setColor(id, { ...layer.color, [key]: value } as RGB);
       else if (layer.type === "shape" && layer.fill.type === "solid") this.setFill(id, { type: "solid", color: { ...layer.fill.color, [key]: value } as RGB });
+    } else if (group === "fx") {
+      if (layer.type === "spot") this.setSpotChannels(id, { [key]: Math.round(value) } as Partial<SpotChannels>);
+      else if (layer.type === "lyre") this.setLyreChannels(id, { [key]: Math.round(value) } as Partial<LyreChannels>);
     }
   }
 
@@ -686,6 +693,10 @@ export class Editor {
     const layer = findLayer(this._doc.root, id);
     if (!layer || layer.type !== "spot") return;
     layer.channels = { ...layer.channels, ...patch };
+    for (const k in patch) {
+      const v = patch[k as keyof SpotChannels];
+      if (v !== undefined) this._animator.autoKey(id, "fx." + k, this._frame, v);
+    }
     this._pushFixtures();
     this._emit();
   }
@@ -694,42 +705,73 @@ export class Editor {
     const layer = findLayer(this._doc.root, id);
     if (!layer || layer.type !== "lyre") return;
     layer.channels = { ...layer.channels, ...patch };
+    for (const k in patch) {
+      const v = patch[k as keyof LyreChannels];
+      if (v !== undefined) this._animator.autoKey(id, "fx." + k, this._frame, v);
+    }
     this._pushFixtures();
     this._emit();
   }
 
-  /** appelé chaque frame moteur : évalue les keyframes puis (au besoin) re-rasterise les shapes. */
+  /** appelé chaque frame moteur : évalue les keyframes puis (au besoin) re-rasterise/repousse. */
   tick(frame: number, playing = false, fps = 24): void {
     this._frame = frame;
     this._sceneDirty = false;
+    this._fixturesDirty = false;
     this._animator.evaluate(frame);
     if (this._activeSignature() !== this._lastActiveSig) {
       this._push(); // un calque a franchi un bord de clip → reconstruit la pile (re-rasterise aussi les shapes)
-    } else if (this._sceneDirty || this._videoEls.size > 0) {
-      this._recomputeScene();
+    } else {
+      if (this._sceneDirty || this._videoEls.size > 0) this._recomputeScene();
+      if (this._fixturesDirty) this._pushFixtures();
     }
     this._syncVideos(frame, playing, fps);
   }
 
-  /** Synchronise les `<video>` plein-cadre sur le playhead : play en lecture, seek en pause/scrub. */
+  /**
+   * Synchronise les `<video>` sur le playhead : play en lecture, seek en pause/scrub.
+   * Couvre les 2 usages (calque vidéo plein-cadre avec montage, ET fill vidéo d'une
+   * shape) — les deux doivent respecter la timeline, pas juste boucler en roue libre.
+   */
   private _syncVideos(frame: number, playing: boolean, fps: number): void {
+    const rate = fps > 0 ? fps : 24;
     for (const [id, el] of this._videoEls) {
       const layer = findLayer(this._doc.root, id);
-      if (layer?.type !== "video") continue; // les fills vidéo de shapes gardent leur boucle libre
-      const clip = layer.clips?.find((c) => mediaClipActiveAt(c, frame));
-      const active = layer.visible && (clip !== undefined || (!layer.clips && layerActiveAt(layer.clip, frame)));
-      if (!active) { if (!el.paused) el.pause(); continue; }
-      const targetSec = (clip ? mediaSourceFrameAt(clip, frame) : frame) / (fps > 0 ? fps : 24);
-      if (playing) {
-        if (el.paused) void el.play().catch(() => {});
-        if (Math.abs(el.currentTime - targetSec) > 0.2) el.currentTime = targetSec; // reslave
-      } else {
-        if (!el.paused) el.pause();
-        el.currentTime = targetSec; // scrub image par image
+      if (!layer) continue;
+
+      if (layer.type === "video") {
+        const clip = layer.clips?.find((c) => mediaClipActiveAt(c, frame));
+        const active = layer.visible && (clip !== undefined || (!layer.clips && layerActiveAt(layer.clip, frame)));
+        if (!active) { if (!el.paused) el.pause(); continue; }
+        const targetSec = (clip ? mediaSourceFrameAt(clip, frame) : frame) / rate;
+        this._driveVideoEl(el, targetSec, playing);
+        // fondu du clip → opacité du layer moteur (mise à jour continue)
+        const live = this._videoLive.get(id);
+        if (live && clip) live.opacity = layer.opacity * mediaFadeGain(clip, frame);
+        continue;
       }
-      // fondu du clip → opacité du layer moteur (mise à jour continue)
-      const live = this._videoLive.get(id);
-      if (live && clip) live.opacity = layer.opacity * mediaFadeGain(clip, frame);
+
+      if (layer.type === "shape" && layer.fill.type === "video") {
+        const active = layer.visible && layerActiveAt(layer.clip, frame);
+        if (!active) { if (!el.paused) el.pause(); continue; }
+        // pas de montage (MediaClip) pour un fill : lecture directe frame→temps, bouclée
+        // sur la durée réelle de la source une fois connue (sinon avance en continu).
+        const dur = el.duration && isFinite(el.duration) && el.duration > 0 ? el.duration : Infinity;
+        const raw = frame / rate;
+        const targetSec = isFinite(dur) ? raw % dur : raw;
+        this._driveVideoEl(el, targetSec, playing);
+      }
+    }
+  }
+
+  /** Applique play/pause + position à un `<video>` (reslave en lecture, seek exact en pause). */
+  private _driveVideoEl(el: HTMLVideoElement, targetSec: number, playing: boolean): void {
+    if (playing) {
+      if (el.paused) void el.play().catch(() => {});
+      if (Math.abs(el.currentTime - targetSec) > 0.2) el.currentTime = targetSec; // reslave
+    } else {
+      if (!el.paused) el.pause();
+      el.currentTime = targetSec; // scrub image par image
     }
   }
 
@@ -773,6 +815,15 @@ export class Editor {
         layer.fill = { type: "solid", color: { ...layer.fill.color, [c]: value } as RGB };
         this._sceneDirty = true;
       }
+    } else if (group === "fx") {
+      const v = Math.round(value);
+      if (layer.type === "spot" && key in layer.channels) {
+        layer.channels = { ...layer.channels, [key]: v };
+        this._fixturesDirty = true;
+      } else if (layer.type === "lyre" && key in layer.channels) {
+        layer.channels = { ...layer.channels, [key]: v };
+        this._fixturesDirty = true;
+      }
     }
   }
 
@@ -792,6 +843,9 @@ export class Editor {
       const c = key as keyof RGB;
       if (layer.type === "shader") return layer.color[c];
       if (layer.type === "shape" && layer.fill.type === "solid") return layer.fill.color[c];
+    }
+    if (group === "fx" && (layer.type === "spot" || layer.type === "lyre") && key in layer.channels) {
+      return (layer.channels as unknown as Record<string, number>)[key];
     }
     return undefined;
   }

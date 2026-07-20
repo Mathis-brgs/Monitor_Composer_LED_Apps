@@ -14,6 +14,20 @@ const SCALE: PropGroup = { label: "Échelle", channels: ["scale.x", "scale.y", "
 const OPACITY: PropGroup = { label: "Opacité", channels: ["opacity"] };
 const COLOR: PropGroup = { label: "Couleur", channels: ["color.r", "color.g", "color.b"] };
 
+// Canaux DMX bruts (spot/lyre) : ce sont les seuls canaux qui font réellement quelque
+// chose pour ces calques (position = repère visuel, opacité = sans effet sur le DMX).
+const FX_COLOR: PropGroup = { label: "Couleur", channels: ["fx.r", "fx.g", "fx.b"] };
+const FX_WHITE: PropGroup = { label: "Blanc", channels: ["fx.w"] };
+const FX_PAN: PropGroup = { label: "Pan", channels: ["fx.pan"] };
+const FX_PAN_FINE: PropGroup = { label: "Pan fin", channels: ["fx.panFine"] };
+const FX_TILT: PropGroup = { label: "Tilt", channels: ["fx.tilt"] };
+const FX_TILT_FINE: PropGroup = { label: "Tilt fin", channels: ["fx.tiltFine"] };
+const FX_SPEED: PropGroup = { label: "Vitesse", channels: ["fx.speed"] };
+const FX_DIMMER: PropGroup = { label: "Dimmer", channels: ["fx.dimmer"] };
+const FX_STROBE: PropGroup = { label: "Strobe", channels: ["fx.strobe"] };
+const FX_SPECIAL: PropGroup = { label: "Spécial", channels: ["fx.special"] };
+const FX_RESET: PropGroup = { label: "Reset", channels: ["fx.reset"] };
+
 /** Catalogue des propriétés animables d'un calque, contextuel à son type (aligné sur l'inspecteur). */
 export function animatableProps(layer: Layer): PropGroup[] {
   switch (layer.type) {
@@ -26,8 +40,9 @@ export function animatableProps(layer: Layer): PropGroup[] {
       return layer.shader === "solid" ? [...params, COLOR, OPACITY] : [...params, OPACITY];
     }
     case "spot":
+      return [FX_COLOR, FX_WHITE];
     case "lyre":
-      return [POSITION, OPACITY];
+      return [FX_PAN, FX_PAN_FINE, FX_TILT, FX_TILT_FINE, FX_SPEED, FX_DIMMER, FX_STROBE, FX_COLOR, FX_WHITE, FX_SPECIAL, FX_RESET];
     case "audio":
       return []; // volume automation : différée (M4) — l'audio se pilote via waveform/clip
     default: // group / image / video
