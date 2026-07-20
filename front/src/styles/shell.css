@@ -484,10 +484,57 @@ body {
 
 .seq {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100%;
   user-select: none;
   -webkit-user-select: none;
+}
+
+/* — Rail d'outils vertical (façon Premiere) — */
+.seq__tools {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  flex: 0 0 auto;
+  width: var(--tl-tools);
+  padding: var(--space-6) 0;
+  background: var(--panel-2);
+  border-right: var(--stroke-hairline) solid var(--line);
+}
+
+.seq__tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tl-tool);
+  height: var(--tl-tool);
+  color: var(--dim);
+  background: transparent;
+  border: var(--stroke-hairline) solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.seq__tool:hover { color: var(--txt); background: var(--row); }
+.seq__tool--on { color: var(--app); background: var(--acc); border-color: var(--acc); }
+.seq__tool:disabled { opacity: 0.35; cursor: default; }
+.seq__tool:disabled:hover { color: var(--dim); background: transparent; }
+
+.seq__tools-sep {
+  width: 60%;
+  height: var(--stroke-hairline);
+  background: var(--line);
+  margin: var(--space-2) 0;
+}
+
+/* colonne principale (règle + pistes), à droite du rail */
+.seq__main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
 }
 
 /* — Barre fixe (non défilante) : entête de colonnes + zoom — */
@@ -605,6 +652,163 @@ body {
   opacity: 0.85;
   pointer-events: none;
 }
+
+/* clip en cours de déplacement / rognage : aperçu fantôme (façon Premiere) — commit au relâché */
+.seq__clip--dragging {
+  opacity: 0.55;
+  outline: var(--stroke-hairline) dashed var(--acc);
+  z-index: 4;
+}
+
+/* — Tempo (BPM) dans la barre d'outils — */
+.seq__tempo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-6);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.seq__tempo-label {
+  font-size: var(--fs-3);
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-sub);
+}
+
+.seq__tempo-field.insp-field {
+  width: 34px;
+  min-width: 0;
+  padding: 0;
+  font-size: var(--fs-3);
+  color: var(--txt);
+  background: transparent;
+  border: none;
+  text-align: right;
+  cursor: text;
+}
+
+/* bouton bascule actif (Snap) */
+.seq__zoom-btn--on {
+  color: var(--app);
+  background: var(--acc);
+  border-color: var(--acc);
+}
+
+.seq__zoom-btn--on:hover {
+  color: var(--app);
+  border-color: var(--acc);
+}
+
+/* — Sliders de zoom (horizontal = durée, vertical = hauteur des pistes) — */
+.seq__zoomers {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.seq__zoomer {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--faint);
+}
+
+.seq__range {
+  width: 68px;
+  height: var(--tl-ctrl-sm);
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: ew-resize;
+}
+
+.seq__zoomer--v .seq__range { cursor: ns-resize; }
+
+.seq__range::-webkit-slider-runnable-track {
+  height: var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--line);
+}
+
+.seq__range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: var(--space-10);
+  height: var(--space-10);
+  margin-top: calc((var(--space-3) - var(--space-10)) / 2);
+  border-radius: 50%;
+  background: var(--acc);
+  cursor: grab;
+}
+
+.seq__range::-moz-range-track {
+  height: var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--line);
+}
+
+.seq__range::-moz-range-thumb {
+  width: var(--space-10);
+  height: var(--space-10);
+  border: none;
+  border-radius: 50%;
+  background: var(--acc);
+  cursor: grab;
+}
+
+/* — Interrupteur Snap (switch, pas un bouton) — */
+.seq__switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-5);
+  cursor: pointer;
+}
+
+.seq__switch-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.seq__switch-track {
+  position: relative;
+  width: 26px;
+  height: 15px;
+  border-radius: var(--radius-pill);
+  background: var(--line);
+  transition: background 0.12s ease;
+}
+
+.seq__switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--dim);
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+
+.seq__switch-input:checked + .seq__switch-track { background: var(--acc); }
+.seq__switch-input:checked + .seq__switch-track .seq__switch-thumb { transform: translateX(11px); background: var(--app); }
+.seq__switch-input:focus-visible + .seq__switch-track { outline: 2px solid var(--acc-border); outline-offset: 2px; }
+
+.seq__switch-label {
+  font-size: var(--fs-3);
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-sub);
+}
+
+.seq__switch-input:checked ~ .seq__switch-label { color: var(--txt); }
+
+/* curseurs selon l'outil actif du rail */
+.seq__lanes--razor { cursor: crosshair; }
+.seq__lanes--hand { cursor: grab; }
+.seq__lanes--hand:active { cursor: grabbing; }
 
 /* — Conteneur de scroll UNIQUE (x + y) : noms et lanes ne peuvent plus dériver — */
 .seq__scroll {
