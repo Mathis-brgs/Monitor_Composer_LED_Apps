@@ -2,7 +2,8 @@ import { Euler, Matrix4, Quaternion, Vector3 } from "three/webgpu";
 import type { Engine } from "./engine/Engine.ts";
 import {
   makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, makeVideo, findLayer, findGroup, findParent, groupChildren,
-  fixtureDmxChannels, layerActiveAt, wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
+  fixtureDmxChannels, layerActiveAt, mediaClipActiveAt, mediaSourceFrameAt, mediaFadeGain,
+  wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
   type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer, type VideoLayer,
   type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type MediaClip, type SpotChannels, type LyreChannels,
 } from "@domain/Layer.ts";
@@ -398,15 +399,33 @@ export class Editor {
     this._emit();
   }
 
-  /** Ajoute une vidéo plein-cadre diffusée sur le mur (`url` = object/data URL). */
-  addVideo(url: string, name = "Vidéo"): string {
+  /** Ajoute une vidéo plein-cadre diffusée sur le mur (`url` = object/data URL).
+   *  `sourceFrames` = longueur de la source → un clip de montage couvrant toute la source. */
+  addVideo(url: string, name = "Vidéo", sourceFrames = 1): string {
     this._counter += 1;
     const id = `video-${this._counter}`;
-    this._activeGroup().children.unshift(makeVideo(id, name, url));
+    const layer = makeVideo(id, name, url);
+    layer.clips = [{ id: `${id}-c0`, sourceIn: 0, sourceOut: Math.max(1, Math.round(sourceFrames)), timelineIn: 0, speed: 1 }];
+    this._activeGroup().children.unshift(layer);
     this._doc.selectedId = id;
     this._push();
     this._emit();
     return id;
+  }
+
+  /** Remplace la liste de clips de montage d'un calque vidéo (montage calculé côté UI). */
+  setVideoClips(id: string, clips: MediaClip[]): void {
+    const l = findLayer(this._doc.root, id);
+    if (l?.type !== "video") return;
+    l.clips = clips;
+    this._push(); // re-gate le rendu (fenêtre active des clips)
+    this._emit();
+  }
+
+  /** Durée de la source vidéo en frames (depuis l'élément décodé), 0 si inconnue. */
+  videoDurationFrames(id: string, fps: number): number {
+    const el = this._videoEls.get(id);
+    return el && el.duration && isFinite(el.duration) ? Math.round(el.duration * fps) : 0;
   }
 
   /**
@@ -688,8 +707,10 @@ export class Editor {
     for (const [id, el] of this._videoEls) {
       const layer = findLayer(this._doc.root, id);
       if (layer?.type !== "video") continue; // les fills vidéo de shapes gardent leur boucle libre
-      if (!(layer.visible && layerActiveAt(layer.clip, frame))) { if (!el.paused) el.pause(); continue; }
-      const targetSec = frame / (fps > 0 ? fps : 24);
+      const clip = layer.clips?.find((c) => mediaClipActiveAt(c, frame));
+      const active = layer.visible && (clip !== undefined || (!layer.clips && layerActiveAt(layer.clip, frame)));
+      if (!active) { if (!el.paused) el.pause(); continue; }
+      const targetSec = (clip ? mediaSourceFrameAt(clip, frame) : frame) / (fps > 0 ? fps : 24);
       if (playing) {
         if (el.paused) void el.play().catch(() => {});
         if (Math.abs(el.currentTime - targetSec) > 0.2) el.currentTime = targetSec; // reslave
@@ -697,6 +718,9 @@ export class Editor {
         if (!el.paused) el.pause();
         el.currentTime = targetSec; // scrub image par image
       }
+      // fondu du clip → opacité du layer moteur (mise à jour continue)
+      const live = this._videoLive.get(id);
+      if (live && clip) live.opacity = layer.opacity * mediaFadeGain(clip, frame);
     }
   }
 
@@ -947,7 +971,8 @@ export class Editor {
         // un seul calque Scene3D agrégé (position de la 1re shape) tant qu'il reste des shapes actives
         if (!sceneAdded && shapes.length > 0) { stack.push(scene3d); sceneAdded = true; }
       } else if (child.type === "video") {
-        if (child.visible && layerActiveAt(child.clip, this._frame) && (!anySolo || child.solo)) stack.push(this._ensureVideo(child));
+        const active = child.clips ? child.clips.some((c) => mediaClipActiveAt(c, this._frame)) : layerActiveAt(child.clip, this._frame);
+        if (child.visible && active && (!anySolo || child.solo)) stack.push(this._ensureVideo(child));
       }
       // group/image/spot/lyre : non rendus sur le mur (navigables / repère visuel seulement)
     }

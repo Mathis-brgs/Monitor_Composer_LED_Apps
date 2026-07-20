@@ -170,7 +170,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     input.click();
   };
 
-  /** Importe une vidéo → calque vidéo plein-cadre diffusé sur le mur (object URL). */
+  /** Importe une vidéo → calque vidéo plein-cadre diffusé sur le mur (object URL, clip = durée réelle). */
   const importVideo = (): void => {
     const input = document.createElement("input");
     input.type = "file";
@@ -178,7 +178,13 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     input.onchange = () => {
       const file = input.files?.[0];
       if (!file) return;
-      editor.addVideo(URL.createObjectURL(file), file.name.replace(/\.[^.]+$/, ""));
+      const url = URL.createObjectURL(file);
+      const name = file.name.replace(/\.[^.]+$/, "");
+      const probe = document.createElement("video");
+      probe.preload = "metadata";
+      probe.onloadedmetadata = () => editor.addVideo(url, name, Math.max(1, Math.round(probe.duration * clock.fps)));
+      probe.onerror = () => editor.addVideo(url, name); // fallback : source entière
+      probe.src = url;
     };
     input.click();
   };
@@ -353,9 +359,17 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     const s = selectedClip();
     return !!s && s.layerId === layerId && s.clipId === clipId;
   };
-  /** Longueur de la source audio en frames (clamp des trims + fenêtrage waveform). */
-  const audioSourceFrames = (row: LayerRow): number =>
-    row.assetId ? Math.max(1, Math.round(audio.duration(row.assetId) * clock.fps)) : 1;
+  /** Applique une liste de clips au calque selon son type (audio ou vidéo). */
+  const setClips = (row: LayerRow, clips: MediaClip[]): void => {
+    if (row.type === "audio") setClips(row,clips);
+    else if (row.type === "video") editor.setVideoClips(row.layerId, clips);
+  };
+  /** Longueur de la source en frames (clamp des trims + fenêtrage waveform). Infini si vidéo non chargée. */
+  const clipSourceFrames = (row: LayerRow): number => {
+    if (row.type === "audio") return row.assetId ? Math.max(1, Math.round(audio.duration(row.assetId) * clock.fps)) : 1;
+    if (row.type === "video") { const f = editor.videoDurationFrames(row.layerId, clock.fps); return f > 0 ? f : Number.MAX_SAFE_INTEGER; }
+    return 1;
+  };
 
   const onMediaClipMove = (e: PointerEvent, row: LayerRow, mc: MediaClip): void => {
     e.stopPropagation();
@@ -366,7 +380,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     const start = frameAt(e.clientX);
     const move = (ev: PointerEvent): void => {
       const delta = frameAt(ev.clientX) - start;
-      editor.setAudioClips(row.layerId, clips.map((c) => (c.id === mc.id ? moveMediaClip(mc, delta) : c)));
+      setClips(row,clips.map((c) => (c.id === mc.id ? moveMediaClip(mc, delta) : c)));
     };
     const up = (): void => {
       window.removeEventListener("pointermove", move);
@@ -382,12 +396,12 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     setSelectedClip({ layerId: row.layerId, clipId: mc.id });
     if (row.locked) return;
     const clips = row.mediaClips;
-    const srcMax = audioSourceFrames(row);
+    const srcMax = clipSourceFrames(row);
     const move = (ev: PointerEvent): void => {
       const f = frameAt(ev.clientX);
       let t = edge === "in" ? trimMediaIn(mc, f) : trimMediaOut(mc, f);
       if (edge === "out" && t.sourceOut > srcMax) t = { ...t, sourceOut: srcMax };
-      editor.setAudioClips(row.layerId, clips.map((c) => (c.id === mc.id ? t : c)));
+      setClips(row,clips.map((c) => (c.id === mc.id ? t : c)));
     };
     const up = (): void => {
       window.removeEventListener("pointermove", move);
@@ -406,7 +420,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     if (!row || !mc) return;
     const parts = splitMediaClip(mc, frame(), `${mc.id}.${++clipSeq}`);
     if (!parts) return;
-    editor.setAudioClips(row.layerId, row.mediaClips.flatMap((c) => (c.id === mc.id ? parts : [c])));
+    setClips(row,row.mediaClips.flatMap((c) => (c.id === mc.id ? parts : [c])));
     setSelectedClip({ layerId: row.layerId, clipId: parts[0].id });
   };
 
@@ -415,7 +429,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     if (!s) return false;
     const row = rows().find((r) => r.layerId === s.layerId);
     if (!row) return false;
-    editor.setAudioClips(row.layerId, row.mediaClips.filter((c) => c.id !== s.clipId));
+    setClips(row,row.mediaClips.filter((c) => c.id !== s.clipId));
     setSelectedClip(null);
     return true;
   };
@@ -434,7 +448,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
         ? Math.max(0, Math.min(len, Math.round(f - mc.timelineIn)))
         : Math.max(0, Math.min(len, Math.round(out - f)));
       const updated = { ...mc, ...(edge === "in" ? { fadeIn: dur } : { fadeOut: dur }) };
-      editor.setAudioClips(row.layerId, clips.map((c) => (c.id === mc.id ? updated : c)));
+      setClips(row,clips.map((c) => (c.id === mc.id ? updated : c)));
     };
     setFade(e.clientX);
     const move = (ev: PointerEvent): void => setFade(ev.clientX);
@@ -947,7 +961,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                       </Show>
                       <div class="seq__lane">
                         <Show
-                          when={row.type === "audio"}
+                          when={(row.type === "audio" || row.type === "video") && row.mediaClips.length > 0}
                           fallback={
                             <div
                               class="seq__bar seq__clip"
@@ -966,27 +980,36 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                           <For each={row.mediaClips}>
                             {(mc) => (
                               <div
-                                class="seq__bar seq__clip seq__clip--audio"
-                                classList={{ "seq__clip--selected": isClipSelected(row.layerId, mc.id) }}
+                                class="seq__bar seq__clip"
+                                classList={{
+                                  "seq__clip--audio": row.type === "audio",
+                                  "seq__clip--video": row.type === "video",
+                                  "seq__clip--selected": isClipSelected(row.layerId, mc.id),
+                                }}
                                 style={{ left: `${framesToPx(mc.timelineIn)}px`, width: `${framesToPx(mediaClipLength(mc))}px` }}
                                 onPointerDown={(e) => onMediaClipMove(e, row, mc)}
                               >
-                                <AudioWave
-                                  audio={audio}
-                                  assetId={row.assetId!}
-                                  width={framesToPx(mediaClipLength(mc))}
-                                  sourceIn={mc.sourceIn}
-                                  sourceOut={mc.sourceOut}
-                                  sourceFrames={audioSourceFrames(row)}
-                                  zoom={waveZoom()}
-                                  version={audioVersion()}
-                                />
-                                <div
-                                  class="seq__gain-line"
-                                  style={{ top: `${(1 - Math.min(row.gain, GAIN_MAX) / GAIN_MAX) * 100}%` }}
-                                  data-tooltip={`Volume ${row.gain.toFixed(2)}`}
-                                  onPointerDown={(e) => onGainDrag(e, row)}
-                                />
+                                <Show when={row.type === "audio"}>
+                                  <AudioWave
+                                    audio={audio}
+                                    assetId={row.assetId!}
+                                    width={framesToPx(mediaClipLength(mc))}
+                                    sourceIn={mc.sourceIn}
+                                    sourceOut={mc.sourceOut}
+                                    sourceFrames={clipSourceFrames(row)}
+                                    zoom={waveZoom()}
+                                    version={audioVersion()}
+                                  />
+                                  <div
+                                    class="seq__gain-line"
+                                    style={{ top: `${(1 - Math.min(row.gain, GAIN_MAX) / GAIN_MAX) * 100}%` }}
+                                    data-tooltip={`Volume ${row.gain.toFixed(2)}`}
+                                    onPointerDown={(e) => onGainDrag(e, row)}
+                                  />
+                                </Show>
+                                <Show when={row.type === "video"}>
+                                  <span class="seq__clip-label">{row.name}</span>
+                                </Show>
                                 <Show when={(mc.fadeIn ?? 0) > 0}>
                                   <div class="seq__fade seq__fade--in" style={{ width: `${framesToPx(mc.fadeIn!)}px` }} />
                                 </Show>

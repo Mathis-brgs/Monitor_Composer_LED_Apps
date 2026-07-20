@@ -575,6 +575,27 @@ body {
   overflow: hidden;
 }
 
+/* clip vidéo : teinte bleue distincte (façon pistes vidéo Premiere) + label */
+.seq__clip--video {
+  color: var(--axis-z);
+  background: color-mix(in srgb, var(--axis-z) 20%, var(--row));
+  overflow: hidden;
+}
+
+.seq__clip-label {
+  position: absolute;
+  left: var(--space-6);
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: calc(100% - var(--space-12));
+  font-size: var(--fs-3);
+  color: var(--txt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
 .seq__wave {
   position: absolute;
   inset: 0;
