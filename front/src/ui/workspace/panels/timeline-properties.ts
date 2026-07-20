@@ -13,6 +13,7 @@ const ROTATION: PropGroup = { label: "Rotation", channels: ["rotation.x", "rotat
 const SCALE: PropGroup = { label: "Échelle", channels: ["scale.x", "scale.y", "scale.z"] };
 const OPACITY: PropGroup = { label: "Opacité", channels: ["opacity"] };
 const COLOR: PropGroup = { label: "Couleur", channels: ["color.r", "color.g", "color.b"] };
+const VOLUME: PropGroup = { label: "Volume", channels: ["gain"] };
 
 // Canaux DMX bruts (spot/lyre) : ce sont les seuls canaux qui font réellement quelque
 // chose pour ces calques (position = repère visuel, opacité = sans effet sur le DMX).
@@ -44,7 +45,7 @@ export function animatableProps(layer: Layer): PropGroup[] {
     case "lyre":
       return [FX_PAN, FX_PAN_FINE, FX_TILT, FX_TILT_FINE, FX_SPEED, FX_DIMMER, FX_STROBE, FX_COLOR, FX_WHITE, FX_SPECIAL, FX_RESET];
     case "audio":
-      return []; // volume automation : différée (M4) — l'audio se pilote via waveform/clip
+      return [VOLUME]; // automation de volume : gain keyframé (lu chaque frame par l'AudioSync)
     default: // group / image / video
       return [OPACITY];
   }

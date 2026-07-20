@@ -99,6 +99,10 @@
   --tl-ctrl-xs: 14px; /* triangle de repli (twirl / subtwirl) */
   --tl-kf: 9px; /* diamant keyframe */
   --tl-kf-sm: 7px; /* diamant résumé (calque replié) */
+  --tl-beat: color-mix(in srgb, var(--txt) 8%, transparent); /* ligne de battement (grille BPM) */
+  --tl-bar: color-mix(in srgb, var(--txt) 18%, transparent); /* accent de mesure (grille BPM) */
+  --tl-tools: 40px; /* largeur du rail d'outils */
+  --tl-tool: 28px; /* bouton d'outil (icône) */
 
   --shadow-window: 0 40px 120px rgba(0, 0, 0, 0.65);
 }

@@ -211,6 +211,7 @@ export class Editor {
     const layer = findLayer(this._doc.root, id);
     if (!layer) return;
     if (channel === "opacity") { this.setOpacity(id, value); return; }
+    if (channel === "gain") { this.setAudioGain(id, value); return; }
     const dot = channel.indexOf(".");
     const group = channel.slice(0, dot);
     const key = channel.slice(dot + 1);
@@ -398,11 +399,12 @@ export class Editor {
     this._emit();
   }
 
-  /** Volume d'une piste audio (gain ≥ 0). Non rendu sur le mur → pas de `_push`. */
+  /** Volume d'une piste audio (gain ≥ 0). Auto-key si le volume est animé. Non rendu sur le mur → pas de `_push`. */
   setAudioGain(id: string, gain: number): void {
     const l = findLayer(this._doc.root, id);
     if (l?.type !== "audio") return;
     l.gain = Math.max(0, gain);
+    this._animator.autoKey(id, "gain", this._frame, l.gain);
     this._emit();
   }
 
@@ -793,6 +795,10 @@ export class Editor {
       if (layer.type === "shape") this._sceneDirty = true;
       return;
     }
+    if (channel === "gain") {
+      if (layer.type === "audio") layer.gain = Math.max(0, value); // lu par l'AudioSync chaque frame
+      return;
+    }
     const dot = channel.indexOf(".");
     const group = channel.slice(0, dot);
     const key = channel.slice(dot + 1);
@@ -832,6 +838,7 @@ export class Editor {
     const layer = findLayer(this._doc.root, id);
     if (!layer) return undefined;
     if (channel === "opacity") return layer.opacity;
+    if (channel === "gain") return layer.type === "audio" ? layer.gain : undefined;
     const dot = channel.indexOf(".");
     const group = channel.slice(0, dot);
     const key = channel.slice(dot + 1);

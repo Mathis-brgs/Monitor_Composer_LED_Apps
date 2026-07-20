@@ -12,6 +12,8 @@ export class Clock {
   private _fps = 24;
   private _durationFrames = 192; // 8 s @ 24 fps par défaut
   private _loop: LoopMode = "off";
+  private _bpm = 120;            // tempo (grille rythmique + snap)
+  private _beatsPerBar = 4;      // signature (temps par mesure)
   private readonly _listeners = new Set<ClockListener>();
 
   get time(): number {
@@ -42,6 +44,36 @@ export class Clock {
 
   get loop(): LoopMode {
     return this._loop;
+  }
+
+  /** Tempo en battements par minute (grille + snap). */
+  get bpm(): number {
+    return this._bpm;
+  }
+
+  /** Temps par mesure (accent de mesure sur la grille). */
+  get beatsPerBar(): number {
+    return this._beatsPerBar;
+  }
+
+  /** Durée d'un battement en frames (= fps · 60 / bpm). */
+  get framesPerBeat(): number {
+    return this._bpm > 0 ? (this._fps * 60) / this._bpm : 0;
+  }
+
+  setBpm(bpm: number): void {
+    if (bpm > 0 && bpm !== this._bpm) {
+      this._bpm = bpm;
+      this._emit();
+    }
+  }
+
+  setBeatsPerBar(n: number): void {
+    const v = Math.max(1, Math.round(n));
+    if (v !== this._beatsPerBar) {
+      this._beatsPerBar = v;
+      this._emit();
+    }
   }
 
   /**
