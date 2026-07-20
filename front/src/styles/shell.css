@@ -544,6 +544,30 @@ body {
   letter-spacing: var(--ls-sub);
 }
 
+/* piste audio vide (toujours visible, façon Premiere) */
+.seq__name--empty {
+  color: var(--faint);
+  font-size: var(--fs-3);
+  font-style: italic;
+  cursor: default;
+}
+
+.seq__lane--empty {
+  height: var(--tl-row);
+  border-bottom: var(--stroke-hairline) solid var(--line-2);
+  background: color-mix(in srgb, var(--line-2) 25%, transparent);
+}
+
+.seq__zoom-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.seq__zoom-btn:disabled:hover {
+  color: var(--dim);
+  border-color: var(--line);
+}
+
 /* — Waveform d'une piste audio (canvas dans le clip) — */
 .seq__clip--audio {
   color: var(--acc);

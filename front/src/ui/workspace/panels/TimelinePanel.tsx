@@ -2,7 +2,10 @@ import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, 
 import type { Clock } from "@core/Clock.ts";
 import type { Editor } from "@core/Editor.ts";
 import type { AudioEngine } from "@core/AudioEngine.ts";
-import { moveClip, trimIn, trimOut, type Clip, type Layer } from "@domain/Layer.ts";
+import {
+  moveClip, trimIn, trimOut, moveMediaClip, trimMediaIn, trimMediaOut, splitMediaClip, mediaClipLength,
+  type Clip, type Layer, type MediaClip,
+} from "@domain/Layer.ts";
 import type { Interp } from "@domain/Composition.ts";
 import { createIcon } from "@ui/icons/Icon.ts";
 import { NumberField } from "@ui/solid/controls.tsx";
@@ -28,10 +31,14 @@ function clampPps(v: number): number {
 
 interface AxisRow { channel: string; label: string; animated: boolean; frames: number[]; interps: Interp[] }
 interface PropRow { label: string; channels: string[]; animated: boolean; frames: number[]; interps: Interp[]; axes: AxisRow[] }
-interface LayerRow { layerId: string; type: Layer["type"]; assetId: string | undefined; name: string; clip: Clip | undefined; props: PropRow[]; keyframes: number[]; visible: boolean; solo: boolean; locked: boolean; label: string | undefined }
+interface LayerRow { layerId: string; type: Layer["type"]; assetId: string | undefined; name: string; clip: Clip | undefined; mediaClips: MediaClip[]; props: PropRow[]; keyframes: number[]; visible: boolean; solo: boolean; locked: boolean; label: string | undefined }
 
-/** Waveform d'une piste audio, tracée depuis les peaks précalculés de l'AudioEngine. */
-function AudioWave(props: { audio: AudioEngine; assetId: string; width: number; version: number }): JSX.Element {
+/** Waveform d'un clip audio : trace la FENÊTRE de source [sourceIn, sourceOut] du clip
+ *  (pas d'écrasement au trim), depuis les peaks précalculés de l'AudioEngine. */
+function AudioWave(props: {
+  audio: AudioEngine; assetId: string; width: number;
+  sourceIn: number; sourceOut: number; sourceFrames: number; version: number;
+}): JSX.Element {
   let cv: HTMLCanvasElement | undefined;
   createEffect(() => {
     props.version; // dép. : redessine après un import
@@ -46,10 +53,15 @@ function AudioWave(props: { audio: AudioEngine; assetId: string; width: number; 
     if (!g) return;
     g.clearRect(0, 0, w, h);
     if (!pk) return;
+    // sous-plage de buckets correspondant à la fenêtre de source du clip
+    const frames = Math.max(1, props.sourceFrames);
+    const b0 = Math.max(0, Math.floor((props.sourceIn / frames) * pk.buckets));
+    const b1 = Math.min(pk.buckets, Math.ceil((props.sourceOut / frames) * pk.buckets));
+    const span = Math.max(1, b1 - b0);
     g.fillStyle = getComputedStyle(c).color || "#ff8a3d";
     const mid = h / 2;
     for (let x = 0; x < w; x++) {
-      const b = Math.min(pk.buckets - 1, Math.floor((x / w) * pk.buckets));
+      const b = Math.min(pk.buckets - 1, b0 + Math.floor((x / w) * span));
       const mx = pk.data[b * 2 + 1];
       const mn = pk.data[b * 2];
       const y0 = mid - mx * mid;
@@ -111,7 +123,8 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
       });
       const keyframes = [...new Set(props.flatMap((p) => p.frames))].sort((a, b) => a - b);
       const assetId = "assetId" in l ? l.assetId : undefined;
-      return { layerId: l.id, type: l.type, assetId, name: l.name, clip: l.clip, props, keyframes, visible: l.visible, solo: !!l.solo, locked: !!l.locked, label: l.label };
+      const mediaClips = "clips" in l && l.clips ? l.clips : [];
+      return { layerId: l.id, type: l.type, assetId, name: l.name, clip: l.clip, mediaClips, props, keyframes, visible: l.visible, solo: !!l.solo, locked: !!l.locked, label: l.label };
     });
   });
   // Séparation façon Premiere : pistes visuelles au-dessus, pistes audio regroupées en dessous.
@@ -142,8 +155,8 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
           );
           if (fit) clock.configure({ durationFrames: audioFrames });
         }
-        // Clip = étendue réelle de l'audio (in inclus, out inclus) → largeur/waveform correctes.
-        editor.addAudio(assetId, file.name.replace(/\.[^.]+$/, ""), { in: 0, out: Math.max(0, audioFrames - 1) });
+        // Un clip de montage couvrant toute la source (durée réelle) → largeur/waveform correctes.
+        editor.addAudio(assetId, file.name.replace(/\.[^.]+$/, ""), audioFrames);
         setAudioVersion((v) => v + 1);
       });
     };
@@ -309,6 +322,81 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     window.addEventListener("pointerup", up);
   };
 
+  // ————————————————————————— Montage audio (MediaClip) —————————————————————————
+
+  let clipSeq = 0;
+  const [selectedClip, setSelectedClip] = createSignal<{ layerId: string; clipId: string } | null>(null);
+  const isClipSelected = (layerId: string, clipId: string): boolean => {
+    const s = selectedClip();
+    return !!s && s.layerId === layerId && s.clipId === clipId;
+  };
+  /** Longueur de la source audio en frames (clamp des trims + fenêtrage waveform). */
+  const audioSourceFrames = (row: LayerRow): number =>
+    row.assetId ? Math.max(1, Math.round(audio.duration(row.assetId) * clock.fps)) : 1;
+
+  const onMediaClipMove = (e: PointerEvent, row: LayerRow, mc: MediaClip): void => {
+    e.stopPropagation();
+    editor.select(row.layerId);
+    setSelectedClip({ layerId: row.layerId, clipId: mc.id });
+    if (row.locked) return;
+    const clips = row.mediaClips;
+    const start = frameAt(e.clientX);
+    const move = (ev: PointerEvent): void => {
+      const delta = frameAt(ev.clientX) - start;
+      editor.setAudioClips(row.layerId, clips.map((c) => (c.id === mc.id ? moveMediaClip(mc, delta) : c)));
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  const onMediaClipTrim = (e: PointerEvent, row: LayerRow, mc: MediaClip, edge: "in" | "out"): void => {
+    e.stopPropagation();
+    editor.select(row.layerId);
+    setSelectedClip({ layerId: row.layerId, clipId: mc.id });
+    if (row.locked) return;
+    const clips = row.mediaClips;
+    const srcMax = audioSourceFrames(row);
+    const move = (ev: PointerEvent): void => {
+      const f = frameAt(ev.clientX);
+      let t = edge === "in" ? trimMediaIn(mc, f) : trimMediaOut(mc, f);
+      if (edge === "out" && t.sourceOut > srcMax) t = { ...t, sourceOut: srcMax };
+      editor.setAudioClips(row.layerId, clips.map((c) => (c.id === mc.id ? t : c)));
+    };
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  /** Coupe le clip audio sélectionné au playhead (rasoir façon Premiere / ⌘K). */
+  const splitSelectedClip = (): void => {
+    const s = selectedClip();
+    if (!s) return;
+    const row = rows().find((r) => r.layerId === s.layerId);
+    const mc = row?.mediaClips.find((c) => c.id === s.clipId);
+    if (!row || !mc) return;
+    const parts = splitMediaClip(mc, frame(), `${mc.id}.${++clipSeq}`);
+    if (!parts) return;
+    editor.setAudioClips(row.layerId, row.mediaClips.flatMap((c) => (c.id === mc.id ? parts : [c])));
+    setSelectedClip({ layerId: row.layerId, clipId: parts[0].id });
+  };
+
+  const deleteSelectedClip = (): boolean => {
+    const s = selectedClip();
+    if (!s) return false;
+    const row = rows().find((r) => r.layerId === s.layerId);
+    if (!row) return false;
+    editor.setAudioClips(row.layerId, row.mediaClips.filter((c) => c.id !== s.clipId));
+    setSelectedClip(null);
+    return true;
+  };
+
   // —————————————————————————— Réordonnancement (z) ——————————————————————————
 
   const [dropTarget, setDropTarget] = createSignal<{ id: string; pos: "before" | "after" } | null>(null);
@@ -472,7 +560,11 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     else if (e.key === "ArrowLeft") { e.preventDefault(); if (e.shiftKey) jumpKeyframe(-1); else clock.stepFrame(-1); }
     else if (e.key === "Home") { e.preventDefault(); clock.goToStart(); }
     else if (e.key === "End") { e.preventDefault(); clock.goToEnd(); }
-    else if ((e.key === "Delete" || e.key === "Backspace") && selection().length) { e.preventDefault(); deleteSelection(); }
+    else if (e.key === "Delete" || e.key === "Backspace") {
+      if (deleteSelectedClip()) e.preventDefault();
+      else if (selection().length) { e.preventDefault(); deleteSelection(); }
+    }
+    else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); splitSelectedClip(); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c") { copyKeys(); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") { e.preventDefault(); pasteKeys(); }
   };
@@ -625,6 +717,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
           <span class="seq-meta">Durée {duration().toFixed(2)} s · {fps()} FPS</span>
           <span class="seq__topbar-actions">
             <button type="button" class="seq__zoom-btn" data-tooltip="Importer une piste audio" onClick={importAudio}>+ Audio</button>
+            <button type="button" class="seq__zoom-btn" data-tooltip="Couper le clip au playhead (⌘K)" disabled={!selectedClip()} onClick={splitSelectedClip}>Couper</button>
             <button type="button" class="seq__zoom-btn" data-tooltip="Ajuster à la fenêtre" onClick={fit}>Ajuster</button>
           </span>
         </div>
@@ -736,6 +829,10 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                   </>
                 )}
               </For>
+              <Show when={audioRows().length === 0}>
+                <div class="seq__section seq__section--names">Audio</div>
+                <div class="seq__name seq__name--empty">A1 · piste audio vide</div>
+              </Show>
           </Show>
           </div>
           <div class="seq__timeline">
@@ -756,22 +853,46 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                         <div class="seq__section seq__section--lane" />
                       </Show>
                       <div class="seq__lane">
-                        <div
-                          class="seq__bar seq__clip"
-                          classList={{
-                            "seq__clip--full": !row.clip,
-                            "seq__clip--selected": selectedId() === row.layerId,
-                            "seq__clip--audio": row.type === "audio",
-                          }}
-                          style={{ left: `${clipGeo(row.clip).left}px`, width: `${clipGeo(row.clip).width}px` }}
-                          onPointerDown={(e) => onClipMove(e, row)}
+                        <Show
+                          when={row.type === "audio"}
+                          fallback={
+                            <div
+                              class="seq__bar seq__clip"
+                              classList={{
+                                "seq__clip--full": !row.clip,
+                                "seq__clip--selected": selectedId() === row.layerId,
+                              }}
+                              style={{ left: `${clipGeo(row.clip).left}px`, width: `${clipGeo(row.clip).width}px` }}
+                              onPointerDown={(e) => onClipMove(e, row)}
+                            >
+                              <div class="seq__clip-handle seq__clip-handle--l" onPointerDown={(e) => onClipTrim(e, row, "in")} />
+                              <div class="seq__clip-handle seq__clip-handle--r" onPointerDown={(e) => onClipTrim(e, row, "out")} />
+                            </div>
+                          }
                         >
-                          <Show when={row.type === "audio" && row.assetId}>
-                            <AudioWave audio={audio} assetId={row.assetId!} width={clipGeo(row.clip).width} version={audioVersion()} />
-                          </Show>
-                          <div class="seq__clip-handle seq__clip-handle--l" onPointerDown={(e) => onClipTrim(e, row, "in")} />
-                          <div class="seq__clip-handle seq__clip-handle--r" onPointerDown={(e) => onClipTrim(e, row, "out")} />
-                        </div>
+                          <For each={row.mediaClips}>
+                            {(mc) => (
+                              <div
+                                class="seq__bar seq__clip seq__clip--audio"
+                                classList={{ "seq__clip--selected": isClipSelected(row.layerId, mc.id) }}
+                                style={{ left: `${framesToPx(mc.timelineIn)}px`, width: `${framesToPx(mediaClipLength(mc))}px` }}
+                                onPointerDown={(e) => onMediaClipMove(e, row, mc)}
+                              >
+                                <AudioWave
+                                  audio={audio}
+                                  assetId={row.assetId!}
+                                  width={framesToPx(mediaClipLength(mc))}
+                                  sourceIn={mc.sourceIn}
+                                  sourceOut={mc.sourceOut}
+                                  sourceFrames={audioSourceFrames(row)}
+                                  version={audioVersion()}
+                                />
+                                <div class="seq__clip-handle seq__clip-handle--l" onPointerDown={(e) => onMediaClipTrim(e, row, mc, "in")} />
+                                <div class="seq__clip-handle seq__clip-handle--r" onPointerDown={(e) => onMediaClipTrim(e, row, mc, "out")} />
+                              </div>
+                            )}
+                          </For>
+                        </Show>
                         {/* aperçu de densité des keyframes du calque (replié), façon After Effects */}
                         <Show when={!isExpanded(row.layerId)}>
                           <For each={row.keyframes}>
@@ -802,6 +923,10 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                     </>
                   )}
                 </For>
+                <Show when={audioRows().length === 0}>
+                  <div class="seq__section seq__section--lane" />
+                  <div class="seq__lane seq__lane--empty" />
+                </Show>
                 <Show when={marquee()}>
                   {(m) => (
                     <div class="seq__marquee" style={{ left: `${m().left}px`, top: `${m().top}px`, width: `${m().width}px`, height: `${m().height}px` }} />

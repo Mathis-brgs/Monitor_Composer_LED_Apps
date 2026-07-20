@@ -4,7 +4,7 @@ import {
   makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, findLayer, findGroup, findParent, groupChildren,
   fixtureDmxChannels, layerActiveAt, wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
   type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer,
-  type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type SpotChannels, type LyreChannels,
+  type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type MediaClip, type SpotChannels, type LyreChannels,
 } from "@domain/Layer.ts";
 
 /** Patch de transform : chaque canal (position/rotation/échelle) partiellement modifiable. */
@@ -366,17 +366,26 @@ export class Editor {
     return id;
   }
 
-  /** Ajoute une piste audio (l'asset est déjà décodé par l'AudioEngine). `clip` = étendue réelle
-   *  de l'audio (in/out en frames). Non rendue sur le mur → pas de `_push`. */
-  addAudio(assetId: string, name = "Piste audio", clip?: Clip): string {
+  /** Ajoute une piste audio (asset déjà décodé). `sourceFrames` = longueur de la source →
+   *  un clip de montage couvrant toute la source. Non rendue sur le mur → pas de `_push`. */
+  addAudio(assetId: string, name = "Piste audio", sourceFrames = 1): string {
     this._counter += 1;
     const id = `audio-${this._counter}`;
     const layer = makeAudio(id, name, assetId);
-    if (clip) layer.clip = clip;
+    layer.clips = [{ id: `${id}-c0`, sourceIn: 0, sourceOut: Math.max(1, Math.round(sourceFrames)), timelineIn: 0, speed: 1 }];
     this._activeGroup().children.unshift(layer);
     this._doc.selectedId = id;
     this._emit();
     return id;
+  }
+
+  /** Remplace la liste de clips de montage d'une piste audio (le montage est calculé côté UI
+   *  via les ops pures `moveMediaClip`/`trimMediaIn|Out`/`splitMediaClip`). */
+  setAudioClips(id: string, clips: MediaClip[]): void {
+    const l = findLayer(this._doc.root, id);
+    if (l?.type !== "audio") return;
+    l.clips = clips;
+    this._emit();
   }
 
   /**
