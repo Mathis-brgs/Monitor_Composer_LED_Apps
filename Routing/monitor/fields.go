@@ -53,16 +53,19 @@ func atoiMin(e *widget.Entry, name string, min int) (int, error) {
 
 // configFields regroupe les champs du panneau Configuration : parse() les lit
 // en wall.Config, load() y recharge une config existante (Appliquer/Charger).
+// ControllerIPs n'est plus édité ici : géré par la fenêtre "Contrôleurs &
+// Univers" et l'import CSV (voir main.go) — currentIPs les reprend tels quels.
 type configFields struct {
-	ips                                           *widget.Entry
+	currentIPs                                    []string
 	stripsPerCtrl, height                         *widget.Entry
 	entityBase, entityPerQuarter, entityPerStrip  *widget.Entry
 	regionX0, regionY0, regionWidth, regionHeight *widget.Entry
+	channelOrder                                  *widget.Entry
 }
 
 func newConfigFields(c wall.Config) *configFields {
 	f := &configFields{
-		ips:              newEntry(),
+		currentIPs:       append([]string(nil), c.ControllerIPs...),
 		stripsPerCtrl:    intEntry(c.StripsPerCtrl),
 		height:           intEntry(c.Height),
 		entityBase:       intEntry(c.EntityBase),
@@ -72,13 +75,18 @@ func newConfigFields(c wall.Config) *configFields {
 		regionY0:         intEntry(c.RegionY0),
 		regionWidth:      intEntry(c.RegionWidth),
 		regionHeight:     intEntry(c.RegionHeight),
+		channelOrder:     newEntry(),
 	}
-	f.ips.SetText(strings.Join(c.ControllerIPs, ","))
+	co := c.ChannelOrder
+	if co == "" {
+		co = wall.DefaultChannelOrder
+	}
+	f.channelOrder.SetText(co)
 	return f
 }
 
 func (f *configFields) load(c wall.Config) {
-	f.ips.SetText(strings.Join(c.ControllerIPs, ","))
+	f.currentIPs = append([]string(nil), c.ControllerIPs...)
 	f.stripsPerCtrl.SetText(strconv.Itoa(c.StripsPerCtrl))
 	f.height.SetText(strconv.Itoa(c.Height))
 	f.entityBase.SetText(strconv.Itoa(c.EntityBase))
@@ -88,17 +96,16 @@ func (f *configFields) load(c wall.Config) {
 	f.regionY0.SetText(strconv.Itoa(c.RegionY0))
 	f.regionWidth.SetText(strconv.Itoa(c.RegionWidth))
 	f.regionHeight.SetText(strconv.Itoa(c.RegionHeight))
+	co := c.ChannelOrder
+	if co == "" {
+		co = wall.DefaultChannelOrder
+	}
+	f.channelOrder.SetText(co)
 }
 
 func (f *configFields) parse() (wall.Config, error) {
-	var ips []string
-	for _, raw := range strings.Split(f.ips.Text, ",") {
-		if ip := strings.TrimSpace(raw); ip != "" {
-			ips = append(ips, ip)
-		}
-	}
-	if len(ips) == 0 {
-		return wall.Config{}, fmt.Errorf("au moins une adresse IP est necessaire")
+	if len(f.currentIPs) == 0 {
+		return wall.Config{}, fmt.Errorf("aucun controleur configure (utilisez \"Controleurs & Univers...\" ou l'import CSV)")
 	}
 	spc, err := atoiMin(f.stripsPerCtrl, "bandes/controleur", 1)
 	if err != nil {
@@ -125,8 +132,13 @@ func (f *configFields) parse() (wall.Config, error) {
 	rw, _ := atoi(f.regionWidth, "")
 	rh, _ := atoi(f.regionHeight, "")
 
+	co, err := parseChannelOrder(f.channelOrder.Text)
+	if err != nil {
+		return wall.Config{}, err
+	}
+
 	return wall.Config{
-		ControllerIPs:    ips,
+		ControllerIPs:    f.currentIPs,
 		StripsPerCtrl:    spc,
 		Height:           h,
 		EntityBase:       eb,
@@ -136,7 +148,32 @@ func (f *configFields) parse() (wall.Config, error) {
 		RegionY0:         ry0,
 		RegionWidth:      rw,
 		RegionHeight:     rh,
+		ChannelOrder:     co,
 	}, nil
+}
+
+// parseChannelOrder valide un ordre de canaux DMX : lettres parmi r,g,b,w,
+// chacune au plus une fois, 3 (RGB) ou 4 (RGBW) lettres.
+func parseChannelOrder(raw string) (string, error) {
+	co := strings.ToLower(strings.TrimSpace(raw))
+	if co == "" {
+		co = wall.DefaultChannelOrder
+	}
+	if len(co) < 3 || len(co) > 4 {
+		return "", fmt.Errorf("ordre des canaux : 3 (rgb) ou 4 (rgbw) lettres attendues")
+	}
+	seen := map[byte]bool{}
+	for i := 0; i < len(co); i++ {
+		c := co[i]
+		if c != 'r' && c != 'g' && c != 'b' && c != 'w' {
+			return "", fmt.Errorf("ordre des canaux invalide : lettres autorisees r,g,b,w")
+		}
+		if seen[c] {
+			return "", fmt.Errorf("ordre des canaux : lettre '%c' repetee", c)
+		}
+		seen[c] = true
+	}
+	return co, nil
 }
 
 func regionInfo(c wall.Config) string {

@@ -4,7 +4,11 @@
 // est portée par Config plutôt que figée en constantes.
 package wall
 
-import "ledtest/artnet"
+import (
+	"fmt"
+
+	"ledtest/artnet"
+)
 
 // L'univers ArtNet est local à chaque contrôleur (chaque BC216 numérote ses
 // univers à partir de 0), donc on repart à 0 à chaque nouveau contrôleur.
@@ -19,8 +23,9 @@ func (c Config) StripBase(strip int) (ip string, baseUniverse uint16) {
 
 func (c Config) LEDAddress(strip, led int) (ip string, universe uint16, channelOffset int) {
 	ip, base := c.StripBase(strip)
-	universeIdx := (led - 1) / LEDsPerUniverse
-	channelOffset = ((led - 1) % LEDsPerUniverse) * 3
+	lpu := c.LEDsPerUniverse()
+	universeIdx := (led - 1) / lpu
+	channelOffset = ((led - 1) % lpu) * c.ChannelsPerLED()
 	universe = base + uint16(universeIdx)
 	return
 }
@@ -77,94 +82,176 @@ func (c Config) LEDInRegion(strip, led int) bool {
 	return ok && c.InRegion(x, y)
 }
 
-func (c Config) ledSlot(strip, led int) (slot, ch int) {
-	universeIdx := (led - 1) / LEDsPerUniverse
-	ch = ((led - 1) % LEDsPerUniverse) * 3
-	slot = (strip-1)*c.UniversesPerStrip() + universeIdx
-	return
+// Frame est l'état DMX de tout le mur : un buffer 512 octets par univers
+// physique (IP, univers), indexé par adresse plutôt que par bande — ainsi
+// formule (StripBase) et table de patch explicite (Config.Patch) partagent
+// exactement le même stockage/envoi, sans dupliquer la logique.
+type frameSlot struct {
+	ip       string
+	universe uint16
+	data     [512]byte
+	dirty    bool
 }
 
-// Frame est l'état RGB de tout le mur, avec suivi des univers modifiés pour
-// n'envoyer que le strict nécessaire sur le réseau.
 type Frame struct {
 	cfg   Config
-	data  [][512]byte
-	dirty []bool
+	slots []frameSlot
+	index map[string]int // clé slotKey(ip,universe) -> indice dans slots
 }
 
+func slotKey(ip string, universe uint16) string {
+	return fmt.Sprintf("%s#%d", ip, universe)
+}
+
+// NewFrame réserve un slot par univers physique utilisé : ceux de la table de
+// patch explicite si elle est renseignée, sinon ceux dérivés de la formule
+// (StripBase/UniversesPerStrip) — comportement par défaut inchangé — plus
+// l'univers fixtures (lyres/projecteur) du dernier contrôleur.
 func NewFrame(cfg Config) *Frame {
-	n := cfg.StripCount() * cfg.UniversesPerStrip()
-	return &Frame{cfg: cfg, data: make([][512]byte, n), dirty: make([]bool, n)}
+	f := &Frame{cfg: cfg, index: map[string]int{}}
+	add := func(ip string, universe uint16) {
+		key := slotKey(ip, universe)
+		if _, exists := f.index[key]; exists {
+			return
+		}
+		f.index[key] = len(f.slots)
+		f.slots = append(f.slots, frameSlot{ip: ip, universe: universe})
+	}
+	if len(cfg.Patch) > 0 {
+		for _, row := range cfg.Patch {
+			add(row.IP, row.Universe)
+		}
+	} else {
+		for strip := 1; strip <= cfg.StripCount(); strip++ {
+			ip, base := cfg.StripBase(strip)
+			for u := 0; u < cfg.UniversesPerStrip(); u++ {
+				add(ip, base+uint16(u))
+			}
+		}
+		if len(cfg.ControllerIPs) > 0 {
+			add(cfg.ControllerIPs[len(cfg.ControllerIPs)-1], FixtureUniverse)
+		}
+	}
+	return f
 }
 
 func (f *Frame) Config() Config {
 	return f.cfg
 }
 
-// SetLED utilise un slot de stockage global (indépendant du contrôleur) pour
-// éviter toute collision entre bandes de contrôleurs différents qui
-// partagent les mêmes numéros d'univers locaux.
-func (f *Frame) SetLED(strip, led int, r, g, b byte) {
-	slot, ch := f.cfg.ledSlot(strip, led)
-	f.data[slot][ch] = r
-	f.data[slot][ch+1] = g
-	f.data[slot][ch+2] = b
-	f.dirty[slot] = true
+func (f *Frame) slotFor(ip string, universe uint16) (int, bool) {
+	idx, ok := f.index[slotKey(ip, universe)]
+	return idx, ok
 }
 
-func (f *Frame) GetLED(strip, led int) (r, g, b byte) {
-	slot, ch := f.cfg.ledSlot(strip, led)
-	return f.data[slot][ch], f.data[slot][ch+1], f.data[slot][ch+2]
+// SetLED adresse une LED via la formule bande/LED (StripBase/LEDAddress).
+// Ignore silencieusement si (ip,univers) n'a pas de slot réservé (ex: table
+// de patch active qui ne couvre pas cette bande).
+func (f *Frame) SetLED(strip, led int, r, g, b, w byte) {
+	ip, universe, ch := f.cfg.LEDAddress(strip, led)
+	idx, ok := f.slotFor(ip, universe)
+	if !ok {
+		return
+	}
+	f.cfg.writeChannels(f.slots[idx].data[:], ch, r, g, b, w)
+	f.slots[idx].dirty = true
+}
+
+func (f *Frame) GetLED(strip, led int) (r, g, b, w byte) {
+	ip, universe, ch := f.cfg.LEDAddress(strip, led)
+	idx, ok := f.slotFor(ip, universe)
+	if !ok {
+		return 0, 0, 0, 0
+	}
+	return f.cfg.readChannels(f.slots[idx].data[:], ch)
+}
+
+// SetEntity adresse une entité eHuB (LED de bande OU fixture, cf.
+// Config.ResolveEntity) directement par ID, sans que l'appelant ait à
+// distinguer les deux mécanismes. Renvoie false si l'entité n'est adressable
+// nulle part (ID inconnu, ou (ip,univers) résolu hors de la config actuelle).
+func (f *Frame) SetEntity(entityID int, r, g, b, w byte) bool {
+	ip, universe, ch, ok := f.cfg.ResolveEntity(entityID)
+	if !ok {
+		return false
+	}
+	idx, ok := f.slotFor(ip, universe)
+	if !ok {
+		return false
+	}
+	f.cfg.writeChannels(f.slots[idx].data[:], ch, r, g, b, w)
+	f.slots[idx].dirty = true
+	return true
+}
+
+// writeChannels/readChannels appliquent Config.ChannelOrder (ex: "rgb",
+// "grb", "rgbw") pour placer/lire les composantes aux bons octets DMX.
+func (c Config) writeChannels(buf []byte, ch int, r, g, b, w byte) {
+	order := c.channelOrder()
+	for i := 0; i < len(order); i++ {
+		switch order[i] {
+		case 'r':
+			buf[ch+i] = r
+		case 'g':
+			buf[ch+i] = g
+		case 'b':
+			buf[ch+i] = b
+		case 'w':
+			buf[ch+i] = w
+		}
+	}
+}
+
+func (c Config) readChannels(buf []byte, ch int) (r, g, b, w byte) {
+	order := c.channelOrder()
+	for i := 0; i < len(order); i++ {
+		switch order[i] {
+		case 'r':
+			r = buf[ch+i]
+		case 'g':
+			g = buf[ch+i]
+		case 'b':
+			b = buf[ch+i]
+		case 'w':
+			w = buf[ch+i]
+		}
+	}
+	return
 }
 
 // ChannelsFor renvoie les 512 octets bruts d'un (IP, univers) donné, pour le
 // monitor (visualisation des canaux DMX avant envoi).
 func (f *Frame) ChannelsFor(ip string, universe uint16) (data [512]byte, ok bool) {
-	ups := f.cfg.UniversesPerStrip()
-	for strip := 1; strip <= f.cfg.StripCount(); strip++ {
-		sip, base := f.cfg.StripBase(strip)
-		if sip != ip || universe < base || universe >= base+uint16(ups) {
-			continue
-		}
-		slot := (strip-1)*ups + int(universe-base)
-		return f.data[slot], true
+	idx, found := f.slotFor(ip, universe)
+	if !found {
+		return [512]byte{}, false
 	}
-	return [512]byte{}, false
+	return f.slots[idx].data, true
 }
 
 // SetRaw écrit directement les octets d'un univers, pour le mode "adressage
 // brut" du monitor (bypass de l'abstraction bande/LED). Renvoie false si
-// (ip, univers) ne correspond à aucune bande de la config actuelle.
+// (ip, univers) n'a pas de slot réservé dans la config actuelle.
 func (f *Frame) SetRaw(ip string, universe uint16, data []byte) bool {
-	ups := f.cfg.UniversesPerStrip()
-	for strip := 1; strip <= f.cfg.StripCount(); strip++ {
-		sip, base := f.cfg.StripBase(strip)
-		if sip != ip || universe < base || universe >= base+uint16(ups) {
-			continue
-		}
-		slot := (strip-1)*ups + int(universe-base)
-		copy(f.data[slot][:], data)
-		f.dirty[slot] = true
-		return true
+	idx, ok := f.slotFor(ip, universe)
+	if !ok {
+		return false
 	}
-	return false
+	copy(f.slots[idx].data[:], data)
+	f.slots[idx].dirty = true
+	return true
 }
 
 // Flush envoie uniquement les univers modifiés depuis le dernier Flush.
 func (f *Frame) Flush(sender *artnet.Sender, seq byte) error {
-	ups := f.cfg.UniversesPerStrip()
-	for slot := range f.data {
-		if !f.dirty[slot] {
+	for i := range f.slots {
+		if !f.slots[i].dirty {
 			continue
 		}
-		strip := slot/ups + 1
-		universeIdx := slot % ups
-		ip, base := f.cfg.StripBase(strip)
-		universe := base + uint16(universeIdx)
-		if err := sender.Send(ip, universe, seq, f.data[slot][:]); err != nil {
+		if err := sender.Send(f.slots[i].ip, f.slots[i].universe, seq, f.slots[i].data[:]); err != nil {
 			return err
 		}
-		f.dirty[slot] = false
+		f.slots[i].dirty = false
 	}
 	return nil
 }
