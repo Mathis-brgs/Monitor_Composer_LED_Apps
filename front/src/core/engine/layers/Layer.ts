@@ -12,6 +12,7 @@ export const LAYER_ID = {
   PLASMA: "plasma",
   SWEEP: "sweep",
   SCENE3D: "scene3d",
+  VIDEO: "video",
 } as const;
 export type LayerId = (typeof LAYER_ID)[keyof typeof LAYER_ID];
 

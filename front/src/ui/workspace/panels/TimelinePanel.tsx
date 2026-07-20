@@ -170,6 +170,19 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     input.click();
   };
 
+  /** Importe une vidéo → calque vidéo plein-cadre diffusé sur le mur (object URL). */
+  const importVideo = (): void => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "video/*";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      editor.addVideo(URL.createObjectURL(file), file.name.replace(/\.[^.]+$/, ""));
+    };
+    input.click();
+  };
+
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
   const isExpanded = (id: string): boolean => expanded().has(id);
   const toggleExpand = (id: string): void => {
@@ -773,6 +786,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
         <div class="seq__topbar-main">
           <span class="seq-meta">Durée {duration().toFixed(2)} s · {fps()} FPS</span>
           <span class="seq__topbar-actions">
+            <button type="button" class="seq__zoom-btn" data-tooltip="Importer une vidéo (diffusée sur le mur)" onClick={importVideo}>+ Vidéo</button>
             <button type="button" class="seq__zoom-btn" data-tooltip="Importer une piste audio" onClick={importAudio}>+ Audio</button>
             <button type="button" class="seq__zoom-btn" data-tooltip="Couper le clip au playhead (⌘K)" disabled={!selectedClip()} onClick={splitSelectedClip}>Couper</button>
             <button type="button" class="seq__zoom-btn" data-tooltip="Ajuster à la fenêtre" onClick={fit}>Ajuster</button>

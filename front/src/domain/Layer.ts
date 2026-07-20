@@ -278,6 +278,10 @@ export function makeShaderLayer(id: string, shader: ShaderId, name: string): Sha
 export function makeAudio(id: string, name: string, assetId: string): AudioLayer {
   return { ...base(id, name), type: "audio", assetId, gain: 1 };
 }
+/** Vidéo plein-cadre : `assetId` = URL (object URL / data URL) de la source. */
+export function makeVideo(id: string, name: string, assetId: string): VideoLayer {
+  return { ...base(id, name), type: "video", assetId };
+}
 /** Éteint par défaut (sécurité physique : pas de flash inattendu à la création). */
 export function makeSpot(id: string, name: string, baseChannel: number): SpotLayer {
   return { ...base(id, name), type: "spot", baseChannel, channels: { r: 0, g: 0, b: 0, w: 0 } };

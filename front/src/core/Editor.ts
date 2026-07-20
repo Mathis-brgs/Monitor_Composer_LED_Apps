@@ -1,9 +1,9 @@
 import { Euler, Matrix4, Quaternion, Vector3 } from "three/webgpu";
 import type { Engine } from "./engine/Engine.ts";
 import {
-  makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, findLayer, findGroup, findParent, groupChildren,
+  makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, makeVideo, findLayer, findGroup, findParent, groupChildren,
   fixtureDmxChannels, layerActiveAt, wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
-  type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer,
+  type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer, type VideoLayer,
   type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type MediaClip, type SpotChannels, type LyreChannels,
 } from "@domain/Layer.ts";
 
@@ -13,9 +13,10 @@ export interface TransformPatch { position?: Partial<Vec3>; rotation?: Partial<V
 /** Outil actif de l'éditeur 3D : curseur de sélection ou l'un des trois modes de gizmo. */
 export type EditorTool = "select" | "translate" | "rotate" | "scale";
 import { createLayer } from "./engine/layers/index.ts";
-import type { Layer as EngineLayer } from "./engine/layers/Layer.ts";
+import { LAYER_ID, type Layer as EngineLayer } from "./engine/layers/Layer.ts";
 import { Scene3DLayer } from "./engine/layers/Scene3D.layer.ts";
 import { SolidLayer } from "./engine/layers/Solid.layer.ts";
+import { VideoWallLayer } from "./engine/layers/Video.layer.ts";
 import { countLit, type ShapeFill, type ShapeInput } from "./engine/shapes.ts";
 import { Animator } from "./Animator.ts";
 import { sampleKeyframes, type Composition, type Interp, type Track } from "@domain/Composition.ts";
@@ -72,6 +73,7 @@ export class Editor {
   private _doc = seedDocument();
   private readonly _listeners = new Set<EditorListener>();
   private readonly _shaderLive = new Map<string, EngineLayer>();
+  private readonly _videoLive = new Map<string, EngineLayer>();
   private _scene3d: Scene3DLayer | null = null;
   private _engine: Engine | null = null;
   private _counter = 0;
@@ -396,6 +398,17 @@ export class Editor {
     this._emit();
   }
 
+  /** Ajoute une vidéo plein-cadre diffusée sur le mur (`url` = object/data URL). */
+  addVideo(url: string, name = "Vidéo"): string {
+    this._counter += 1;
+    const id = `video-${this._counter}`;
+    this._activeGroup().children.unshift(makeVideo(id, name, url));
+    this._doc.selectedId = id;
+    this._push();
+    this._emit();
+    return id;
+  }
+
   /**
    * Nombre de spots/lyres illimité côté éditeur : le canal de base est juste une
    * suggestion de départ (doc prof), toujours modifiable ensuite (voir
@@ -658,7 +671,7 @@ export class Editor {
   }
 
   /** appelé chaque frame moteur : évalue les keyframes puis (au besoin) re-rasterise les shapes. */
-  tick(frame: number): void {
+  tick(frame: number, playing = false, fps = 24): void {
     this._frame = frame;
     this._sceneDirty = false;
     this._animator.evaluate(frame);
@@ -666,6 +679,24 @@ export class Editor {
       this._push(); // un calque a franchi un bord de clip → reconstruit la pile (re-rasterise aussi les shapes)
     } else if (this._sceneDirty || this._videoEls.size > 0) {
       this._recomputeScene();
+    }
+    this._syncVideos(frame, playing, fps);
+  }
+
+  /** Synchronise les `<video>` plein-cadre sur le playhead : play en lecture, seek en pause/scrub. */
+  private _syncVideos(frame: number, playing: boolean, fps: number): void {
+    for (const [id, el] of this._videoEls) {
+      const layer = findLayer(this._doc.root, id);
+      if (layer?.type !== "video") continue; // les fills vidéo de shapes gardent leur boucle libre
+      if (!(layer.visible && layerActiveAt(layer.clip, frame))) { if (!el.paused) el.pause(); continue; }
+      const targetSec = frame / (fps > 0 ? fps : 24);
+      if (playing) {
+        if (el.paused) void el.play().catch(() => {});
+        if (Math.abs(el.currentTime - targetSec) > 0.2) el.currentTime = targetSec; // reslave
+      } else {
+        if (!el.paused) el.pause();
+        el.currentTime = targetSec; // scrub image par image
+      }
     }
   }
 
@@ -915,8 +946,10 @@ export class Editor {
       } else if (child.type === "shape") {
         // un seul calque Scene3D agrégé (position de la 1re shape) tant qu'il reste des shapes actives
         if (!sceneAdded && shapes.length > 0) { stack.push(scene3d); sceneAdded = true; }
+      } else if (child.type === "video") {
+        if (child.visible && layerActiveAt(child.clip, this._frame) && (!anySolo || child.solo)) stack.push(this._ensureVideo(child));
       }
-      // group/image/video/spot/lyre : non rendus sur le mur (navigables / repère visuel seulement)
+      // group/image/spot/lyre : non rendus sur le mur (navigables / repère visuel seulement)
     }
     // ordre d'affichage (haut = avant) → ordre moteur inversé (le haut rend en dernier)
     engine.setLayers([...stack].reverse());
@@ -930,6 +963,19 @@ export class Editor {
       if (layerActiveAt(child.clip, this._frame)) sig += child.id + ",";
     }
     return sig;
+  }
+
+  /** engine layer d'un calque vidéo (VideoTexture plein-cadre), créé une fois puis synchronisé. */
+  private _ensureVideo(model: VideoLayer): EngineLayer {
+    this._ensureVideoPlayback(model.id, model.assetId); // crée/relance le <video> caché
+    let live = this._videoLive.get(model.id);
+    if (!live) { live = createLayer(LAYER_ID.VIDEO, model.id); this._videoLive.set(model.id, live); }
+    const el = this._videoEls.get(model.id);
+    if (el && live instanceof VideoWallLayer) live.setVideo(el);
+    live.enabled = model.visible;
+    live.opacity = model.opacity;
+    live.blend = model.blend;
+    return live;
   }
 
   /** engine layer d'un calque shader (créé une fois, réutilisé), synchronisé sur le modèle. */

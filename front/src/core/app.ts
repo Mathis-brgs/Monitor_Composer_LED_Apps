@@ -184,7 +184,7 @@ export class App {
   private readonly _frame = (frame: Frame): void => {
     const { clock, engine, editor } = this.context;
     clock.advance(frame.deltaTime);
-    editor.tick(clock.frame); // évalue les keyframes au frame courant + fill vidéo
+    editor.tick(clock.frame, clock.playing, clock.fps); // keyframes + sync vidéo (play/seek)
     this._audioSync.tick(); // asservit l'audio à l'horloge (play/pause/reslave)
     engine.update(clock.time);
     this._view?.render?.();
