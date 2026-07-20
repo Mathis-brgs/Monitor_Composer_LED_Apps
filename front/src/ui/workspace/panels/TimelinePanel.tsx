@@ -1,7 +1,7 @@
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
 import type { Clock } from "@core/Clock.ts";
 import type { Editor } from "@core/Editor.ts";
-import type { AudioEngine } from "@core/AudioEngine.ts";
+import type { AudioEngine, AudioPeaks } from "@core/AudioEngine.ts";
 import {
   moveClip, trimIn, trimOut, moveMediaClip, trimMediaIn, trimMediaOut, splitMediaClip,
   mediaClipLength, mediaClipTimelineOut,
@@ -37,6 +37,38 @@ interface LayerRow { layerId: string; type: Layer["type"]; assetId: string | und
 /** Gain audio maximal (rubber-band de volume) : 2 = +6 dB env., 1 = unité. */
 const GAIN_MAX = 2;
 
+const WAVE_H = 30;
+/** Cache LRU de waveforms rasterisées : reconstruire un canvas (rebuild `<For>`) ne relance
+ *  plus la boucle de peaks — un simple `drawImage` suffit. Clé = fenêtre + géométrie + zoom. */
+const WAVE_CACHE = new Map<string, HTMLCanvasElement>();
+const WAVE_CACHE_MAX = 96;
+function waveBitmap(pk: AudioPeaks, key: string, w: number, b0: number, b1: number, z: number, color: string): HTMLCanvasElement {
+  const hit = WAVE_CACHE.get(key);
+  if (hit) { WAVE_CACHE.delete(key); WAVE_CACHE.set(key, hit); return hit; } // touch (LRU)
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = WAVE_H;
+  const g = c.getContext("2d");
+  if (g) {
+    const span = Math.max(1, b1 - b0);
+    const mid = WAVE_H / 2;
+    // un seul chemin rempli d'un coup (vs. un fillRect par pixel) — bien plus rapide
+    const path = new Path2D();
+    for (let x = 0; x < w; x++) {
+      const b = Math.min(pk.buckets - 1, b0 + Math.floor((x / w) * span));
+      const mx = Math.max(-1, Math.min(1, pk.data[b * 2 + 1] * z));
+      const mn = Math.max(-1, Math.min(1, pk.data[b * 2] * z));
+      const y0 = mid - mx * mid;
+      path.rect(x, y0, 1, Math.max(1, (mid - mn * mid) - y0));
+    }
+    g.fillStyle = color;
+    g.fill(path);
+  }
+  if (WAVE_CACHE.size >= WAVE_CACHE_MAX) WAVE_CACHE.delete(WAVE_CACHE.keys().next().value!);
+  WAVE_CACHE.set(key, c);
+  return c;
+}
+
 /** Waveform d'un clip audio : trace la FENÊTRE de source [sourceIn, sourceOut] du clip
  *  (pas d'écrasement au trim), depuis les peaks précalculés de l'AudioEngine. */
 function AudioWave(props: {
@@ -50,28 +82,20 @@ function AudioWave(props: {
     const pk = props.audio.peaks(props.assetId);
     const c = cv;
     if (!c) return;
-    const h = 30;
     c.width = w;
-    c.height = h;
+    c.height = WAVE_H;
     const g = c.getContext("2d");
     if (!g) return;
-    g.clearRect(0, 0, w, h);
+    g.clearRect(0, 0, w, WAVE_H);
     if (!pk) return;
     // sous-plage de buckets correspondant à la fenêtre de source du clip
     const frames = Math.max(1, props.sourceFrames);
     const b0 = Math.max(0, Math.floor((props.sourceIn / frames) * pk.buckets));
     const b1 = Math.min(pk.buckets, Math.ceil((props.sourceOut / frames) * pk.buckets));
-    const span = Math.max(1, b1 - b0);
-    g.fillStyle = getComputedStyle(c).color || "#ff8a3d";
-    const mid = h / 2;
     const z = Math.max(1, props.zoom);
-    for (let x = 0; x < w; x++) {
-      const b = Math.min(pk.buckets - 1, b0 + Math.floor((x / w) * span));
-      const mx = Math.max(-1, Math.min(1, pk.data[b * 2 + 1] * z));
-      const mn = Math.max(-1, Math.min(1, pk.data[b * 2] * z));
-      const y0 = mid - mx * mid;
-      g.fillRect(x, y0, 1, Math.max(1, (mid - mn * mid) - y0));
-    }
+    const color = getComputedStyle(c).color || "#ff8a3d";
+    const key = `${props.assetId}|${b0}|${b1}|${w}|${z}|${color}`;
+    g.drawImage(waveBitmap(pk, key, w, b0, b1, z, color), 0, 0);
   });
   return <canvas ref={cv} class="seq__wave" />;
 }
@@ -91,8 +115,11 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
   const frame = fromStore(clock, () => clock.frame);
   const duration = fromStore(clock, () => clock.duration);
   const fps = fromStore(clock, () => clock.fps);
+  const bpm = fromStore(clock, () => clock.bpm);
+  const beatsPerBar = fromStore(clock, () => clock.beatsPerBar);
   const [pps, setPps] = createSignal(DEFAULT_PPS);
   const [waveZoom, setWaveZoom] = createSignal(1); // zoom vertical (amplitude) de la waveform (Alt+molette)
+  const [snapOn, setSnapOn] = createSignal(true);  // aimantation sur la grille rythmique (BPM)
 
   // Snapshot réactif : recalculé à chaque emit de l'Editor (jamais pendant la lecture).
   // Une rangée par calque (ordre z) + son catalogue de propriétés animables (façon AE).
@@ -256,6 +283,25 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     return Array.from({ length: secs + 1 }, (_, i) => i);
   };
 
+  // ————————————————————————————— Tempo (grille BPM) —————————————————————————————
+  const framesPerBeat = (): number => { const b = bpm(); return b > 0 ? (fps() * 60) / b : 0; };
+  const beatPx = (): number => framesToPx(framesPerBeat());
+  const barPx = (): number => beatPx() * beatsPerBar();
+  /** Grille rythmique en fond (gradient CSS, zéro DOM) : ligne fine par battement, accent par mesure. */
+  const gridBg = (): string | undefined => {
+    const bp = beatPx();
+    if (bp < 6) return undefined; // trop dense à ce zoom : masque la grille de battements
+    return `repeating-linear-gradient(to right, var(--tl-beat) 0 1px, transparent 1px ${bp}px),`
+      + `repeating-linear-gradient(to right, var(--tl-bar) 0 1px, transparent 1px ${barPx()}px)`;
+  };
+  /** Aimante un frame sur le battement le plus proche (si snap actif). */
+  const snapFrame = (f: number): number => {
+    if (!snapOn()) return Math.round(f);
+    const fpb = framesPerBeat();
+    if (fpb <= 0) return Math.round(f);
+    return Math.round(Math.round(f / fpb) * fpb);
+  };
+
   const clipGeo = (clip: Clip | undefined): { left: number; width: number } => {
     if (!clip) return { left: 0, width: contentWidth() };
     return { left: framesToPx(clip.in), width: framesToPx(clip.out - clip.in + 1) };
@@ -315,6 +361,27 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
 
   // ————————————————————————————— Clips (barre) —————————————————————————————
 
+  /** Aperçu de drag (façon Premiere) : le clip tiré s'affiche à sa géométrie en cours en
+   *  opacité réduite ; le modèle n'est muté qu'au relâché. Aucun `_emit` pendant le geste
+   *  → plus de recalcul de `rows()` ni de rebuild des waveforms à chaque `pointermove`. */
+  type ClipDrag =
+    | { mode: "simple"; layerId: string; clip: Clip }
+    | { mode: "media"; layerId: string; clipId: string; mc: MediaClip };
+  const [clipDrag, setClipDrag] = createSignal<ClipDrag | null>(null);
+  const simpleClipView = (row: LayerRow): Clip | undefined => {
+    const d = clipDrag();
+    return d?.mode === "simple" && d.layerId === row.layerId ? d.clip : row.clip;
+  };
+  const mediaClipView = (row: LayerRow, mc: MediaClip): MediaClip => {
+    const d = clipDrag();
+    return d?.mode === "media" && d.layerId === row.layerId && d.clipId === mc.id ? d.mc : mc;
+  };
+  const isClipDragging = (layerId: string, clipId?: string): boolean => {
+    const d = clipDrag();
+    if (!d || d.layerId !== layerId) return false;
+    return d.mode === "media" ? d.clipId === clipId : clipId === undefined;
+  };
+
   const onClipMove = (e: PointerEvent, row: LayerRow): void => {
     e.stopPropagation();
     if (row.locked) return;
@@ -322,12 +389,17 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     const dur = clock.durationFrames;
     const base: Clip = row.clip ?? { in: 0, out: dur };
     const startFrame = frameAt(e.clientX);
+    let preview = base;
     const move = (ev: PointerEvent): void => {
-      editor.setClip(row.layerId, moveClip(base, frameAt(ev.clientX) - startFrame, dur));
+      const rawIn = base.in + (frameAt(ev.clientX) - startFrame);
+      preview = moveClip(base, snapFrame(rawIn) - base.in, dur);
+      setClipDrag({ mode: "simple", layerId: row.layerId, clip: preview });
     };
     const up = (): void => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      setClipDrag(null);
+      editor.setClip(row.layerId, preview);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -339,13 +411,17 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     editor.select(row.layerId);
     const dur = clock.durationFrames;
     const base: Clip = row.clip ?? { in: 0, out: dur };
+    let preview = base;
     const move = (ev: PointerEvent): void => {
-      const f = frameAt(ev.clientX);
-      editor.setClip(row.layerId, edge === "in" ? trimIn(base, f, dur) : trimOut(base, f, dur));
+      const f = snapFrame(frameAt(ev.clientX));
+      preview = edge === "in" ? trimIn(base, f, dur) : trimOut(base, f, dur);
+      setClipDrag({ mode: "simple", layerId: row.layerId, clip: preview });
     };
     const up = (): void => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      setClipDrag(null);
+      editor.setClip(row.layerId, preview);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -361,7 +437,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
   };
   /** Applique une liste de clips au calque selon son type (audio ou vidéo). */
   const setClips = (row: LayerRow, clips: MediaClip[]): void => {
-    if (row.type === "audio") setClips(row,clips);
+    if (row.type === "audio") editor.setAudioClips(row.layerId, clips);
     else if (row.type === "video") editor.setVideoClips(row.layerId, clips);
   };
   /** Longueur de la source en frames (clamp des trims + fenêtrage waveform). Infini si vidéo non chargée. */
@@ -376,15 +452,18 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     editor.select(row.layerId);
     setSelectedClip({ layerId: row.layerId, clipId: mc.id });
     if (row.locked) return;
-    const clips = row.mediaClips;
     const start = frameAt(e.clientX);
+    let preview = mc;
     const move = (ev: PointerEvent): void => {
-      const delta = frameAt(ev.clientX) - start;
-      setClips(row,clips.map((c) => (c.id === mc.id ? moveMediaClip(mc, delta) : c)));
+      const raw = moveMediaClip(mc, frameAt(ev.clientX) - start);
+      preview = { ...raw, timelineIn: Math.max(0, snapFrame(raw.timelineIn)) };
+      setClipDrag({ mode: "media", layerId: row.layerId, clipId: mc.id, mc: preview });
     };
     const up = (): void => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      setClipDrag(null);
+      setClips(row, row.mediaClips.map((c) => (c.id === mc.id ? preview : c)));
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -395,17 +474,20 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     editor.select(row.layerId);
     setSelectedClip({ layerId: row.layerId, clipId: mc.id });
     if (row.locked) return;
-    const clips = row.mediaClips;
     const srcMax = clipSourceFrames(row);
+    let preview = mc;
     const move = (ev: PointerEvent): void => {
-      const f = frameAt(ev.clientX);
+      const f = snapFrame(frameAt(ev.clientX));
       let t = edge === "in" ? trimMediaIn(mc, f) : trimMediaOut(mc, f);
       if (edge === "out" && t.sourceOut > srcMax) t = { ...t, sourceOut: srcMax };
-      setClips(row,clips.map((c) => (c.id === mc.id ? t : c)));
+      preview = t;
+      setClipDrag({ mode: "media", layerId: row.layerId, clipId: mc.id, mc: preview });
     };
     const up = (): void => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      setClipDrag(null);
+      setClips(row, row.mediaClips.map((c) => (c.id === mc.id ? preview : c)));
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -439,22 +521,24 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     e.stopPropagation();
     setSelectedClip({ layerId: row.layerId, clipId: mc.id });
     if (row.locked) return;
-    const clips = row.mediaClips;
     const len = mediaClipLength(mc);
     const out = mediaClipTimelineOut(mc);
+    let preview = mc;
     const setFade = (clientX: number): void => {
       const f = frameAt(clientX);
       const dur = edge === "in"
         ? Math.max(0, Math.min(len, Math.round(f - mc.timelineIn)))
         : Math.max(0, Math.min(len, Math.round(out - f)));
-      const updated = { ...mc, ...(edge === "in" ? { fadeIn: dur } : { fadeOut: dur }) };
-      setClips(row,clips.map((c) => (c.id === mc.id ? updated : c)));
+      preview = { ...mc, ...(edge === "in" ? { fadeIn: dur } : { fadeOut: dur }) };
+      setClipDrag({ mode: "media", layerId: row.layerId, clipId: mc.id, mc: preview });
     };
     setFade(e.clientX);
     const move = (ev: PointerEvent): void => setFade(ev.clientX);
     const up = (): void => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      setClipDrag(null);
+      setClips(row, row.mediaClips.map((c) => (c.id === mc.id ? preview : c)));
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -800,6 +884,17 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
         <div class="seq__topbar-main">
           <span class="seq-meta">Durée {duration().toFixed(2)} s · {fps()} FPS</span>
           <span class="seq__topbar-actions">
+            <label class="seq__tempo" data-tooltip="Tempo — grille rythmique (BPM)">
+              <span class="seq__tempo-label">BPM</span>
+              <NumberField class="seq__tempo-field" value={bpm()} step={1} format={(n) => String(Math.round(n))} onInput={(v) => clock.setBpm(Math.round(v))} />
+            </label>
+            <button
+              type="button"
+              class="seq__zoom-btn"
+              classList={{ "seq__zoom-btn--on": snapOn() }}
+              data-tooltip="Aimanter clips et rognages sur la grille (BPM)"
+              onClick={() => setSnapOn(!snapOn())}
+            >Snap</button>
             <button type="button" class="seq__zoom-btn" data-tooltip="Importer une vidéo (diffusée sur le mur)" onClick={importVideo}>+ Vidéo</button>
             <button type="button" class="seq__zoom-btn" data-tooltip="Importer une piste audio" onClick={importAudio}>+ Audio</button>
             <button type="button" class="seq__zoom-btn" data-tooltip="Couper le clip au playhead (⌘K)" disabled={!selectedClip()} onClick={splitSelectedClip}>Couper</button>
@@ -943,7 +1038,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
           </Show>
           </div>
           <div class="seq__timeline">
-              <div class="seq__ruler" onPointerDown={onRulerDown}>
+              <div class="seq__ruler" style={{ "background-image": gridBg() }} onPointerDown={onRulerDown}>
                 <For each={marks()}>
                   {(s) => (
                     <div class="seq__mark" style={{ left: `${timeToPx(s)}px` }}>
@@ -952,7 +1047,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                   )}
                 </For>
               </div>
-              <div class="seq__lanes" ref={lanesEl} onPointerDown={onLanesDown}>
+              <div class="seq__lanes" ref={lanesEl} style={{ "background-image": gridBg() }} onPointerDown={onLanesDown}>
                 <For each={sortedRows()}>
                   {(row, i) => (
                     <>
@@ -968,8 +1063,9 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                               classList={{
                                 "seq__clip--full": !row.clip,
                                 "seq__clip--selected": selectedId() === row.layerId,
+                                "seq__clip--dragging": isClipDragging(row.layerId),
                               }}
-                              style={{ left: `${clipGeo(row.clip).left}px`, width: `${clipGeo(row.clip).width}px` }}
+                              style={{ left: `${clipGeo(simpleClipView(row)).left}px`, width: `${clipGeo(simpleClipView(row)).width}px` }}
                               onPointerDown={(e) => onClipMove(e, row)}
                             >
                               <div class="seq__clip-handle seq__clip-handle--l" onPointerDown={(e) => onClipTrim(e, row, "in")} />
@@ -978,24 +1074,27 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                           }
                         >
                           <For each={row.mediaClips}>
-                            {(mc) => (
+                            {(mc) => {
+                              const v = (): MediaClip => mediaClipView(row, mc); // géométrie affichée (preview de drag ou modèle)
+                              return (
                               <div
                                 class="seq__bar seq__clip"
                                 classList={{
                                   "seq__clip--audio": row.type === "audio",
                                   "seq__clip--video": row.type === "video",
                                   "seq__clip--selected": isClipSelected(row.layerId, mc.id),
+                                  "seq__clip--dragging": isClipDragging(row.layerId, mc.id),
                                 }}
-                                style={{ left: `${framesToPx(mc.timelineIn)}px`, width: `${framesToPx(mediaClipLength(mc))}px` }}
+                                style={{ left: `${framesToPx(v().timelineIn)}px`, width: `${framesToPx(mediaClipLength(v()))}px` }}
                                 onPointerDown={(e) => onMediaClipMove(e, row, mc)}
                               >
                                 <Show when={row.type === "audio"}>
                                   <AudioWave
                                     audio={audio}
                                     assetId={row.assetId!}
-                                    width={framesToPx(mediaClipLength(mc))}
-                                    sourceIn={mc.sourceIn}
-                                    sourceOut={mc.sourceOut}
+                                    width={framesToPx(mediaClipLength(v()))}
+                                    sourceIn={v().sourceIn}
+                                    sourceOut={v().sourceOut}
                                     sourceFrames={clipSourceFrames(row)}
                                     zoom={waveZoom()}
                                     version={audioVersion()}
@@ -1010,18 +1109,19 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                                 <Show when={row.type === "video"}>
                                   <span class="seq__clip-label">{row.name}</span>
                                 </Show>
-                                <Show when={(mc.fadeIn ?? 0) > 0}>
-                                  <div class="seq__fade seq__fade--in" style={{ width: `${framesToPx(mc.fadeIn!)}px` }} />
+                                <Show when={(v().fadeIn ?? 0) > 0}>
+                                  <div class="seq__fade seq__fade--in" style={{ width: `${framesToPx(v().fadeIn!)}px` }} />
                                 </Show>
-                                <Show when={(mc.fadeOut ?? 0) > 0}>
-                                  <div class="seq__fade seq__fade--out" style={{ width: `${framesToPx(mc.fadeOut!)}px` }} />
+                                <Show when={(v().fadeOut ?? 0) > 0}>
+                                  <div class="seq__fade seq__fade--out" style={{ width: `${framesToPx(v().fadeOut!)}px` }} />
                                 </Show>
-                                <div class="seq__fade-handle seq__fade-handle--in" style={{ left: `${framesToPx(mc.fadeIn ?? 0)}px` }} data-tooltip="Fondu d'entrée" onPointerDown={(e) => onFadeDrag(e, row, mc, "in")} />
-                                <div class="seq__fade-handle seq__fade-handle--out" style={{ right: `${framesToPx(mc.fadeOut ?? 0)}px` }} data-tooltip="Fondu de sortie" onPointerDown={(e) => onFadeDrag(e, row, mc, "out")} />
+                                <div class="seq__fade-handle seq__fade-handle--in" style={{ left: `${framesToPx(v().fadeIn ?? 0)}px` }} data-tooltip="Fondu d'entrée" onPointerDown={(e) => onFadeDrag(e, row, mc, "in")} />
+                                <div class="seq__fade-handle seq__fade-handle--out" style={{ right: `${framesToPx(v().fadeOut ?? 0)}px` }} data-tooltip="Fondu de sortie" onPointerDown={(e) => onFadeDrag(e, row, mc, "out")} />
                                 <div class="seq__clip-handle seq__clip-handle--l" onPointerDown={(e) => onMediaClipTrim(e, row, mc, "in")} />
                                 <div class="seq__clip-handle seq__clip-handle--r" onPointerDown={(e) => onMediaClipTrim(e, row, mc, "out")} />
                               </div>
-                            )}
+                              );
+                            }}
                           </For>
                         </Show>
                         {/* aperçu de densité des keyframes du calque (replié), façon After Effects */}

@@ -606,6 +606,54 @@ body {
   pointer-events: none;
 }
 
+/* clip en cours de déplacement / rognage : aperçu fantôme (façon Premiere) — commit au relâché */
+.seq__clip--dragging {
+  opacity: 0.55;
+  outline: var(--stroke-hairline) dashed var(--acc);
+  z-index: 4;
+}
+
+/* — Tempo (BPM) dans la barre d'outils — */
+.seq__tempo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-6);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.seq__tempo-label {
+  font-size: var(--fs-3);
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-sub);
+}
+
+.seq__tempo-field.insp-field {
+  width: 34px;
+  min-width: 0;
+  padding: 0;
+  font-size: var(--fs-3);
+  color: var(--txt);
+  background: transparent;
+  border: none;
+  text-align: right;
+  cursor: text;
+}
+
+/* bouton bascule actif (Snap) */
+.seq__zoom-btn--on {
+  color: var(--app);
+  background: var(--acc);
+  border-color: var(--acc);
+}
+
+.seq__zoom-btn--on:hover {
+  color: var(--app);
+  border-color: var(--acc);
+}
+
 /* — Conteneur de scroll UNIQUE (x + y) : noms et lanes ne peuvent plus dériver — */
 .seq__scroll {
   position: relative;
