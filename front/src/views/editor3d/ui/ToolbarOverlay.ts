@@ -89,7 +89,7 @@ function toolButton(icon: string, title: string): HTMLButtonElement {
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "rail__tool";
-  btn.title = title;
+  btn.dataset.tooltip = title;
   btn.appendChild(createIcon(icon, { size: 16 }));
   return btn;
 }

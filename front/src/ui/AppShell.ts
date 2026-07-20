@@ -1,6 +1,7 @@
 import type { Project } from "@domain/Project.ts";
 import type { Clock } from "@core/Clock.ts";
 import type { Editor } from "@core/Editor.ts";
+import type { AudioEngine } from "@core/AudioEngine.ts";
 import type { LiveState } from "@core/LiveState.ts";
 import type { App } from "@core/app.ts";
 import { MenuBar } from "./frame/MenuBar.ts";
@@ -13,6 +14,7 @@ export interface AppShellOptions {
   readonly project: Project;
   readonly clock: Clock;
   readonly editor: Editor;
+  readonly audio: AudioEngine;
   readonly live: LiveState;
 }
 
@@ -38,7 +40,7 @@ export class AppShell {
     this.viewportCanvas = document.createElement("canvas");
     this.viewportCanvas.id = "view";
 
-    this._workspace = new Workspace(this.viewportCanvas, opts.clock, opts.editor);
+    this._workspace = new Workspace(this.viewportCanvas, opts.clock, opts.editor, opts.audio);
     this._workspace.setSpace(this._activeSpace);
 
     this._tabBar = new TabBar(this._activeSpace, opts.clock, opts.live, (id) => this._selectSpace(id));
@@ -52,6 +54,13 @@ export class AppShell {
       this._workspace.element,
       new StatusBar(config).element,
     );
+
+    // Espace = play/pause global (transport), sauf pendant une saisie de texte.
+    window.addEventListener("keydown", (e) => {
+      if (e.code !== "Space" || isTyping(e.target)) return;
+      e.preventDefault(); // évite l'activation du bouton focus et le scroll
+      opts.clock.toggle();
+    });
   }
 
   setApp(app: App): void {
@@ -98,4 +107,13 @@ export class AppShell {
     this._workspace.setSpace(id); // réattache le canvas dans le leaf viewport/preview du nouvel espace
     this.onSpaceChange?.(id); // puis la root aligne la vue moteur (3D vs composite 2D)
   }
+}
+
+/** Vrai si l'événement vient d'un champ de saisie (ne pas capter les raccourcis globaux). */
+function isTyping(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLElement && target.isContentEditable)
+  );
 }

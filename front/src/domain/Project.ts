@@ -1,5 +1,5 @@
 import { DEFAULT_CONFIG, type ProjectConfig } from "./ProjectConfig.ts";
-import { EMPTY_COMPOSITION, type Composition } from "./Composition.ts";
+import { EMPTY_COMPOSITION, isComposition, type Composition } from "./Composition.ts";
 import type { SceneObject } from "./SceneObject.ts";
 import type { Document } from "./Layer.ts";
 
@@ -35,7 +35,7 @@ export function deserializeProject(json: string): Project {
     frequency: parsed.config?.frequency ?? DEFAULT_CONFIG.frequency,
   };
 
-  const composition: Composition = parsed.composition ?? EMPTY_COMPOSITION;
+  const composition: Composition = isComposition(parsed.composition) ? parsed.composition : EMPTY_COMPOSITION;
   const objects: SceneObject[] = parsed.objects ?? [];
   const document = parsed.document;
 

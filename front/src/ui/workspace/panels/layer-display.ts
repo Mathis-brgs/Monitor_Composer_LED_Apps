@@ -28,6 +28,7 @@ export function subtitle(l: Layer): string {
     case "group": return `${l.children.length} calques`;
     case "image": return "Image";
     case "video": return "Vidéo";
+    case "audio": return "Audio";
     case "spot": return "Projecteur statique";
     case "lyre": return `Lyre · canaux ${l.baseChannel}-${l.baseChannel + 12}`;
   }

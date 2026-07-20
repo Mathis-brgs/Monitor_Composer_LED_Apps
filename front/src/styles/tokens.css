@@ -88,6 +88,18 @@
   --row-h: 46px;
   --lane: 42px;
 
+  /* — Timeline (dope sheet / pistes) : échelle dérivée, plus de nombres magiques — */
+  --tl-names: var(--outliner); /* largeur colonne noms */
+  --tl-header: var(--status-bar); /* hauteur règle + coin figé */
+  --tl-row: var(--lane); /* ligne calque */
+  --tl-row-prop: 24px; /* ligne propriété */
+  --tl-row-axis: 22px; /* ligne axe X/Y/Z */
+  --tl-ctrl: 18px; /* contrôle calque (œil / solo / lock) */
+  --tl-ctrl-sm: 16px; /* petit contrôle (chrono / nav clé / lien / pastille) */
+  --tl-ctrl-xs: 14px; /* triangle de repli (twirl / subtwirl) */
+  --tl-kf: 9px; /* diamant keyframe */
+  --tl-kf-sm: 7px; /* diamant résumé (calque replié) */
+
   --shadow-window: 0 40px 120px rgba(0, 0, 0, 0.65);
 }
 
@@ -162,4 +174,6 @@
   --fs-3: 8px;
   --row-h: 38px;
   --lane: 34px;
+  --tl-row-prop: 20px;
+  --tl-row-axis: 18px;
 }

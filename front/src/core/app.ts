@@ -5,6 +5,8 @@ import { AssetStore } from "./AssetStore.ts";
 import { Engine } from "./engine/Engine.ts";
 import { Clock } from "./Clock.ts";
 import { Editor } from "./Editor.ts";
+import { AudioEngine } from "./AudioEngine.ts";
+import { AudioSync } from "./AudioSync.ts";
 import { LiveState } from "./LiveState.ts";
 import type { AppContext } from "./AppContext.ts";
 import { ASSET_MANIFEST } from "@assets/assets.manifest.ts";
@@ -20,6 +22,7 @@ const EHUB_HZ = 24;
  */
 export class App {
   private readonly _runtime: Runtime;
+  private readonly _audioSync: AudioSync;
   private _view: View | null = null;
   private _ehubIntervalId: number | null = null;
 
@@ -29,6 +32,7 @@ export class App {
 
   private constructor(readonly context: AppContext) {
     this._runtime = new Runtime(this._frame);
+    this._audioSync = new AudioSync(context.audio, context.editor, context.clock);
   }
 
   static async create(
@@ -37,8 +41,10 @@ export class App {
     clock: Clock = new Clock(),
     editor: Editor = new Editor(),
     live: LiveState = new LiveState(),
+    audio: AudioEngine = new AudioEngine(),
   ): Promise<App> {
     const renderer = await createRenderer(canvas);
+    clock.configure({ fps: project.config.frequency ?? 24 });
 
     const assets = new AssetStore();
     await assets.load(ASSET_MANIFEST);
@@ -53,6 +59,7 @@ export class App {
     const fixture = new WallFixture();
     const engine = new Engine(renderer, fixture, transport);
     editor.attach(engine);
+    editor.loadComposition(project.composition);
 
     const app = new App({
       renderer,
@@ -62,6 +69,7 @@ export class App {
       transport,
       clock,
       editor,
+      audio,
       live,
     });
     app._start();
@@ -106,9 +114,11 @@ export class App {
       if (loaded.document) {
         this.context.editor.loadDocument(loaded.document);
       }
+      this.context.editor.loadComposition(p.composition);
 
       // Mettre à jour la fréquence d'envoi eHuB
       this.updateFrequency(p.config.frequency ?? 24);
+      this.context.clock.configure({ fps: p.config.frequency ?? 24 });
 
       // Envoyer le paquet de config eHuB au routage Go
       await this.sendEhubConfig();
@@ -126,6 +136,7 @@ export class App {
   async saveProject(): Promise<void> {
     try {
       this.context.project.document = this.context.editor.getDocument();
+      this.context.project.composition = this.context.editor.getComposition();
       const json = serializeProject(this.context.project);
       await window.led?.saveProject(json, this.context.project.config.name);
       console.log("Projet sauvegardé avec succès");
@@ -173,7 +184,8 @@ export class App {
   private readonly _frame = (frame: Frame): void => {
     const { clock, engine, editor } = this.context;
     clock.advance(frame.deltaTime);
-    editor.tick(); // ré-échantillonne les shapes en fill vidéo (pas de re-rasterize sinon)
+    editor.tick(clock.frame, clock.playing, clock.fps); // keyframes + sync vidéo (play/seek)
+    this._audioSync.tick(); // asservit l'audio à l'horloge (play/pause/reslave)
     engine.update(clock.time);
     this._view?.render?.();
   };

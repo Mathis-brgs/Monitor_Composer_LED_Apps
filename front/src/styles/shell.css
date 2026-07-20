@@ -193,6 +193,47 @@ body {
   border-color: var(--acc-border);
 }
 
+.transport-btn--active {
+  color: var(--acc);
+}
+
+/* — Tooltips instantanés (façon Blender) : nom de l'outil au survol — */
+[data-tooltip] {
+  position: relative;
+}
+
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px var(--space-6);
+  background: var(--panel-2);
+  color: var(--txt);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-window);
+  font-size: var(--fs-3);
+  letter-spacing: var(--ls-label);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.06s ease 0.18s;
+  z-index: 50;
+}
+
+[data-tooltip]:hover::after {
+  opacity: 1;
+}
+
+/* barre d'outils viewport = verticale à gauche → tooltip à droite du bouton */
+.viewport-toolbar [data-tooltip]::after {
+  top: 50%;
+  left: calc(100% + 8px);
+  transform: translateY(-50%);
+}
+
 .transport-sep {
   width: var(--stroke-hairline);
   height: 18px;
@@ -445,40 +486,164 @@ body {
   display: flex;
   flex-direction: column;
   height: 100%;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-.seq__cols {
-  flex: 1;
-  min-height: 0;
+/* — Barre fixe (non défilante) : entête de colonnes + zoom — */
+.seq__topbar {
   display: flex;
+  flex: 0 0 var(--tl-header);
+  height: var(--tl-header);
+  border-bottom: var(--stroke-hairline) solid var(--line-2);
 }
 
-/* — Colonne gauche : pistes — */
-.seq__names {
-  flex: 0 0 var(--outliner);
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  border-right: var(--stroke-hairline) solid var(--line);
-}
-
-.seq__subhead {
+.seq__topbar-names {
   display: flex;
   align-items: center;
-  height: var(--status-bar);
-  flex: 0 0 var(--status-bar);
+  flex: 0 0 var(--tl-names);
   padding: 0 var(--space-10);
-  border-bottom: var(--stroke-hairline) solid var(--line-2);
+  border-right: var(--stroke-hairline) solid var(--line);
   color: var(--faint);
   font-size: var(--fs-3);
   text-transform: uppercase;
   letter-spacing: var(--ls-sub);
 }
 
-.seq__names-list {
+.seq__topbar-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+  flex: 1;
+  min-width: 0;
+  padding: 0 var(--space-10);
+}
+
+.seq__topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+/* — Séparateur de section (façon Premiere : pistes visuelles / pistes audio) — */
+.seq__section {
+  height: var(--space-20);
+  background: var(--panel-2);
+  border-top: var(--stroke-hairline) solid var(--line);
+  border-bottom: var(--stroke-hairline) solid var(--line-2);
+}
+
+.seq__section--names {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-10);
+  font-size: var(--fs-3);
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-sub);
+}
+
+/* piste audio vide (toujours visible, façon Premiere) */
+.seq__name--empty {
+  color: var(--faint);
+  font-size: var(--fs-3);
+  font-style: italic;
+  cursor: default;
+}
+
+.seq__lane--empty {
+  height: var(--tl-row);
+  border-bottom: var(--stroke-hairline) solid var(--line-2);
+  background: color-mix(in srgb, var(--line-2) 25%, transparent);
+}
+
+.seq__zoom-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.seq__zoom-btn:disabled:hover {
+  color: var(--dim);
+  border-color: var(--line);
+}
+
+/* — Waveform d'une piste audio (canvas dans le clip) — */
+.seq__clip--audio {
+  color: var(--acc);
+  background: color-mix(in srgb, var(--acc) 12%, var(--row));
+  overflow: hidden;
+}
+
+/* clip vidéo : teinte bleue distincte (façon pistes vidéo Premiere) + label */
+.seq__clip--video {
+  color: var(--axis-z);
+  background: color-mix(in srgb, var(--axis-z) 20%, var(--row));
+  overflow: hidden;
+}
+
+.seq__clip-label {
+  position: absolute;
+  left: var(--space-6);
+  top: 50%;
+  transform: translateY(-50%);
+  max-width: calc(100% - var(--space-12));
+  font-size: var(--fs-3);
+  color: var(--txt);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.seq__wave {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+/* — Conteneur de scroll UNIQUE (x + y) : noms et lanes ne peuvent plus dériver — */
+.seq__scroll {
+  position: relative;
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: auto;
+  overscroll-behavior: none;
+}
+
+/* Grille : colonne noms (épinglée à gauche) + colonne timeline.
+   Une ligne logique = une ligne physique → alignement structurel, jamais recopié.
+   La 2e colonne (largeur du contenu) est fixée en inline. */
+.seq__grid {
+  display: grid;
+  grid-template-columns: var(--tl-names) 1fr;
+  min-width: 100%;
+}
+
+/* — Colonne gauche : noms (sticky-left, opaque) — */
+.seq__names {
+  position: sticky;
+  left: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-right: var(--stroke-hairline) solid var(--line);
+}
+
+/* coin figé : au-dessus des noms, aligné sur la règle */
+.seq__corner {
+  position: sticky;
+  top: 0;
+  z-index: 9;
+  flex: 0 0 var(--tl-header);
+  height: var(--tl-header);
+  background: var(--panel);
+  border-bottom: var(--stroke-hairline) solid var(--line-2);
 }
 
 .seq__name {
@@ -486,7 +651,7 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-8);
-  height: var(--lane);
+  height: var(--tl-row);
   padding: 0 var(--space-10);
   border-bottom: var(--stroke-hairline) solid var(--line-2);
   cursor: pointer;
@@ -529,24 +694,56 @@ body {
   left: 0;
   top: 0;
   bottom: 0;
-  width: 2px;
+  width: var(--space-2);
   background: var(--acc);
+}
+
+.seq__zoom-btn {
+  font-size: var(--fs-3);
+  color: var(--dim);
+  padding: var(--space-2) var(--space-8);
+  background: transparent;
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.seq__zoom-btn:hover {
+  color: var(--txt);
+  border-color: var(--acc-border);
 }
 
 /* — Colonne droite : règle + lanes — */
 .seq__timeline {
   position: relative;
-  flex: 1;
-  min-width: 0;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+}
+
+.seq__ruler--scrubbing {
+  cursor: grabbing;
+}
+
+.seq__names-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--space-10);
+  color: var(--faint);
+  font-size: var(--fs-3);
 }
 
 .seq__ruler {
-  position: relative;
-  height: var(--status-bar);
-  flex: 0 0 var(--status-bar);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  height: var(--tl-header);
+  flex: 0 0 var(--tl-header);
+  background: var(--panel);
   border-bottom: var(--stroke-hairline) solid var(--line-2);
+  cursor: ew-resize;
 }
 
 .seq__mark {
@@ -558,22 +755,19 @@ body {
 
 .seq__mark-label {
   position: absolute;
-  top: 7px;
-  left: 5px;
-  font-size: 8px;
+  top: var(--space-6);
+  left: var(--space-5);
+  font-size: var(--fs-3);
   color: var(--faint);
 }
 
 .seq__lanes {
   position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
 }
 
 .seq__lane {
   position: relative;
-  height: var(--lane);
+  height: var(--tl-row);
   border-bottom: var(--stroke-hairline) solid var(--line-2);
 }
 
@@ -584,8 +778,8 @@ body {
 .seq__bar {
   position: absolute;
   left: 2%;
-  top: 8px;
-  bottom: 8px;
+  top: var(--space-8);
+  bottom: var(--space-8);
   background: var(--row);
   border: var(--stroke-hairline) solid var(--line);
   border-radius: var(--radius-sm);
@@ -594,11 +788,498 @@ body {
 .seq__kf {
   position: absolute;
   top: 50%;
-  width: 9px;
-  height: 9px;
+  width: var(--tl-kf);
+  height: var(--tl-kf);
   background: var(--acc);
   border: var(--stroke-hairline) solid var(--app);
   transform: translate(-50%, -50%) rotate(45deg);
+  cursor: grab;
+}
+
+.seq__kf--selected {
+  outline: 2px solid var(--acc);
+  outline-offset: 1px;
+  z-index: 1;
+}
+
+/* forme d'icône selon l'interpolation (façon After Effects) : losange = linéaire (défaut) */
+.seq__kf--hold { transform: translate(-50%, -50%); border-radius: 1px; } /* carré = hold */
+.seq__kf--bezier { transform: translate(-50%, -50%); border-radius: 50%; } /* rond = bézier (ease) */
+
+/* diamants « résumé » sur la barre de calque repliée : lecture seule */
+.seq__kf--summary {
+  width: var(--tl-kf-sm);
+  height: var(--tl-kf-sm);
+  opacity: 0.45;
+  pointer-events: none;
+  cursor: default;
+  z-index: 2;
+}
+
+/* — Clip (barre de calque, déplaçable / trimmable) — */
+.seq__clip {
+  cursor: grab;
+}
+
+.seq__clip--full {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
+.seq__clip--selected {
+  border-color: var(--acc-border);
+  box-shadow: inset 0 0 0 1px var(--acc-border);
+}
+
+.seq__clip-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--space-6);
+  cursor: ew-resize;
+}
+
+.seq__clip-handle--l { left: calc(-1 * var(--space-1)); }
+.seq__clip-handle--r { right: calc(-1 * var(--space-1)); }
+
+.seq__clip-handle:hover {
+  background: var(--acc);
+  opacity: 0.6;
+}
+
+/* — Twirl (triangle de repli/déploiement, façon After Effects) — */
+.seq__twirl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--tl-ctrl-xs);
+  height: var(--tl-ctrl-xs);
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__twirl::before {
+  content: "";
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--dim);
+  transition: transform 0.12s ease;
+}
+
+.seq__twirl:hover::before { border-left-color: var(--txt); }
+.seq__twirl--open::before { transform: rotate(90deg); }
+.seq__twirl--empty { cursor: default; }
+.seq__twirl--empty::before { content: none; }
+
+/* — Sous-rangées de canaux (twirl ouvert) : compactes, façon propriété AE — */
+.seq__name--child,
+.seq__lane--child {
+  height: var(--tl-row-prop);
+}
+
+.seq__name--child {
+  padding-left: var(--space-10);
+  gap: var(--space-6);
+  cursor: default;
+}
+
+.seq__name--child .seq__name-label {
+  color: var(--dim);
+  font-size: var(--fs-2);
+}
+
+.seq__lane--child {
+  background: color-mix(in srgb, var(--line-2) 40%, transparent);
+}
+
+/* — Séparer les dimensions : sous-twirl sur les propriétés multi-canaux + sous-rangées d'axe — */
+.seq__subtwirl {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--tl-ctrl-xs);
+  height: var(--tl-ctrl-xs);
+  padding: 0;
+  color: var(--faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__subtwirl::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 0;
+  height: 0;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  border-left: 4px solid currentColor;
+  transition: transform 0.1s ease;
+}
+
+.seq__subtwirl:hover { color: var(--txt); }
+.seq__subtwirl--open::before { transform: translate(-50%, -50%) rotate(90deg); }
+
+/* cadenas/chaîne : contrainte de proportions (X/Y/Z liés) */
+.seq__link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--tl-ctrl-sm);
+  height: var(--tl-ctrl-sm);
+  padding: 0;
+  color: var(--faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__link:hover { color: var(--txt); }
+.seq__link--on { color: var(--acc); }
+
+.seq__name--axis,
+.seq__lane--axis {
+  height: var(--tl-row-axis);
+}
+
+.seq__name--axis {
+  padding-left: var(--space-20);
+}
+
+.seq__name--axis .seq__name-label {
+  color: var(--faint);
+  font-size: var(--fs-2);
+}
+
+.seq__lane--axis {
+  background: color-mix(in srgb, var(--line-2) 60%, transparent);
+}
+
+/* — Contrôles de propriété (chrono + navigateur de keyframe), façon After Effects — */
+.seq__prop-ctl {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex: 0 0 auto;
+}
+
+/* Chronomètre : active/désactive l'animation (l'éteindre supprime toutes les clés de la propriété) */
+.seq__stopwatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: var(--tl-ctrl-sm);
+  height: var(--tl-ctrl-sm);
+  padding: 0;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__stopwatch:hover { color: var(--txt); }
+.seq__stopwatch--on { color: var(--acc); }
+
+/* Navigateur de keyframe ◄ ◆ ► : ◆ ajoute/retire UNE clé au frame courant (plein si clé présente) */
+.seq__kf-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* diamant de pose : bouton NON tourné (le tooltip reste droit), losange via ::before */
+.seq__kf-nav-dot {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--tl-ctrl-sm);
+  height: var(--tl-ctrl-sm);
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__kf-nav-dot::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border: 1.6px solid var(--acc);
+  transform: rotate(45deg);
+}
+
+.seq__kf-nav-dot--on::before { background: var(--acc); }
+
+/* flèches clé précédente / suivante : triangle via ::before (bouton droit) */
+.seq__kf-nav-arrow {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--space-12);
+  height: var(--tl-ctrl-sm);
+  padding: 0;
+  color: var(--dim);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__kf-nav-arrow:hover { color: var(--txt); }
+
+.seq__kf-nav-arrow::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+
+.seq__kf-nav-arrow--prev::before { border-right: 6px solid currentColor; }
+.seq__kf-nav-arrow--next::before { border-left: 6px solid currentColor; }
+
+/* — Boîte de sélection multiple (marquee) — */
+.seq__marquee {
+  position: absolute;
+  z-index: 6;
+  background: color-mix(in srgb, var(--acc) 14%, transparent);
+  border: var(--stroke-hairline) solid var(--acc);
+  pointer-events: none;
+}
+
+/* — Éditeur de valeur d'une clé (double-clic sur un diamant) — */
+.seq__kf-editor-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+}
+
+.seq__kf-editor {
+  position: fixed;
+  transform: translate(-50%, calc(-100% - var(--space-10)));
+  display: flex;
+  gap: var(--space-6);
+  padding: var(--space-6) var(--space-8);
+  background: var(--panel-2);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.seq__kf-editor-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.seq__kf-editor-field > span {
+  font-size: var(--fs-2);
+  color: var(--dim);
+}
+
+/* — Menu contextuel d'interpolation (clic-droit sur une clé) — */
+.seq__ctx-menu {
+  position: fixed;
+  min-width: 130px;
+  padding: var(--space-4, 4px);
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-2);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.seq__ctx-title {
+  padding: var(--space-4) var(--space-8) var(--space-6);
+  font-size: var(--fs-3);
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-sub);
+}
+
+.seq__ctx-item {
+  text-align: left;
+  padding: var(--space-5) var(--space-8);
+  font-size: var(--fs-2);
+  color: var(--txt);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.seq__ctx-item:hover {
+  background: var(--row);
+  color: var(--acc);
+}
+
+/* liaison entre keyframes consécutifs d'un canal (façon After Effects) */
+.seq__kf-link {
+  position: absolute;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+  background: var(--acc);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* — Indicateurs de dépôt (réordonnancement z) — */
+.seq__name--drop-before { box-shadow: inset 0 var(--space-2) 0 var(--acc); }
+.seq__name--drop-after { box-shadow: inset 0 calc(-1 * var(--space-2)) 0 var(--acc); }
+
+/* — Contrôles de calque : pastille de label, solo, verrou — */
+.seq__label-chip {
+  flex: 0 0 auto;
+  width: var(--space-4);
+  height: var(--tl-ctrl-sm);
+  padding: 0;
+  border: none;
+  border-radius: var(--space-1);
+  background: var(--line);
+  cursor: pointer;
+}
+
+.seq__label-chip--set { width: var(--space-6); }
+.seq__label-chip:hover { filter: brightness(1.3); }
+
+.seq__eye,
+.seq__solo,
+.seq__lock,
+.seq__mute {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tl-ctrl);
+  height: var(--tl-ctrl);
+  padding: 0;
+  color: var(--faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.seq__solo,
+.seq__mute {
+  font-size: var(--fs-2);
+  font-weight: 600;
+  border-radius: 50%;
+}
+
+.seq__mute:hover { color: var(--txt); }
+.seq__mute--on { color: var(--app); background: var(--pv-b); }
+
+/* ligne de gain audio (rubber-band de volume), glisser verticalement */
+.seq__gain-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: var(--space-2);
+  margin-top: calc(-1 * var(--space-1));
+  background: var(--pv-sweep);
+  opacity: 0.9;
+  cursor: ns-resize;
+  z-index: 2;
+}
+
+.seq__gain-line:hover { height: var(--space-3); opacity: 1; }
+
+/* fondus in/out : overlay dégradé (assombrit la zone de fondu) + poignée de coin */
+.seq__fade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  opacity: 0.7;
+  z-index: 1;
+}
+
+.seq__fade--in { left: 0; background: linear-gradient(to right, var(--app), transparent); }
+.seq__fade--out { right: 0; background: linear-gradient(to left, var(--app), transparent); }
+
+.seq__fade-handle {
+  position: absolute;
+  top: 0;
+  width: var(--space-8);
+  height: var(--space-8);
+  border-radius: 50%;
+  background: var(--pv-sweep);
+  cursor: ew-resize;
+  z-index: 3;
+}
+
+.seq__fade-handle:hover { transform: scale(1.25); }
+
+.seq__eye:hover,
+.seq__solo:hover,
+.seq__lock:hover { color: var(--txt); }
+.seq__eye--off { color: var(--line-2); }
+.seq__solo--on { color: var(--app); background: var(--acc); }
+.seq__lock--on { color: var(--acc); }
+
+/* champ valeur compact dans les pistes (édition depuis le panel) */
+.seq__val.insp-field {
+  flex: 0 0 auto;
+  width: 44px;
+  min-width: 0;
+  padding: var(--space-1) var(--space-4);
+  font-size: var(--fs-2);
+  color: var(--acc);
+  background: transparent;
+  border: none;
+  text-align: right;
+  cursor: text;
+}
+
+.seq__val.insp-field:hover { background: var(--row); }
+
+.seq__name--locked { opacity: 0.55; }
+.seq__name--locked .seq__name-label { font-style: italic; }
+
+/* palette de couleur de label */
+.seq__label-palette {
+  position: fixed;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-5);
+  padding: var(--space-6);
+  background: var(--panel-2);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.seq__label-swatch {
+  width: var(--tl-ctrl);
+  height: var(--tl-ctrl);
+  padding: 0;
+  border: var(--stroke-hairline) solid rgba(255, 255, 255, 0.15);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.seq__label-swatch--none {
+  position: relative;
+  background: transparent;
+}
+
+.seq__label-swatch--none::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(45deg, transparent 44%, var(--faint) 44%, var(--faint) 56%, transparent 56%);
 }
 
 .seq__playhead {
@@ -609,7 +1290,7 @@ body {
   width: var(--stroke-hairline);
   background: var(--acc);
   pointer-events: none;
-  z-index: 5;
+  z-index: 6;
 }
 
 .seq__playhead-tip {
@@ -1081,6 +1762,25 @@ body {
   min-width: 0;
 }
 
+.key-dot {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border: var(--stroke-hairline) solid var(--line);
+  background: transparent;
+  transform: rotate(45deg);
+  cursor: pointer;
+}
+
+.key-dot:hover {
+  border-color: var(--acc-border);
+}
+
+.key-dot--on {
+  background: var(--acc);
+  border-color: var(--acc);
+}
+
 .insp-fields {
   display: flex;
   gap: var(--space-6);
@@ -1100,6 +1800,15 @@ body {
 .insp-field--editable {
   cursor: ew-resize;
 }
+
+.insp-select {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.insp-select:hover { border-color: var(--acc-border); }
 
 .insp-field__input {
   width: 100%;
