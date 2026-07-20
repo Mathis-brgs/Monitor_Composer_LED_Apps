@@ -1,6 +1,7 @@
 import type { PanelId } from "./layouts.ts";
 import type { Clock } from "@core/Clock.ts";
 import type { Editor } from "@core/Editor.ts";
+import type { AudioEngine } from "@core/AudioEngine.ts";
 import { createIcon } from "@ui/icons/Icon.ts";
 
 /** Un panneau du body = un id + son élément racine. */
@@ -16,6 +17,7 @@ export interface PanelContext {
   readonly canvas: HTMLCanvasElement;
   readonly clock: Clock;
   readonly editor: Editor;
+  readonly audio: AudioEngine;
 }
 
 export interface PanelParts {

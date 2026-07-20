@@ -1,7 +1,8 @@
-import { createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
+import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, type JSX } from "solid-js";
 import type { Clock } from "@core/Clock.ts";
 import type { Editor } from "@core/Editor.ts";
-import { moveClip, trimIn, trimOut, type Clip } from "@domain/Layer.ts";
+import type { AudioEngine } from "@core/AudioEngine.ts";
+import { moveClip, trimIn, trimOut, type Clip, type Layer } from "@domain/Layer.ts";
 import type { Interp } from "@domain/Composition.ts";
 import { createIcon } from "@ui/icons/Icon.ts";
 import { NumberField } from "@ui/solid/controls.tsx";
@@ -27,7 +28,36 @@ function clampPps(v: number): number {
 
 interface AxisRow { channel: string; label: string; animated: boolean; frames: number[]; interps: Interp[] }
 interface PropRow { label: string; channels: string[]; animated: boolean; frames: number[]; interps: Interp[]; axes: AxisRow[] }
-interface LayerRow { layerId: string; name: string; clip: Clip | undefined; props: PropRow[]; keyframes: number[]; visible: boolean; solo: boolean; locked: boolean; label: string | undefined }
+interface LayerRow { layerId: string; type: Layer["type"]; assetId: string | undefined; name: string; clip: Clip | undefined; props: PropRow[]; keyframes: number[]; visible: boolean; solo: boolean; locked: boolean; label: string | undefined }
+
+/** Waveform d'une piste audio, tracée depuis les peaks précalculés de l'AudioEngine. */
+function AudioWave(props: { audio: AudioEngine; assetId: string; width: number; version: number }): JSX.Element {
+  let cv: HTMLCanvasElement | undefined;
+  createEffect(() => {
+    props.version; // dép. : redessine après un import
+    const w = Math.max(1, Math.round(props.width));
+    const pk = props.audio.peaks(props.assetId);
+    const c = cv;
+    if (!c) return;
+    const h = 30;
+    c.width = w;
+    c.height = h;
+    const g = c.getContext("2d");
+    if (!g) return;
+    g.clearRect(0, 0, w, h);
+    if (!pk) return;
+    g.fillStyle = getComputedStyle(c).color || "#ff8a3d";
+    const mid = h / 2;
+    for (let x = 0; x < w; x++) {
+      const b = Math.min(pk.buckets - 1, Math.floor((x / w) * pk.buckets));
+      const mx = pk.data[b * 2 + 1];
+      const mn = pk.data[b * 2];
+      const y0 = mid - mx * mid;
+      g.fillRect(x, y0, 1, Math.max(1, (mid - mn * mid) - y0));
+    }
+  });
+  return <canvas ref={cv} class="seq__wave" />;
+}
 
 const LABEL_COLORS = ["#ff8a3d", "#7fd88a", "#5a9bff", "#c98bff", "#ffd24a", "#ff6b6b", "#4ad9d9", "#9aa0a6"];
 
@@ -36,9 +66,10 @@ interface SelKey { layerId: string; frame: number; channels: string[] }
 const sameKey = (a: SelKey, b: SelKey): boolean =>
   a.layerId === b.layerId && a.frame === b.frame && a.channels.join(",") === b.channels.join(",");
 
-function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
+function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): JSX.Element {
   const clock = props.clock;
   const editor = props.editor;
+  const audio = props.audio;
   const time = fromStore(clock, () => clock.time);
   const frame = fromStore(clock, () => clock.frame);
   const duration = fromStore(clock, () => clock.duration);
@@ -79,9 +110,35 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
         return { label: p.label, channels: p.channels, animated: chanTracks.length > 0, frames, interps, axes };
       });
       const keyframes = [...new Set(props.flatMap((p) => p.frames))].sort((a, b) => a - b);
-      return { layerId: l.id, name: l.name, clip: l.clip, props, keyframes, visible: l.visible, solo: !!l.solo, locked: !!l.locked, label: l.label };
+      const assetId = "assetId" in l ? l.assetId : undefined;
+      return { layerId: l.id, type: l.type, assetId, name: l.name, clip: l.clip, props, keyframes, visible: l.visible, solo: !!l.solo, locked: !!l.locked, label: l.label };
     });
   });
+  // Séparation façon Premiere : pistes visuelles au-dessus, pistes audio regroupées en dessous.
+  const videoRows = createMemo<LayerRow[]>(() => rows().filter((r) => r.type !== "audio"));
+  const audioRows = createMemo<LayerRow[]>(() => rows().filter((r) => r.type === "audio"));
+  const sortedRows = createMemo<LayerRow[]>(() => [...videoRows(), ...audioRows()]);
+  const audioSplit = (): number => videoRows().length; // index de la 1re piste audio
+
+  // Waveforms : bumpé après un import audio pour forcer le redraw des canvas.
+  const [audioVersion, setAudioVersion] = createSignal(0);
+  /** Importe un fichier audio → décodage (peaks) + piste audio dans l'arbre. */
+  const importAudio = (): void => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "audio/*";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      void file.arrayBuffer().then(async (buf) => {
+        const assetId = `${file.name}:${file.size}`;
+        await audio.load(assetId, buf);
+        editor.addAudio(assetId, file.name.replace(/\.[^.]+$/, ""));
+        setAudioVersion((v) => v + 1);
+      });
+    };
+    input.click();
+  };
 
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
   const isExpanded = (id: string): boolean => expanded().has(id);
@@ -556,7 +613,10 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
         <div class="seq__topbar-names">Pistes</div>
         <div class="seq__topbar-main">
           <span class="seq-meta">Durée {duration().toFixed(2)} s · {fps()} FPS</span>
-          <button type="button" class="seq__zoom-btn" data-tooltip="Ajuster à la fenêtre" onClick={fit}>Ajuster</button>
+          <span class="seq__topbar-actions">
+            <button type="button" class="seq__zoom-btn" data-tooltip="Importer une piste audio" onClick={importAudio}>+ Audio</button>
+            <button type="button" class="seq__zoom-btn" data-tooltip="Ajuster à la fenêtre" onClick={fit}>Ajuster</button>
+          </span>
         </div>
       </div>
       <div class="seq__scroll" ref={scroller} onWheel={onWheel}>
@@ -564,9 +624,12 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
           <div class="seq__names" ref={namesEl}>
             <div class="seq__corner" />
             <Show when={rows().length > 0} fallback={<div class="seq__names-empty">Groupe vide</div>}>
-              <For each={rows()}>
-                {(row) => (
+              <For each={sortedRows()}>
+                {(row, i) => (
                   <>
+                    <Show when={row.type === "audio" && i() === audioSplit()}>
+                      <div class="seq__section seq__section--names">Audio</div>
+                    </Show>
                     <div
                       class="seq__name"
                       classList={{
@@ -676,19 +739,26 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
                 </For>
               </div>
               <div class="seq__lanes" ref={lanesEl} onPointerDown={onLanesDown}>
-                <For each={rows()}>
-                  {(row) => (
+                <For each={sortedRows()}>
+                  {(row, i) => (
                     <>
+                      <Show when={row.type === "audio" && i() === audioSplit()}>
+                        <div class="seq__section seq__section--lane" />
+                      </Show>
                       <div class="seq__lane">
                         <div
                           class="seq__bar seq__clip"
                           classList={{
                             "seq__clip--full": !row.clip,
                             "seq__clip--selected": selectedId() === row.layerId,
+                            "seq__clip--audio": row.type === "audio",
                           }}
                           style={{ left: `${clipGeo(row.clip).left}px`, width: `${clipGeo(row.clip).width}px` }}
                           onPointerDown={(e) => onClipMove(e, row)}
                         >
+                          <Show when={row.type === "audio" && row.assetId}>
+                            <AudioWave audio={audio} assetId={row.assetId!} width={clipGeo(row.clip).width} version={audioVersion()} />
+                          </Show>
                           <div class="seq__clip-handle seq__clip-handle--l" onPointerDown={(e) => onClipTrim(e, row, "in")} />
                           <div class="seq__clip-handle seq__clip-handle--r" onPointerDown={(e) => onClipTrim(e, row, "out")} />
                         </div>
@@ -795,7 +865,7 @@ function Timeline(props: { clock: Clock; editor: Editor }): JSX.Element {
   );
 }
 
-export function createTimelinePanel(clock: Clock, editor: Editor): Panel {
+export function createTimelinePanel(clock: Clock, editor: Editor, audio: AudioEngine): Panel {
   return solidPanel({
     id: "timeline",
     title: "Timeline",
@@ -809,6 +879,6 @@ export function createTimelinePanel(clock: Clock, editor: Editor): Panel {
       spacer.className = "panel__header-spacer";
       header.append(badge, spacer);
     },
-    body: () => <Timeline clock={clock} editor={editor} />,
+    body: () => <Timeline clock={clock} editor={editor} audio={audio} />,
   });
 }

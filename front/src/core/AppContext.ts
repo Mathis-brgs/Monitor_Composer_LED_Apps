@@ -5,6 +5,7 @@ import type { Transport } from "./transport.ts";
 import type { Engine } from "./engine/Engine.ts";
 import type { Clock } from "./Clock.ts";
 import type { Editor } from "./Editor.ts";
+import type { AudioEngine } from "./AudioEngine.ts";
 import type { LiveState } from "./LiveState.ts";
 
 /**
@@ -21,6 +22,8 @@ export interface AppContext {
   readonly clock: Clock;
   /** document éditable (arbre de calques + objets 3D + sélection) ; le moteur en est le miroir */
   readonly editor: Editor;
+  /** moteur audio (décodage waveform + lecture asservie à l'horloge) */
+  readonly audio: AudioEngine;
   /** état LIVE : n'envoie la scène au routeur que si actif (voir bouton LIVE) */
   readonly live: LiveState;
 }

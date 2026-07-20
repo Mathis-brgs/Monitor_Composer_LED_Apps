@@ -1,7 +1,7 @@
 import { Euler, Matrix4, Quaternion, Vector3 } from "three/webgpu";
 import type { Engine } from "./engine/Engine.ts";
 import {
-  makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, findLayer, findGroup, findParent, groupChildren,
+  makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, findLayer, findGroup, findParent, groupChildren,
   fixtureDmxChannels, layerActiveAt, wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
   type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer,
   type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type SpotChannels, type LyreChannels,
@@ -362,6 +362,16 @@ export class Editor {
     this._activeGroup().children.unshift(group);
     this._doc.selectedId = id;
     this._push();
+    this._emit();
+    return id;
+  }
+
+  /** Ajoute une piste audio (l'asset est déjà décodé par l'AudioEngine). Non rendue sur le mur → pas de `_push`. */
+  addAudio(assetId: string, name = "Piste audio"): string {
+    this._counter += 1;
+    const id = `audio-${this._counter}`;
+    this._activeGroup().children.unshift(makeAudio(id, name, assetId));
+    this._doc.selectedId = id;
     this._emit();
     return id;
   }

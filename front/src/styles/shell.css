@@ -520,6 +520,47 @@ body {
   padding: 0 var(--space-10);
 }
 
+.seq__topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+/* — Séparateur de section (façon Premiere : pistes visuelles / pistes audio) — */
+.seq__section {
+  height: var(--space-20);
+  background: var(--panel-2);
+  border-top: var(--stroke-hairline) solid var(--line);
+  border-bottom: var(--stroke-hairline) solid var(--line-2);
+}
+
+.seq__section--names {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-10);
+  font-size: var(--fs-3);
+  color: var(--faint);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-sub);
+}
+
+/* — Waveform d'une piste audio (canvas dans le clip) — */
+.seq__clip--audio {
+  color: var(--acc);
+  background: color-mix(in srgb, var(--acc) 12%, var(--row));
+  overflow: hidden;
+}
+
+.seq__wave {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
 /* — Conteneur de scroll UNIQUE (x + y) : noms et lanes ne peuvent plus dériver — */
 .seq__scroll {
   position: relative;

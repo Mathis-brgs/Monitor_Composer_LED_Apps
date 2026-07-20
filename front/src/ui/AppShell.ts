@@ -1,6 +1,7 @@
 import type { Project } from "@domain/Project.ts";
 import type { Clock } from "@core/Clock.ts";
 import type { Editor } from "@core/Editor.ts";
+import type { AudioEngine } from "@core/AudioEngine.ts";
 import type { LiveState } from "@core/LiveState.ts";
 import type { App } from "@core/app.ts";
 import { MenuBar } from "./frame/MenuBar.ts";
@@ -13,6 +14,7 @@ export interface AppShellOptions {
   readonly project: Project;
   readonly clock: Clock;
   readonly editor: Editor;
+  readonly audio: AudioEngine;
   readonly live: LiveState;
 }
 
@@ -38,7 +40,7 @@ export class AppShell {
     this.viewportCanvas = document.createElement("canvas");
     this.viewportCanvas.id = "view";
 
-    this._workspace = new Workspace(this.viewportCanvas, opts.clock, opts.editor);
+    this._workspace = new Workspace(this.viewportCanvas, opts.clock, opts.editor, opts.audio);
     this._workspace.setSpace(this._activeSpace);
 
     this._tabBar = new TabBar(this._activeSpace, opts.clock, opts.live, (id) => this._selectSpace(id));

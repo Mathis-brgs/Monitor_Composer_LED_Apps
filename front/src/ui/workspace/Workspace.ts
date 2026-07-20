@@ -1,5 +1,6 @@
 import type { Clock } from "@core/Clock.ts";
 import type { Editor } from "@core/Editor.ts";
+import type { AudioEngine } from "@core/AudioEngine.ts";
 import type { Panel, PanelContext } from "./Panel.ts";
 import {
   type LayoutNode,
@@ -20,7 +21,7 @@ const PANEL_FACTORIES: Record<PanelId, (ctx: PanelContext) => Panel> = {
   viewport: (ctx) => new ViewportPanel(ctx.canvas),
   preview: (ctx) => new PreviewPanel(ctx.canvas),
   inspector: (ctx) => createInspectorPanel(ctx.editor),
-  timeline: (ctx) => createTimelinePanel(ctx.clock, ctx.editor),
+  timeline: (ctx) => createTimelinePanel(ctx.clock, ctx.editor, ctx.audio),
 };
 
 const STORAGE_PREFIX = "led.layout.";
@@ -37,15 +38,17 @@ export class Workspace {
   private readonly _canvas: HTMLCanvasElement;
   private readonly _clock: Clock;
   private readonly _editor: Editor;
+  private readonly _audio: AudioEngine;
   private _spaceId: SpaceId | null = null;
   private _tree: LayoutNode | null = null;
   private _panels: Panel[] = [];
   private _dropEl: HTMLElement | null = null;
 
-  constructor(canvas: HTMLCanvasElement, clock: Clock, editor: Editor) {
+  constructor(canvas: HTMLCanvasElement, clock: Clock, editor: Editor, audio: AudioEngine) {
     this._canvas = canvas;
     this._clock = clock;
     this._editor = editor;
+    this._audio = audio;
     this.element = document.createElement("div");
     this.element.className = "workspace";
     this._initDragToRearrange();
@@ -81,7 +84,7 @@ export class Workspace {
   }
 
   private _renderLeaf(panelId: PanelId): HTMLElement {
-    const panel = PANEL_FACTORIES[panelId]({ canvas: this._canvas, clock: this._clock, editor: this._editor });
+    const panel = PANEL_FACTORIES[panelId]({ canvas: this._canvas, clock: this._clock, editor: this._editor, audio: this._audio });
     panel.element.dataset.panel = panel.id;
     this._panels.push(panel);
     return panel.element;

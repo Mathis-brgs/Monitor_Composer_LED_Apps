@@ -5,6 +5,8 @@ import { AssetStore } from "./AssetStore.ts";
 import { Engine } from "./engine/Engine.ts";
 import { Clock } from "./Clock.ts";
 import { Editor } from "./Editor.ts";
+import { AudioEngine } from "./AudioEngine.ts";
+import { AudioSync } from "./AudioSync.ts";
 import { LiveState } from "./LiveState.ts";
 import type { AppContext } from "./AppContext.ts";
 import { ASSET_MANIFEST } from "@assets/assets.manifest.ts";
@@ -20,6 +22,7 @@ const EHUB_HZ = 24;
  */
 export class App {
   private readonly _runtime: Runtime;
+  private readonly _audioSync: AudioSync;
   private _view: View | null = null;
   private _ehubIntervalId: number | null = null;
 
@@ -29,6 +32,7 @@ export class App {
 
   private constructor(readonly context: AppContext) {
     this._runtime = new Runtime(this._frame);
+    this._audioSync = new AudioSync(context.audio, context.editor, context.clock);
   }
 
   static async create(
@@ -37,6 +41,7 @@ export class App {
     clock: Clock = new Clock(),
     editor: Editor = new Editor(),
     live: LiveState = new LiveState(),
+    audio: AudioEngine = new AudioEngine(),
   ): Promise<App> {
     const renderer = await createRenderer(canvas);
     clock.configure({ fps: project.config.frequency ?? 24 });
@@ -64,6 +69,7 @@ export class App {
       transport,
       clock,
       editor,
+      audio,
       live,
     });
     app._start();
@@ -179,6 +185,7 @@ export class App {
     const { clock, engine, editor } = this.context;
     clock.advance(frame.deltaTime);
     editor.tick(clock.frame); // évalue les keyframes au frame courant + fill vidéo
+    this._audioSync.tick(); // asservit l'audio à l'horloge (play/pause/reslave)
     engine.update(clock.time);
     this._view?.render?.();
   };
