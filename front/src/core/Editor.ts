@@ -366,11 +366,14 @@ export class Editor {
     return id;
   }
 
-  /** Ajoute une piste audio (l'asset est déjà décodé par l'AudioEngine). Non rendue sur le mur → pas de `_push`. */
-  addAudio(assetId: string, name = "Piste audio"): string {
+  /** Ajoute une piste audio (l'asset est déjà décodé par l'AudioEngine). `clip` = étendue réelle
+   *  de l'audio (in/out en frames). Non rendue sur le mur → pas de `_push`. */
+  addAudio(assetId: string, name = "Piste audio", clip?: Clip): string {
     this._counter += 1;
     const id = `audio-${this._counter}`;
-    this._activeGroup().children.unshift(makeAudio(id, name, assetId));
+    const layer = makeAudio(id, name, assetId);
+    if (clip) layer.clip = clip;
+    this._activeGroup().children.unshift(layer);
     this._doc.selectedId = id;
     this._emit();
     return id;

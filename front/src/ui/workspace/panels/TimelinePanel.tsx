@@ -132,8 +132,18 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
       if (!file) return;
       void file.arrayBuffer().then(async (buf) => {
         const assetId = `${file.name}:${file.size}`;
-        await audio.load(assetId, buf);
-        editor.addAudio(assetId, file.name.replace(/\.[^.]+$/, ""));
+        const pk = await audio.load(assetId, buf);
+        const audioFrames = Math.max(1, Math.round(pk.durationSec * clock.fps));
+        // Audio plus long que la composition → proposer de caler la timeline dessus.
+        if (audioFrames > clock.durationFrames) {
+          const fit = window.confirm(
+            `L'audio dure ${pk.durationSec.toFixed(1)} s, plus que la composition (${clock.duration.toFixed(1)} s).\n\n` +
+              `OK = caler la durée de la timeline sur l'audio\nAnnuler = garder la durée actuelle`,
+          );
+          if (fit) clock.configure({ durationFrames: audioFrames });
+        }
+        // Clip = étendue réelle de l'audio (in inclus, out inclus) → largeur/waveform correctes.
+        editor.addAudio(assetId, file.name.replace(/\.[^.]+$/, ""), { in: 0, out: Math.max(0, audioFrames - 1) });
         setAudioVersion((v) => v + 1);
       });
     };
