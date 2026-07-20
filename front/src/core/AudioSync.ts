@@ -1,7 +1,7 @@
 import type { Clock } from "./Clock.ts";
 import type { Editor } from "./Editor.ts";
 import type { AudioEngine } from "./AudioEngine.ts";
-import { mediaClipActiveAt, mediaSourceFrameAt, type Layer, type MediaClip } from "@domain/Layer.ts";
+import { mediaClipActiveAt, mediaSourceFrameAt, mediaFadeGain, type Layer, type MediaClip } from "@domain/Layer.ts";
 
 /** Au-delà de ce décalage audio↔horloge (s), on relance la source (changement de clip, gap, scrub). */
 const RESLAVE_THRESHOLD = 0.06;
@@ -63,5 +63,7 @@ export class AudioSync {
     const srcSec = mediaSourceFrameAt(a.clip, this._clock.frame) / this._clock.fps;
     const synced = eng.playing && eng.playingId === a.assetId && Math.abs(eng.positionSec() - srcSec) <= RESLAVE_THRESHOLD;
     if (!synced) eng.play(a.assetId, srcSec, a.gain);
+    // enveloppe de fondu appliquée en continu (le gain node est mis à jour chaque frame)
+    eng.setGain(a.gain * mediaFadeGain(a.clip, this._clock.frame));
   }
 }

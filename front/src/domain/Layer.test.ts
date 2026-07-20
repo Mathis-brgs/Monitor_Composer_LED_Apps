@@ -5,7 +5,7 @@ import {
   makeGroup, makeShape, makeShaderLayer, makeAudio, type Document,
   layerActiveAt, moveClip, trimIn, trimOut, wouldCycle,
   mediaClipLength, mediaClipTimelineOut, mediaClipActiveAt, mediaSourceFrameAt,
-  moveMediaClip, trimMediaIn, trimMediaOut, splitMediaClip, applyMap,
+  moveMediaClip, trimMediaIn, trimMediaOut, splitMediaClip, mediaFadeGain, applyMap,
   type MediaClip,
 } from "./Layer.ts";
 
@@ -139,6 +139,18 @@ test("splitMediaClip coupe en deux au frame timeline (null hors bornes)", () => 
   assert.deepEqual(r, { id: "c2", sourceIn: 8, sourceOut: 24, timelineIn: 18, speed: 1 });
   assert.equal(splitMediaClip(mc(), 10, "x"), null); // au bord in
   assert.equal(splitMediaClip(mc(), 34, "x"), null); // au bord out
+});
+
+test("mediaFadeGain : enveloppe des fondus in/out (1 hors fondus, 0 hors clip)", () => {
+  const c = mc({ fadeIn: 4, fadeOut: 4 }); // clip timeline [10, 34], len 24
+  assert.equal(mediaFadeGain(c, 10), 0);    // début du fade-in
+  assert.equal(mediaFadeGain(c, 12), 0.5);
+  assert.equal(mediaFadeGain(c, 14), 1);    // fin du fade-in
+  assert.equal(mediaFadeGain(c, 20), 1);    // plateau
+  assert.equal(mediaFadeGain(c, 32), 0.5);  // fade-out (local 22)
+  assert.equal(mediaFadeGain(c, 34), 0);    // fin du fade-out
+  assert.equal(mediaFadeGain(mc(), 20), 1); // sans fondu → 1
+  assert.equal(mediaFadeGain(c, 5), 0);     // avant le clip
 });
 
 test("applyMap : remappage linéaire clampé", () => {

@@ -20,6 +20,7 @@ export class AudioEngine {
   private readonly _buffers = new Map<string, AudioBuffer>();
   private readonly _peaks = new Map<string, AudioPeaks>();
   private _source: AudioBufferSourceNode | null = null;
+  private _gainNode: GainNode | null = null;
   private _playingId: string | null = null;
   private _startCtxTime = 0;
   private _startOffset = 0;
@@ -68,12 +69,18 @@ export class AudioEngine {
     const g = ctx.createGain();
     g.gain.value = gain;
     src.connect(g).connect(ctx.destination);
-    src.onended = () => { if (this._source === src) { this._source = null; this._playingId = null; } };
+    src.onended = () => { if (this._source === src) { this._source = null; this._gainNode = null; this._playingId = null; } };
     src.start(0, off);
     this._source = src;
+    this._gainNode = g;
     this._playingId = assetId;
     this._startCtxTime = ctx.currentTime;
     this._startOffset = off;
+  }
+
+  /** Ajuste le gain de la source en cours (automation live : fades, rubber-band). */
+  setGain(gain: number): void {
+    if (this._gainNode) this._gainNode.gain.value = Math.max(0, gain);
   }
 
   /** Coupe la lecture en cours (idempotent). */
@@ -83,6 +90,7 @@ export class AudioEngine {
       this._source.disconnect();
     }
     this._source = null;
+    this._gainNode = null;
     this._playingId = null;
   }
 }

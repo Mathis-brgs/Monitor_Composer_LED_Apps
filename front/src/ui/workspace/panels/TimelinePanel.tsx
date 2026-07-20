@@ -3,7 +3,8 @@ import type { Clock } from "@core/Clock.ts";
 import type { Editor } from "@core/Editor.ts";
 import type { AudioEngine } from "@core/AudioEngine.ts";
 import {
-  moveClip, trimIn, trimOut, moveMediaClip, trimMediaIn, trimMediaOut, splitMediaClip, mediaClipLength,
+  moveClip, trimIn, trimOut, moveMediaClip, trimMediaIn, trimMediaOut, splitMediaClip,
+  mediaClipLength, mediaClipTimelineOut,
   type Clip, type Layer, type MediaClip,
 } from "@domain/Layer.ts";
 import type { Interp } from "@domain/Composition.ts";
@@ -40,7 +41,7 @@ const GAIN_MAX = 2;
  *  (pas d'écrasement au trim), depuis les peaks précalculés de l'AudioEngine. */
 function AudioWave(props: {
   audio: AudioEngine; assetId: string; width: number;
-  sourceIn: number; sourceOut: number; sourceFrames: number; version: number;
+  sourceIn: number; sourceOut: number; sourceFrames: number; zoom: number; version: number;
 }): JSX.Element {
   let cv: HTMLCanvasElement | undefined;
   createEffect(() => {
@@ -63,10 +64,11 @@ function AudioWave(props: {
     const span = Math.max(1, b1 - b0);
     g.fillStyle = getComputedStyle(c).color || "#ff8a3d";
     const mid = h / 2;
+    const z = Math.max(1, props.zoom);
     for (let x = 0; x < w; x++) {
       const b = Math.min(pk.buckets - 1, b0 + Math.floor((x / w) * span));
-      const mx = pk.data[b * 2 + 1];
-      const mn = pk.data[b * 2];
+      const mx = Math.max(-1, Math.min(1, pk.data[b * 2 + 1] * z));
+      const mn = Math.max(-1, Math.min(1, pk.data[b * 2] * z));
       const y0 = mid - mx * mid;
       g.fillRect(x, y0, 1, Math.max(1, (mid - mn * mid) - y0));
     }
@@ -90,6 +92,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
   const duration = fromStore(clock, () => clock.duration);
   const fps = fromStore(clock, () => clock.fps);
   const [pps, setPps] = createSignal(DEFAULT_PPS);
+  const [waveZoom, setWaveZoom] = createSignal(1); // zoom vertical (amplitude) de la waveform (Alt+molette)
 
   // Snapshot réactif : recalculé à chaque emit de l'Editor (jamais pendant la lecture).
   // Une rangée par calque (ordre z) + son catalogue de propriétés animables (façon AE).
@@ -266,7 +269,10 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
   };
 
   const onWheel = (e: WheelEvent): void => {
-    if (e.ctrlKey || e.metaKey) {
+    if (e.altKey) {
+      e.preventDefault();
+      setWaveZoom((z) => Math.max(1, Math.min(8, z * (e.deltaY < 0 ? 1.1 : 1 / 1.1))));
+    } else if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
       setPps((p) => clampPps(p * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
     } else if (scroller && (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY))) {
@@ -399,6 +405,32 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     editor.setAudioClips(row.layerId, row.mediaClips.filter((c) => c.id !== s.clipId));
     setSelectedClip(null);
     return true;
+  };
+
+  /** Glisser une poignée de fondu (coin haut du clip) horizontalement → durée du fondu in/out. */
+  const onFadeDrag = (e: PointerEvent, row: LayerRow, mc: MediaClip, edge: "in" | "out"): void => {
+    e.stopPropagation();
+    setSelectedClip({ layerId: row.layerId, clipId: mc.id });
+    if (row.locked) return;
+    const clips = row.mediaClips;
+    const len = mediaClipLength(mc);
+    const out = mediaClipTimelineOut(mc);
+    const setFade = (clientX: number): void => {
+      const f = frameAt(clientX);
+      const dur = edge === "in"
+        ? Math.max(0, Math.min(len, Math.round(f - mc.timelineIn)))
+        : Math.max(0, Math.min(len, Math.round(out - f)));
+      const updated = { ...mc, ...(edge === "in" ? { fadeIn: dur } : { fadeOut: dur }) };
+      editor.setAudioClips(row.layerId, clips.map((c) => (c.id === mc.id ? updated : c)));
+    };
+    setFade(e.clientX);
+    const move = (ev: PointerEvent): void => setFade(ev.clientX);
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
   };
 
   /** Rubber-band de volume : glisser la ligne de gain verticalement (haut = fort, bas = 0). */
@@ -932,6 +964,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                                   sourceIn={mc.sourceIn}
                                   sourceOut={mc.sourceOut}
                                   sourceFrames={audioSourceFrames(row)}
+                                  zoom={waveZoom()}
                                   version={audioVersion()}
                                 />
                                 <div
@@ -940,6 +973,14 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                                   data-tooltip={`Volume ${row.gain.toFixed(2)}`}
                                   onPointerDown={(e) => onGainDrag(e, row)}
                                 />
+                                <Show when={(mc.fadeIn ?? 0) > 0}>
+                                  <div class="seq__fade seq__fade--in" style={{ width: `${framesToPx(mc.fadeIn!)}px` }} />
+                                </Show>
+                                <Show when={(mc.fadeOut ?? 0) > 0}>
+                                  <div class="seq__fade seq__fade--out" style={{ width: `${framesToPx(mc.fadeOut!)}px` }} />
+                                </Show>
+                                <div class="seq__fade-handle seq__fade-handle--in" style={{ left: `${framesToPx(mc.fadeIn ?? 0)}px` }} data-tooltip="Fondu d'entrée" onPointerDown={(e) => onFadeDrag(e, row, mc, "in")} />
+                                <div class="seq__fade-handle seq__fade-handle--out" style={{ right: `${framesToPx(mc.fadeOut ?? 0)}px` }} data-tooltip="Fondu de sortie" onPointerDown={(e) => onFadeDrag(e, row, mc, "out")} />
                                 <div class="seq__clip-handle seq__clip-handle--l" onPointerDown={(e) => onMediaClipTrim(e, row, mc, "in")} />
                                 <div class="seq__clip-handle seq__clip-handle--r" onPointerDown={(e) => onMediaClipTrim(e, row, mc, "out")} />
                               </div>

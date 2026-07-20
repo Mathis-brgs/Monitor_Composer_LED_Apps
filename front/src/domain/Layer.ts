@@ -21,6 +21,10 @@ export interface MediaClip {
   sourceOut: number;
   timelineIn: number;
   speed: number;
+  /** Fondu d'entrée (frames) : le gain monte 0→1 sur cette durée depuis le début du clip. */
+  fadeIn?: number;
+  /** Fondu de sortie (frames) : le gain descend 1→0 sur cette durée jusqu'à la fin du clip. */
+  fadeOut?: number;
 }
 
 /** Remappage linéaire clampé d'une valeur d'entrée vers une sortie (bindings). */
@@ -215,6 +219,19 @@ export function splitMediaClip(c: MediaClip, frame: number, newId: string): [Med
     { ...c, sourceOut: cutSource },
     { ...c, id: newId, sourceIn: cutSource, timelineIn: f },
   ];
+}
+
+/** Facteur de gain du fondu (0..1) d'un clip à un frame timeline donné (1 hors des fondus). */
+export function mediaFadeGain(c: MediaClip, frame: number): number {
+  const len = mediaClipLength(c);
+  const local = frame - c.timelineIn;
+  if (local < 0 || local > len) return 0;
+  let g = 1;
+  const fin = c.fadeIn ?? 0;
+  const fout = c.fadeOut ?? 0;
+  if (fin > 0 && local < fin) g = Math.min(g, local / fin);
+  if (fout > 0 && local > len - fout) g = Math.min(g, (len - local) / fout);
+  return Math.max(0, Math.min(1, g));
 }
 
 /** Remappage linéaire clampé d'une valeur via une `MapRange` (pour les bindings). */

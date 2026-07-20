@@ -1175,6 +1175,32 @@ body {
 
 .seq__gain-line:hover { height: var(--space-3); opacity: 1; }
 
+/* fondus in/out : overlay dégradé (assombrit la zone de fondu) + poignée de coin */
+.seq__fade {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  opacity: 0.7;
+  z-index: 1;
+}
+
+.seq__fade--in { left: 0; background: linear-gradient(to right, var(--app), transparent); }
+.seq__fade--out { right: 0; background: linear-gradient(to left, var(--app), transparent); }
+
+.seq__fade-handle {
+  position: absolute;
+  top: 0;
+  width: var(--space-8);
+  height: var(--space-8);
+  border-radius: 50%;
+  background: var(--pv-sweep);
+  cursor: ew-resize;
+  z-index: 3;
+}
+
+.seq__fade-handle:hover { transform: scale(1.25); }
+
 .seq__eye:hover,
 .seq__solo:hover,
 .seq__lock:hover { color: var(--txt); }
