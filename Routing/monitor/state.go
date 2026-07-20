@@ -15,10 +15,8 @@ import (
 type sharedState struct {
 	mu sync.Mutex
 
-	cfg          wall.Config
-	frame        *wall.Frame
-	fixtureData  [512]byte
-	fixtureDirty bool
+	cfg   wall.Config
+	frame *wall.Frame
 
 	// Dernier envoi via "Mode univers brut" : ce mode écrit directement sur le
 	// réseau sans passer par frame (par design, pour pouvoir tester n'importe
@@ -76,8 +74,6 @@ func (s *sharedState) applyConfig(cfg wall.Config) {
 	defer s.mu.Unlock()
 	s.cfg = cfg
 	s.frame = wall.NewFrame(cfg)
-	s.fixtureData = [512]byte{}
-	s.fixtureDirty = false
 	s.rawValid = false
 	s.updateCount = 0
 	s.unknownCount = 0
@@ -122,15 +118,8 @@ func (s *sharedState) listenEhub(port int) {
 			}
 
 			s.mu.Lock()
-			cfg := s.cfg
 			for _, e := range entities {
-				if strip, led, ok := cfg.EntityLocation(int(e.ID)); ok {
-					s.frame.SetLED(strip, led, e.R, e.G, e.B)
-					continue
-				}
-				if _, _, ch, ok := cfg.FixtureChannel(int(e.ID)); ok {
-					s.fixtureData[ch] = e.R
-					s.fixtureDirty = true
+				if s.frame.SetEntity(int(e.ID), e.R, e.G, e.B, e.W) {
 					continue
 				}
 				s.unknownCount++
@@ -154,7 +143,7 @@ func (s *sharedState) listenEhub(port int) {
 func setStripLEDs(f *wall.Frame, cfg wall.Config, strip int, r, g, b byte) {
 	for led := 1; led <= cfg.LEDsPerStrip(); led++ {
 		if cfg.IsVisible(led) {
-			f.SetLED(strip, led, r, g, b)
+			f.SetLED(strip, led, r, g, b, 0)
 		}
 	}
 }
@@ -171,7 +160,7 @@ func setAllLEDs(f *wall.Frame, cfg wall.Config, r, g, b byte, respectRegion bool
 			if respectRegion && !cfg.LEDInRegion(strip, led) {
 				continue
 			}
-			f.SetLED(strip, led, r, g, b)
+			f.SetLED(strip, led, r, g, b, 0)
 		}
 	}
 }

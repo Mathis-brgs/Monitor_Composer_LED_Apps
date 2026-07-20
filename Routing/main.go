@@ -73,7 +73,7 @@ func cmdSingle(cfg wall.Config, s *artnet.Sender, args []string) {
 	fs.Parse(args)
 
 	f := wall.NewFrame(cfg)
-	f.SetLED(*strip, *led, byte(*r), byte(*g), byte(*b))
+	f.SetLED(*strip, *led, byte(*r), byte(*g), byte(*b), 0)
 	if err := f.Flush(s, 0); err != nil {
 		fmt.Println("erreur d'envoi:", err)
 		os.Exit(1)
@@ -105,7 +105,7 @@ func cmdFill(cfg wall.Config, s *artnet.Sender, args []string) {
 			if !cfg.IsVisible(led) {
 				continue
 			}
-			f.SetLED(st, led, byte(*r), byte(*g), byte(*b))
+			f.SetLED(st, led, byte(*r), byte(*g), byte(*b), 0)
 		}
 	}
 	if err := f.Flush(s, 0); err != nil {
@@ -123,7 +123,7 @@ func cmdSweep(cfg wall.Config, s *artnet.Sender, args []string) {
 			on := wall.NewFrame(cfg)
 			for led := 1; led <= cfg.LEDsPerStrip(); led++ {
 				if cfg.IsVisible(led) {
-					on.SetLED(st, led, c[0], c[1], c[2])
+					on.SetLED(st, led, c[0], c[1], c[2], 0)
 				}
 			}
 			on.Flush(s, 0)
@@ -133,7 +133,7 @@ func cmdSweep(cfg wall.Config, s *artnet.Sender, args []string) {
 			off := wall.NewFrame(cfg)
 			for led := 1; led <= cfg.LEDsPerStrip(); led++ {
 				if cfg.IsVisible(led) {
-					off.SetLED(st, led, 0, 0, 0)
+					off.SetLED(st, led, 0, 0, 0, 0)
 				}
 			}
 			off.Flush(s, 0)
@@ -163,9 +163,9 @@ func cmdChase(cfg wall.Config, s *artnet.Sender, args []string) {
 
 		f := wall.NewFrame(cfg)
 		if prevStrip != 0 {
-			f.SetLED(prevStrip, prevLed, 0, 0, 0)
+			f.SetLED(prevStrip, prevLed, 0, 0, 0, 0)
 		}
-		f.SetLED(strip, led, 0, 255, 255)
+		f.SetLED(strip, led, 0, 255, 255, 0)
 		if err := f.Flush(s, seq); err != nil {
 			fmt.Println("erreur d'envoi:", err)
 		}
@@ -195,8 +195,6 @@ func cmdListen(cfg wall.Config, s *artnet.Sender, args []string) {
 
 	frame := wall.NewFrame(cfg)
 	var mu sync.Mutex
-	var fixtureData [512]byte
-	fixtureDirty := false
 	unknownEntities := 0
 	updateCount := 0
 
@@ -238,13 +236,7 @@ func cmdListen(cfg wall.Config, s *artnet.Sender, args []string) {
 
 				mu.Lock()
 				for _, e := range entities {
-					if strip, led, ok := cfg.EntityLocation(int(e.ID)); ok {
-						frame.SetLED(strip, led, e.R, e.G, e.B)
-						continue
-					}
-					if _, _, ch, ok := cfg.FixtureChannel(int(e.ID)); ok {
-						fixtureData[ch] = e.R
-						fixtureDirty = true
+					if frame.SetEntity(int(e.ID), e.R, e.G, e.B, e.W) {
 						continue
 					}
 					unknownEntities++
@@ -272,23 +264,11 @@ func cmdListen(cfg wall.Config, s *artnet.Sender, args []string) {
 	fmt.Printf("ecoute eHuB sur le port %d, envoi ArtNet a %d Hz, Ctrl+C pour arreter\n", *port, *fps)
 	for range ticker.C {
 		mu.Lock()
-		sendFixture := fixtureDirty
-		fixtureDirty = false
-		var fixtureSnapshot [512]byte
-		if sendFixture {
-			fixtureSnapshot = fixtureData
-		}
 		flushErr := frame.Flush(s, seq)
 		mu.Unlock()
 
 		if flushErr != nil {
 			fmt.Println("erreur d'envoi ArtNet:", flushErr)
-		}
-		if sendFixture {
-			ip, universe, _, _ := cfg.FixtureChannel(1)
-			if err := s.Send(ip, universe, seq, fixtureSnapshot[:]); err != nil {
-				fmt.Println("erreur d'envoi ArtNet (fixtures):", err)
-			}
 		}
 		seq++
 	}
