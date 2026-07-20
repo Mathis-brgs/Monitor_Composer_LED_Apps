@@ -388,6 +388,14 @@ export class Editor {
     this._emit();
   }
 
+  /** Volume d'une piste audio (gain ≥ 0). Non rendu sur le mur → pas de `_push`. */
+  setAudioGain(id: string, gain: number): void {
+    const l = findLayer(this._doc.root, id);
+    if (l?.type !== "audio") return;
+    l.gain = Math.max(0, gain);
+    this._emit();
+  }
+
   /**
    * Nombre de spots/lyres illimité côté éditeur : le canal de base est juste une
    * suggestion de départ (doc prof), toujours modifiable ensuite (voir
@@ -824,9 +832,10 @@ export class Editor {
     return { kind: "bitmap", data, width: VIDEO_SAMPLE_SIZE, height: VIDEO_SAMPLE_SIZE };
   }
 
-  /** Un calque du groupe actif est-il en solo ? (si oui, seuls les solos rendent) */
+  /** Un calque VISUEL du groupe actif est-il en solo ? (si oui, seuls les solos visuels rendent).
+   *  L'audio est exclu : son solo/mute est géré par l'AudioSync, pas par le rendu mur/DMX. */
   private _anySolo(): boolean {
-    return this._activeGroup().children.some((c) => c.solo);
+    return this._activeGroup().children.some((c) => c.solo && c.type !== "audio");
   }
 
   private _shapeInputs(): ShapeInput[] {

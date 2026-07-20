@@ -1135,7 +1135,8 @@ body {
 
 .seq__eye,
 .seq__solo,
-.seq__lock {
+.seq__lock,
+.seq__mute {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -1149,11 +1150,30 @@ body {
   cursor: pointer;
 }
 
-.seq__solo {
+.seq__solo,
+.seq__mute {
   font-size: var(--fs-2);
   font-weight: 600;
   border-radius: 50%;
 }
+
+.seq__mute:hover { color: var(--txt); }
+.seq__mute--on { color: var(--app); background: var(--pv-b); }
+
+/* ligne de gain audio (rubber-band de volume), glisser verticalement */
+.seq__gain-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: var(--space-2);
+  margin-top: calc(-1 * var(--space-1));
+  background: var(--pv-sweep);
+  opacity: 0.9;
+  cursor: ns-resize;
+  z-index: 2;
+}
+
+.seq__gain-line:hover { height: var(--space-3); opacity: 1; }
 
 .seq__eye:hover,
 .seq__solo:hover,

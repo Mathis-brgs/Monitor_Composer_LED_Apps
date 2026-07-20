@@ -22,20 +22,34 @@ export class AudioSync {
     this._clock = clock;
   }
 
-  /** Clip de montage actif au frame courant (1re piste audio chargée), ou null. */
+  /** Toutes les pistes audio de l'arbre (parcours en profondeur). */
+  private _audioLayers(): Layer[] {
+    const out: Layer[] = [];
+    const walk = (layers: readonly Layer[]): void => {
+      for (const l of layers) {
+        if (l.type === "audio") out.push(l);
+        else if (l.type === "group") walk(l.children);
+      }
+    };
+    walk(this._editor.getDocument().root.children);
+    return out;
+  }
+
+  /** Clip de montage actif au frame courant, mute/solo respectés, ou null.
+   *  Mute = `!visible` ; Solo = si ≥ 1 piste audio en solo (non mutée), seules celles-là jouent. */
   private _active(): { assetId: string; clip: MediaClip; gain: number } | null {
     const frame = this._clock.frame;
-    const walk = (layers: readonly Layer[]): { assetId: string; clip: MediaClip; gain: number } | null => {
-      for (const l of layers) {
-        if (l.type === "audio" && this._engine.has(l.assetId) && l.clips) {
-          const clip = l.clips.find((c) => mediaClipActiveAt(c, frame));
-          if (clip) return { assetId: l.assetId, clip, gain: l.gain };
-        }
-        if (l.type === "group") { const found = walk(l.children); if (found) return found; }
-      }
-      return null;
-    };
-    return walk(this._editor.getDocument().root.children);
+    const audio = this._audioLayers();
+    const anySolo = audio.some((l) => l.type === "audio" && l.solo && l.visible);
+    for (const l of audio) {
+      if (l.type !== "audio") continue;
+      if (!l.visible) continue; // muté
+      if (anySolo && !l.solo) continue; // solo actif ailleurs
+      if (!this._engine.has(l.assetId) || !l.clips) continue;
+      const clip = l.clips.find((c) => mediaClipActiveAt(c, frame));
+      if (clip) return { assetId: l.assetId, clip, gain: l.gain };
+    }
+    return null;
   }
 
   /** Appelé chaque frame par la boucle de rendu. */

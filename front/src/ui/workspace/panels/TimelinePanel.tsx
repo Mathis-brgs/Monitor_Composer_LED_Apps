@@ -31,7 +31,10 @@ function clampPps(v: number): number {
 
 interface AxisRow { channel: string; label: string; animated: boolean; frames: number[]; interps: Interp[] }
 interface PropRow { label: string; channels: string[]; animated: boolean; frames: number[]; interps: Interp[]; axes: AxisRow[] }
-interface LayerRow { layerId: string; type: Layer["type"]; assetId: string | undefined; name: string; clip: Clip | undefined; mediaClips: MediaClip[]; props: PropRow[]; keyframes: number[]; visible: boolean; solo: boolean; locked: boolean; label: string | undefined }
+interface LayerRow { layerId: string; type: Layer["type"]; assetId: string | undefined; name: string; clip: Clip | undefined; mediaClips: MediaClip[]; gain: number; props: PropRow[]; keyframes: number[]; visible: boolean; solo: boolean; locked: boolean; label: string | undefined }
+
+/** Gain audio maximal (rubber-band de volume) : 2 = +6 dB env., 1 = unité. */
+const GAIN_MAX = 2;
 
 /** Waveform d'un clip audio : trace la FENÊTRE de source [sourceIn, sourceOut] du clip
  *  (pas d'écrasement au trim), depuis les peaks précalculés de l'AudioEngine. */
@@ -124,7 +127,8 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
       const keyframes = [...new Set(props.flatMap((p) => p.frames))].sort((a, b) => a - b);
       const assetId = "assetId" in l ? l.assetId : undefined;
       const mediaClips = "clips" in l && l.clips ? l.clips : [];
-      return { layerId: l.id, type: l.type, assetId, name: l.name, clip: l.clip, mediaClips, props, keyframes, visible: l.visible, solo: !!l.solo, locked: !!l.locked, label: l.label };
+      const gain = l.type === "audio" ? l.gain : 1;
+      return { layerId: l.id, type: l.type, assetId, name: l.name, clip: l.clip, mediaClips, gain, props, keyframes, visible: l.visible, solo: !!l.solo, locked: !!l.locked, label: l.label };
     });
   });
   // Séparation façon Premiere : pistes visuelles au-dessus, pistes audio regroupées en dessous.
@@ -395,6 +399,27 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     editor.setAudioClips(row.layerId, row.mediaClips.filter((c) => c.id !== s.clipId));
     setSelectedClip(null);
     return true;
+  };
+
+  /** Rubber-band de volume : glisser la ligne de gain verticalement (haut = fort, bas = 0). */
+  const onGainDrag = (e: PointerEvent, row: LayerRow): void => {
+    e.stopPropagation();
+    if (row.locked) return;
+    const bar = (e.currentTarget as HTMLElement).parentElement;
+    if (!bar) return;
+    const rect = bar.getBoundingClientRect();
+    const setFromY = (clientY: number): void => {
+      const t = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+      editor.setAudioGain(row.layerId, Number((GAIN_MAX * (1 - t)).toFixed(2)));
+    };
+    setFromY(e.clientY);
+    const move = (ev: PointerEvent): void => setFromY(ev.clientY);
+    const up = (): void => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
   };
 
   // —————————————————————————— Réordonnancement (z) ——————————————————————————
@@ -764,20 +789,42 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                         onClick={(e) => { e.stopPropagation(); toggleExpand(row.layerId); }}
                       />
                       <span class="seq__name-label">{row.name}</span>
-                      <button
-                        type="button"
-                        class="seq__eye"
-                        classList={{ "seq__eye--off": !row.visible }}
-                        data-tooltip={row.visible ? "Masquer" : "Afficher"}
-                        onClick={(e) => { e.stopPropagation(); editor.setVisible(row.layerId, !row.visible); }}
-                      >{createIcon(row.visible ? "eye" : "eye-off", { size: 13 })}</button>
-                      <button
-                        type="button"
-                        class="seq__solo"
-                        classList={{ "seq__solo--on": row.solo }}
-                        data-tooltip="Solo (n'affiche que les calques en solo)"
-                        onClick={(e) => { e.stopPropagation(); editor.setSolo(row.layerId, !row.solo); }}
-                      >S</button>
+                      <Show
+                        when={row.type === "audio"}
+                        fallback={
+                          <>
+                            <button
+                              type="button"
+                              class="seq__eye"
+                              classList={{ "seq__eye--off": !row.visible }}
+                              data-tooltip={row.visible ? "Masquer" : "Afficher"}
+                              onClick={(e) => { e.stopPropagation(); editor.setVisible(row.layerId, !row.visible); }}
+                            >{createIcon(row.visible ? "eye" : "eye-off", { size: 13 })}</button>
+                            <button
+                              type="button"
+                              class="seq__solo"
+                              classList={{ "seq__solo--on": row.solo }}
+                              data-tooltip="Solo (n'affiche que les calques en solo)"
+                              onClick={(e) => { e.stopPropagation(); editor.setSolo(row.layerId, !row.solo); }}
+                            >S</button>
+                          </>
+                        }
+                      >
+                        <button
+                          type="button"
+                          class="seq__mute"
+                          classList={{ "seq__mute--on": !row.visible }}
+                          data-tooltip={row.visible ? "Muter la piste" : "Réactiver la piste"}
+                          onClick={(e) => { e.stopPropagation(); editor.setVisible(row.layerId, !row.visible); }}
+                        >M</button>
+                        <button
+                          type="button"
+                          class="seq__solo"
+                          classList={{ "seq__solo--on": row.solo }}
+                          data-tooltip="Solo audio (n'entend que les pistes en solo)"
+                          onClick={(e) => { e.stopPropagation(); editor.setSolo(row.layerId, !row.solo); }}
+                        >S</button>
+                      </Show>
                       <button
                         type="button"
                         class="seq__lock"
@@ -886,6 +933,12 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                                   sourceOut={mc.sourceOut}
                                   sourceFrames={audioSourceFrames(row)}
                                   version={audioVersion()}
+                                />
+                                <div
+                                  class="seq__gain-line"
+                                  style={{ top: `${(1 - Math.min(row.gain, GAIN_MAX) / GAIN_MAX) * 100}%` }}
+                                  data-tooltip={`Volume ${row.gain.toFixed(2)}`}
+                                  onPointerDown={(e) => onGainDrag(e, row)}
                                 />
                                 <div class="seq__clip-handle seq__clip-handle--l" onPointerDown={(e) => onMediaClipTrim(e, row, mc, "in")} />
                                 <div class="seq__clip-handle seq__clip-handle--r" onPointerDown={(e) => onMediaClipTrim(e, row, mc, "out")} />
