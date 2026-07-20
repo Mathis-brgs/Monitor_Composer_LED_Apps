@@ -13,6 +13,7 @@ const ROTATION: PropGroup = { label: "Rotation", channels: ["rotation.x", "rotat
 const SCALE: PropGroup = { label: "Échelle", channels: ["scale.x", "scale.y", "scale.z"] };
 const OPACITY: PropGroup = { label: "Opacité", channels: ["opacity"] };
 const COLOR: PropGroup = { label: "Couleur", channels: ["color.r", "color.g", "color.b"] };
+const VOLUME: PropGroup = { label: "Volume", channels: ["gain"] };
 
 /** Catalogue des propriétés animables d'un calque, contextuel à son type (aligné sur l'inspecteur). */
 export function animatableProps(layer: Layer): PropGroup[] {
@@ -29,7 +30,7 @@ export function animatableProps(layer: Layer): PropGroup[] {
     case "lyre":
       return [POSITION, OPACITY];
     case "audio":
-      return []; // volume automation : différée (M4) — l'audio se pilote via waveform/clip
+      return [VOLUME]; // automation de volume : gain keyframé (lu chaque frame par l'AudioSync)
     default: // group / image / video
       return [OPACITY];
   }
