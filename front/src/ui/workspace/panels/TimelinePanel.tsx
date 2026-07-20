@@ -37,7 +37,7 @@ interface LayerRow { layerId: string; type: Layer["type"]; assetId: string | und
 /** Gain audio maximal (rubber-band de volume) : 2 = +6 dB env., 1 = unité. */
 const GAIN_MAX = 2;
 
-const WAVE_H = 30;
+const WAVE_H = 64; // hauteur du backing waveform (affiché en 100% de la piste ; downscale net au zoom vertical)
 /** Cache LRU de waveforms rasterisées : reconstruire un canvas (rebuild `<For>`) ne relance
  *  plus la boucle de peaks — un simple `drawImage` suffit. Clé = fenêtre + géométrie + zoom. */
 const WAVE_CACHE = new Map<string, HTMLCanvasElement>();
@@ -120,6 +120,14 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
   const [pps, setPps] = createSignal(DEFAULT_PPS);
   const [waveZoom, setWaveZoom] = createSignal(1); // zoom vertical (amplitude) de la waveform (Alt+molette)
   const [snapOn, setSnapOn] = createSignal(true);  // aimantation sur la grille rythmique (BPM)
+  const [rowScale, setRowScale] = createSignal(1); // zoom en hauteur (taille des pistes)
+  const [tlTool, setTlTool] = createSignal<"select" | "razor" | "hand">("select"); // outil actif (rail)
+
+  // Zoom horizontal : slider 0..1 ↔ pps en échelle log (course lisible sur toute la plage).
+  const ppsToT = (p: number): number => Math.log(p / MIN_PPS) / Math.log(MAX_PPS / MIN_PPS);
+  const tToPps = (t: number): number => clampPps(MIN_PPS * Math.pow(MAX_PPS / MIN_PPS, Math.max(0, Math.min(1, t))));
+  const ROW_SCALE_MIN = 0.7;
+  const ROW_SCALE_MAX = 2.6;
 
   // Snapshot réactif : recalculé à chaque emit de l'Editor (jamais pendant la lecture).
   // Une rangée par calque (ordre z) + son catalogue de propriétés animables (façon AE).
@@ -164,8 +172,16 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
   // Séparation façon Premiere : pistes visuelles au-dessus, pistes audio regroupées en dessous.
   const videoRows = createMemo<LayerRow[]>(() => rows().filter((r) => r.type !== "audio"));
   const audioRows = createMemo<LayerRow[]>(() => rows().filter((r) => r.type === "audio"));
-  const sortedRows = createMemo<LayerRow[]>(() => [...videoRows(), ...audioRows()]);
-  const audioSplit = (): number => videoRows().length; // index de la 1re piste audio
+  // Pistes audio EN HAUT (façon Logic), pistes visuelles en dessous.
+  const sortedRows = createMemo<LayerRow[]>(() => [...audioRows(), ...videoRows()]);
+  /** Libellé de section à insérer AVANT la rangée i (transition audio↔visuel), sinon null. */
+  const sectionBefore = (i: number): string | null => {
+    const rws = sortedRows();
+    if (i === 0) return rws[0]?.type === "audio" ? "Audio" : "Visuel";
+    const prevAudio = rws[i - 1].type === "audio";
+    const curAudio = rws[i].type === "audio";
+    return prevAudio !== curAudio ? (curAudio ? "Audio" : "Visuel") : null;
+  };
 
   // Waveforms : bumpé après un import audio pour forcer le redraw des canvas.
   const [audioVersion, setAudioVersion] = createSignal(0);
@@ -447,11 +463,20 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     return 1;
   };
 
+  /** Découpe un clip média au frame donné (outil rasoir : clic sur le clip). */
+  const splitClipAt = (row: LayerRow, mc: MediaClip, f: number): void => {
+    const parts = splitMediaClip(mc, snapFrame(f), `${mc.id}.${++clipSeq}`);
+    if (!parts) return;
+    setClips(row, row.mediaClips.flatMap((c) => (c.id === mc.id ? parts : [c])));
+    setSelectedClip({ layerId: row.layerId, clipId: parts[1].id });
+  };
+
   const onMediaClipMove = (e: PointerEvent, row: LayerRow, mc: MediaClip): void => {
     e.stopPropagation();
     editor.select(row.layerId);
     setSelectedClip({ layerId: row.layerId, clipId: mc.id });
     if (row.locked) return;
+    if (tlTool() === "razor") { splitClipAt(row, mc, frameAt(e.clientX)); return; }
     const start = frameAt(e.clientX);
     let preview = mc;
     const move = (ev: PointerEvent): void => {
@@ -735,6 +760,9 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); splitSelectedClip(); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "c") { copyKeys(); }
     else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "v") { e.preventDefault(); pasteKeys(); }
+    else if (e.key.toLowerCase() === "v") { setTlTool("select"); }   // outils du rail (façon NLE)
+    else if (e.key.toLowerCase() === "c") { setTlTool("razor"); }
+    else if (e.key.toLowerCase() === "h") { setTlTool("hand"); }
   };
   onMount(() => window.addEventListener("keydown", onKeyDown));
   onCleanup(() => window.removeEventListener("keydown", onKeyDown));
@@ -750,6 +778,14 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
 
   const onLanesDown = (e: PointerEvent): void => {
     if (e.button !== 0 || !lanesEl) return; // la cible est le fond des lanes (diamants/clips stoppent la propagation)
+    if (tlTool() === "hand" && scroller) { // outil main : glisser pour défiler
+      const sx = e.clientX, sy = e.clientY, sl = scroller.scrollLeft, st = scroller.scrollTop;
+      const move = (ev: PointerEvent): void => { scroller!.scrollLeft = sl - (ev.clientX - sx); scroller!.scrollTop = st - (ev.clientY - sy); };
+      const up = (): void => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      return;
+    }
     const startX = e.clientX;
     const startY = e.clientY;
     let moved = false;
@@ -877,8 +913,33 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     />
   );
 
+  const toolBtn = (tool: "select" | "razor" | "hand", icon: string, tip: string): JSX.Element => (
+    <button
+      type="button"
+      class="seq__tool"
+      classList={{ "seq__tool--on": tlTool() === tool }}
+      data-tooltip={tip}
+      onClick={() => setTlTool(tool)}
+    >
+      {createIcon(icon, { size: 16 })}
+    </button>
+  );
+
   return (
-    <div class="seq">
+    <div class="seq" style={{ "--tl-row": `calc(var(--lane) * ${rowScale()})` }}>
+      <div class="seq__tools">
+        {toolBtn("select", "cursor", "Sélection (V)")}
+        {toolBtn("razor", "razor", "Rasoir — cliquer un clip pour le couper (C)")}
+        {toolBtn("hand", "hand", "Main — glisser pour défiler (H)")}
+        <div class="seq__tools-sep" />
+        <button type="button" class="seq__tool" data-tooltip="Importer une piste audio" onClick={importAudio}>
+          {createIcon("waveform", { size: 16 })}
+        </button>
+        <button type="button" class="seq__tool" data-tooltip="Importer une vidéo (diffusée sur le mur)" onClick={importVideo}>
+          {createIcon("film", { size: 16 })}
+        </button>
+      </div>
+      <div class="seq__main">
       <div class="seq__topbar">
         <div class="seq__topbar-names">Pistes</div>
         <div class="seq__topbar-main">
@@ -888,16 +949,21 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
               <span class="seq__tempo-label">BPM</span>
               <NumberField class="seq__tempo-field" value={bpm()} step={1} format={(n) => String(Math.round(n))} onInput={(v) => clock.setBpm(Math.round(v))} />
             </label>
-            <button
-              type="button"
-              class="seq__zoom-btn"
-              classList={{ "seq__zoom-btn--on": snapOn() }}
-              data-tooltip="Aimanter clips et rognages sur la grille (BPM)"
-              onClick={() => setSnapOn(!snapOn())}
-            >Snap</button>
-            <button type="button" class="seq__zoom-btn" data-tooltip="Importer une vidéo (diffusée sur le mur)" onClick={importVideo}>+ Vidéo</button>
-            <button type="button" class="seq__zoom-btn" data-tooltip="Importer une piste audio" onClick={importAudio}>+ Audio</button>
-            <button type="button" class="seq__zoom-btn" data-tooltip="Couper le clip au playhead (⌘K)" disabled={!selectedClip()} onClick={splitSelectedClip}>Couper</button>
+            <span class="seq__zoomers">
+              <span class="seq__zoomer" data-tooltip="Zoom horizontal (durée)">
+                {createIcon("sliders", { size: 13 })}
+                <input class="seq__range" type="range" min="0" max="1" step="0.001" value={ppsToT(pps())} onInput={(e) => setPps(tToPps(+e.currentTarget.value))} />
+              </span>
+              <span class="seq__zoomer seq__zoomer--v" data-tooltip="Zoom vertical (hauteur des pistes)">
+                {createIcon("layers", { size: 13 })}
+                <input class="seq__range" type="range" min={ROW_SCALE_MIN} max={ROW_SCALE_MAX} step="0.05" value={rowScale()} onInput={(e) => setRowScale(+e.currentTarget.value)} />
+              </span>
+            </span>
+            <label class="seq__switch" data-tooltip="Aimanter clips et rognages sur la grille (BPM)">
+              <input type="checkbox" class="seq__switch-input" checked={snapOn()} onChange={(e) => setSnapOn(e.currentTarget.checked)} />
+              <span class="seq__switch-track"><span class="seq__switch-thumb" /></span>
+              <span class="seq__switch-label">Snap</span>
+            </label>
             <button type="button" class="seq__zoom-btn" data-tooltip="Ajuster à la fenêtre" onClick={fit}>Ajuster</button>
           </span>
         </div>
@@ -907,11 +973,15 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
           <div class="seq__names" ref={namesEl}>
             <div class="seq__corner" />
             <Show when={rows().length > 0} fallback={<div class="seq__names-empty">Groupe vide</div>}>
+              <Show when={audioRows().length === 0}>
+                <div class="seq__section seq__section--names">Audio</div>
+                <div class="seq__name seq__name--empty">A1 · piste audio vide</div>
+              </Show>
               <For each={sortedRows()}>
                 {(row, i) => (
                   <>
-                    <Show when={row.type === "audio" && i() === audioSplit()}>
-                      <div class="seq__section seq__section--names">Audio</div>
+                    <Show when={sectionBefore(i())}>
+                      {(label) => <div class="seq__section seq__section--names">{label()}</div>}
                     </Show>
                     <div
                       class="seq__name"
@@ -1031,10 +1101,6 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                   </>
                 )}
               </For>
-              <Show when={audioRows().length === 0}>
-                <div class="seq__section seq__section--names">Audio</div>
-                <div class="seq__name seq__name--empty">A1 · piste audio vide</div>
-              </Show>
           </Show>
           </div>
           <div class="seq__timeline">
@@ -1047,11 +1113,21 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                   )}
                 </For>
               </div>
-              <div class="seq__lanes" ref={lanesEl} style={{ "background-image": gridBg() }} onPointerDown={onLanesDown}>
+              <div
+                class="seq__lanes"
+                classList={{ "seq__lanes--razor": tlTool() === "razor", "seq__lanes--hand": tlTool() === "hand" }}
+                ref={lanesEl}
+                style={{ "background-image": gridBg() }}
+                onPointerDown={onLanesDown}
+              >
+                <Show when={audioRows().length === 0}>
+                  <div class="seq__section seq__section--lane" />
+                  <div class="seq__lane seq__lane--empty" />
+                </Show>
                 <For each={sortedRows()}>
                   {(row, i) => (
                     <>
-                      <Show when={row.type === "audio" && i() === audioSplit()}>
+                      <Show when={sectionBefore(i())}>
                         <div class="seq__section seq__section--lane" />
                       </Show>
                       <div class="seq__lane">
@@ -1154,10 +1230,6 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                     </>
                   )}
                 </For>
-                <Show when={audioRows().length === 0}>
-                  <div class="seq__section seq__section--lane" />
-                  <div class="seq__lane seq__lane--empty" />
-                </Show>
                 <Show when={marquee()}>
                   {(m) => (
                     <div class="seq__marquee" style={{ left: `${m().left}px`, top: `${m().top}px`, width: `${m().width}px`, height: `${m().height}px` }} />
@@ -1169,6 +1241,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
               </div>
           </div>
         </div>
+      </div>
       </div>
       <Show when={editKey()}>
         {(k) => (
