@@ -2,7 +2,7 @@ import { Euler, Matrix4, Quaternion, Vector3 } from "three/webgpu";
 import type { Engine } from "./engine/Engine.ts";
 import {
   makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, makeVideo, findLayer, findGroup, findParent, groupChildren,
-  fixtureDmxChannels, layerActiveAt, mediaClipActiveAt, mediaSourceFrameAt, mediaFadeGain,
+  fixtureDmxChannels, layerActiveAt, mediaClipActiveAt, mediaSourceFrameAt, mediaFadeGain, mediaGroupActiveAt,
   wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
   type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer, type VideoLayer,
   type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type MediaClip, type SpotChannels, type LyreChannels,
@@ -547,6 +547,15 @@ export class Editor {
     this._emit();
   }
 
+  /** Association « groupé sous un média » : le calque n'est actif que dans la fenêtre du média parent. */
+  setMediaGroup(id: string, mediaGroupId: string | undefined): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer) return;
+    layer.mediaGroupId = mediaGroupId || undefined;
+    this._push();
+    this._emit();
+  }
+
   /** Verrou : le calque devient non sélectionnable / non éditable (désélectionné s'il l'était). */
   setLocked(id: string, locked: boolean): void {
     const layer = findLayer(this._doc.root, id);
@@ -887,6 +896,11 @@ export class Editor {
     return { kind: "bitmap", data, width: VIDEO_SAMPLE_SIZE, height: VIDEO_SAMPLE_SIZE };
   }
 
+  /** Un calque est-il actif au frame courant : sa propre fenêtre de clip ET son groupe média. */
+  private _activeAt(layer: Layer): boolean {
+    return layerActiveAt(layer.clip, this._frame) && mediaGroupActiveAt(this._doc.root, layer, this._frame);
+  }
+
   /** Un calque VISUEL du groupe actif est-il en solo ? (si oui, seuls les solos visuels rendent).
    *  L'audio est exclu : son solo/mute est géré par l'AudioSync, pas par le rendu mur/DMX. */
   private _anySolo(): boolean {
@@ -896,7 +910,7 @@ export class Editor {
   private _shapeInputs(): ShapeInput[] {
     const anySolo = this._anySolo();
     return this._activeGroup().children
-      .filter((l): l is ShapeLayer => l.type === "shape" && l.visible && layerActiveAt(l.clip, this._frame) && (!anySolo || !!l.solo))
+      .filter((l): l is ShapeLayer => l.type === "shape" && l.visible && this._activeAt(l) && (!anySolo || !!l.solo))
       .map((s) => this._toInput(s));
   }
 
@@ -939,7 +953,7 @@ export class Editor {
     const map = new Map<number, number>();
     const anySolo = this._anySolo();
     for (const l of this._activeGroup().children) {
-      if ((l.type === "spot" || l.type === "lyre") && l.visible && layerActiveAt(l.clip, this._frame) && (!anySolo || l.solo)) {
+      if ((l.type === "spot" || l.type === "lyre") && l.visible && this._activeAt(l) && (!anySolo || l.solo)) {
         for (const { channel, value } of fixtureDmxChannels(l)) map.set(channel, value);
       }
     }
@@ -966,12 +980,12 @@ export class Editor {
     let sceneAdded = false;
     for (const child of this._activeGroup().children) {
       if (child.type === "shader") {
-        if (layerActiveAt(child.clip, this._frame) && (!anySolo || child.solo)) stack.push(this._ensureShader(child));
+        if (this._activeAt(child) && (!anySolo || child.solo)) stack.push(this._ensureShader(child));
       } else if (child.type === "shape") {
         // un seul calque Scene3D agrégé (position de la 1re shape) tant qu'il reste des shapes actives
         if (!sceneAdded && shapes.length > 0) { stack.push(scene3d); sceneAdded = true; }
       } else if (child.type === "video") {
-        const active = child.clips ? child.clips.some((c) => mediaClipActiveAt(c, this._frame)) : layerActiveAt(child.clip, this._frame);
+        const active = child.clips ? child.clips.some((c) => mediaClipActiveAt(c, this._frame)) : this._activeAt(child);
         if (child.visible && active && (!anySolo || child.solo)) stack.push(this._ensureVideo(child));
       }
       // group/image/spot/lyre : non rendus sur le mur (navigables / repère visuel seulement)
@@ -985,7 +999,7 @@ export class Editor {
   private _activeSignature(): string {
     let sig = "";
     for (const child of this._activeGroup().children) {
-      if (layerActiveAt(child.clip, this._frame)) sig += child.id + ",";
+      if (this._activeAt(child)) sig += child.id + ",";
     }
     return sig;
   }

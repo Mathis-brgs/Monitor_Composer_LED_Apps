@@ -6,6 +6,7 @@ import {
   layerActiveAt, moveClip, trimIn, trimOut, wouldCycle,
   mediaClipLength, mediaClipTimelineOut, mediaClipActiveAt, mediaSourceFrameAt,
   moveMediaClip, trimMediaIn, trimMediaOut, splitMediaClip, mediaFadeGain, applyMap,
+  mediaGroupActiveAt,
   type MediaClip,
 } from "./Layer.ts";
 
@@ -151,6 +152,21 @@ test("mediaFadeGain : enveloppe des fondus in/out (1 hors fondus, 0 hors clip)",
   assert.equal(mediaFadeGain(c, 34), 0);    // fin du fade-out
   assert.equal(mediaFadeGain(mc(), 20), 1); // sans fondu → 1
   assert.equal(mediaFadeGain(c, 5), 0);     // avant le clip
+});
+
+test("mediaGroupActiveAt : light groupé suit la fenêtre du clip média parent", () => {
+  const root = makeGroup("root", "R");
+  const aud = makeAudio("aud", "Son", "asset");
+  aud.clips = [{ id: "c", sourceIn: 0, sourceOut: 10, timelineIn: 10, speed: 1 }]; // actif [10, 20)
+  const light = makeShape("l", "sphere", "Light");
+  root.children.push(aud, light);
+  assert.equal(mediaGroupActiveAt(root, light, 15), true); // pas de groupe → toujours actif
+  light.mediaGroupId = "aud";
+  assert.equal(mediaGroupActiveAt(root, light, 5), false); // avant le clip média
+  assert.equal(mediaGroupActiveAt(root, light, 15), true); // dans le clip
+  assert.equal(mediaGroupActiveAt(root, light, 25), false); // après le clip
+  light.mediaGroupId = "absent";
+  assert.equal(mediaGroupActiveAt(root, light, 5), true); // parent introuvable → actif
 });
 
 test("applyMap : remappage linéaire clampé", () => {

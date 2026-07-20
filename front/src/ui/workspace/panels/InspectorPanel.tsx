@@ -66,6 +66,25 @@ function ParentField(props: { editor: Editor; node: Layer; changed: Accessor<unk
   );
 }
 
+/** Association « groupé sous un média » : le calque n'est actif que dans la fenêtre du média parent. */
+function MediaGroupField(props: { editor: Editor; node: Layer; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
+  const options = createMemo(() => { changed(); return editor.children.filter((l) => (l.type === "audio" || l.type === "video") && l.id !== node.id); });
+  const current = createMemo(() => { changed(); return node.mediaGroupId ?? ""; });
+  return (
+    <select
+      class="insp-field insp-field--editable insp-control insp-select"
+      value={current()}
+      onChange={(e) => editor.setMediaGroup(node.id, e.currentTarget.value || undefined)}
+    >
+      <option value="">Aucun</option>
+      <For each={options()}>
+        {(l) => <option value={l.id}>{l.name}</option>}
+      </For>
+    </select>
+  );
+}
+
 /** Inspecteur : props du nœud sélectionné, contextuelles à son type. Reconstruit à la sélection. */
 function Inspector(props: { editor: Editor }): JSX.Element {
   const editor = props.editor;
@@ -89,6 +108,9 @@ function NodeBody(props: { editor: Editor; node: Layer | null; changed: Accessor
       <Section title="Général">
         <Row label="Nom"><TextField value={node.name} onInput={(v) => editor.setName(node.id, v)} /></Row>
         <Row label="Parent"><ParentField editor={editor} node={node} changed={changed} /></Row>
+        <Show when={node.type !== "audio" && node.type !== "video"}>
+          <Row label="Groupe média"><MediaGroupField editor={editor} node={node} changed={changed} /></Row>
+        </Show>
       </Section>
       <Show when={node.type === "shape"}>
         <ShapeBody editor={editor} node={node as ShapeLayer} changed={changed} />

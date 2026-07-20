@@ -234,6 +234,22 @@ export function mediaFadeGain(c: MediaClip, frame: number): number {
   return Math.max(0, Math.min(1, g));
 }
 
+/**
+ * Groupe temporel (association « groupé sous un média ») : un calque avec
+ * `mediaGroupId` n'est actif que quand le média parent l'est (fenêtre de ses clips
+ * de montage, sinon son clip simple). Sans groupe → toujours actif (selon son propre clip).
+ */
+export function mediaGroupActiveAt(root: GroupLayer, layer: Layer, frame: number): boolean {
+  if (!layer.mediaGroupId) return true;
+  const parent = findLayer(root, layer.mediaGroupId);
+  if (!parent) return true;
+  if (parent.type === "audio" || parent.type === "video") {
+    const clips = parent.clips;
+    if (clips && clips.length) return clips.some((c) => mediaClipActiveAt(c, frame));
+  }
+  return layerActiveAt(parent.clip, frame);
+}
+
 /** Remappage linéaire clampé d'une valeur via une `MapRange` (pour les bindings). */
 export function applyMap(map: MapRange, v: number): number {
   if (map.inMax === map.inMin) return map.outMin;
