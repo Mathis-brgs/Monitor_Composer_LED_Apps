@@ -13,6 +13,7 @@ import (
 	"image/draw"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -45,10 +46,18 @@ func main() {
 	win := a.NewWindow("LED Monitor")
 
 	img := image.NewRGBA(image.Rect(0, 0, state.cfg.Width()*cellSize, state.cfg.Height*cellSize))
+
+	// Aperçu compact (carte "Source"), et sa version agrandie dans une fenêtre à part
+	// (même image sous-jacente, les deux sont rafraîchies ensemble à chaque tick).
 	grid := canvas.NewImageFromImage(img)
 	grid.ScaleMode = canvas.ImageScalePixels
 	grid.FillMode = canvas.ImageFillContain
-	grid.SetMinSize(fyne.NewSize(640, 640))
+	grid.SetMinSize(fyne.NewSize(220, 220))
+
+	gridBig := canvas.NewImageFromImage(img)
+	gridBig.ScaleMode = canvas.ImageScalePixels
+	gridBig.FillMode = canvas.ImageFillContain
+	gridBig.SetMinSize(fyne.NewSize(640, 640))
 
 	// Grille DMX : IP/univers partagés avec "Mode univers brut" plus bas.
 	dmxImg := image.NewRGBA(image.Rect(0, 0, dmxCols*dmxCellSize, dmxRows*dmxCellSize))
@@ -98,7 +107,7 @@ func main() {
 		}
 		r, g, b := currentColor()
 		state.mu.Lock()
-		state.frame.SetLED(strip, led, r, g, b)
+		state.frame.SetLED(strip, led, r, g, b, 0)
 		state.mu.Unlock()
 	})
 
@@ -172,8 +181,9 @@ func main() {
 
 	refreshConfigInfo := func(c wall.Config) {
 		configInfoLabel.SetText(fmt.Sprintf(
-			"Largeur: %d colonnes  Hauteur: %d  Bandes: %d  Univers/bande: %d\n%s",
-			c.Width(), c.Height, c.StripCount(), c.UniversesPerStrip(), regionInfo(c),
+			"Controleurs (%d): %s\nLargeur: %d colonnes  Hauteur: %d  Bandes: %d  Univers/bande: %d  Canaux/LED: %d (%s)\n%s",
+			len(c.ControllerIPs), strings.Join(c.ControllerIPs, ", "),
+			c.Width(), c.Height, c.StripCount(), c.UniversesPerStrip(), c.ChannelsPerLED(), c.ChannelOrder, regionInfo(c),
 		))
 	}
 	refreshConfigInfo(state.cfg)
@@ -233,14 +243,59 @@ func main() {
 		}, win)
 	})
 
+	// applyPatchRows remplace Config.Patch (source de verite si non vide, cf.
+	// Config.ResolveEntity) et deduit ControllerIPs des IP presentes dans les
+	// lignes — chemin commun a la fenetre "Controleurs & Univers" et a
+	// l'import CSV.
+	applyPatchRows := func(rows []wall.PatchRow) {
+		newCfg := state.cfg
+		newCfg.Patch = rows
+		newCfg.ControllerIPs = uniqueIPsInOrder(rows)
+		configErrorLabel.SetText("")
+		state.applyConfig(newCfg)
+		fields.load(newCfg)
+		if len(newCfg.ControllerIPs) > 0 {
+			ipSelect.SetOptions(newCfg.ControllerIPs)
+			ipSelect.SetSelected(newCfg.ControllerIPs[0])
+		}
+		refreshConfigInfo(newCfg)
+	}
+
+	// --- import direct d'un patch CSV (Name, Entity Start, Entity End,
+	// ArtNet IP, ArtNet Universe) : remplit toute la config d'un coup, sans
+	// exiger que le fichier suive une formule uniforme.
+	importBtn := widget.NewButton("Importer un patch (CSV)...", func() {
+		dialog.ShowFileOpen(func(uc fyne.URIReadCloser, ferr error) {
+			if ferr != nil || uc == nil {
+				return
+			}
+			defer uc.Close()
+			rows, err := wall.ParsePatchCSV(uc)
+			if err != nil {
+				configErrorLabel.SetText("Erreur d'import : " + err.Error())
+				return
+			}
+			applyPatchRows(rows)
+		}, win)
+	})
+
+	// --- fenetre dediee "Controleurs & Univers" : cartes cliquables par
+	// controleur (aspect materiel), navigation vers ses univers, creation/
+	// edition/suppression a la main. Genere depuis la formule au 1er lancement
+	// si aucun patch n'existe encore.
+	patchWindowBtn := widget.NewButton("Controleurs & Univers...", func() {
+		showPatchWindow(a, state.cfg, applyPatchRows)
+	})
+
 	configPanel := container.NewVScroll(container.NewVBox(
 		sectionTitle("Configuration physique"),
-		widget.NewLabel("IP des controleurs (separees par des virgules)"), fields.ips,
+		widget.NewLabel("Controleurs : geres via \"Controleurs & Univers...\" ou l'import CSV, ci-dessous."),
 		widget.NewLabel("Bandes par controleur"), fields.stripsPerCtrl,
 		widget.NewLabel("Hauteur (LED visibles par colonne)"), fields.height,
 		widget.NewLabel("Entite de depart"), fields.entityBase,
 		widget.NewLabel("Ecart entites / controleur"), fields.entityPerQuarter,
 		widget.NewLabel("Ecart entites / bande"), fields.entityPerStrip,
+		widget.NewLabel("Ordre des canaux DMX (ex: rgb, grb, rgbw)"), fields.channelOrder,
 		widget.NewSeparator(),
 
 		sectionTitle("Zone active (optionnel)"),
@@ -252,79 +307,133 @@ func main() {
 		container.NewGridWithColumns(3, applyBtn, saveBtn, loadBtn),
 		configInfoLabel,
 		configErrorLabel,
+		widget.NewSeparator(),
+
+		sectionTitle("Controleurs & Univers"),
+		widget.NewLabel("Vue detaillee/editable (patch explicite) ou import direct depuis un fichier."),
+		container.NewGridWithColumns(2, patchWindowBtn, importBtn),
 	))
 
-	// Fenêtre secondaire, cachée par défaut ; se cache (pas ferme) sur la croix.
-	previewWin := a.NewWindow("Preview du mur")
-	previewWin.SetContent(container.NewScroll(grid))
+	// Fenêtre secondaire (aperçu agrandi), cachée par défaut ; se cache (pas ferme) sur la croix.
+	previewWin := a.NewWindow("Apercu du mur (agrandi)")
+	previewWin.SetContent(container.NewScroll(gridBig))
 	previewWin.Resize(fyne.NewSize(680, 680))
 	previewVisible := false
-	previewToggleBtn := widget.NewButton("Afficher la preview du mur", nil)
+	previewToggleBtn := widget.NewButton("Agrandir l'apercu", nil)
 	previewToggleBtn.OnTapped = func() {
 		if previewVisible {
 			previewWin.Hide()
-			previewToggleBtn.SetText("Afficher la preview du mur")
+			previewToggleBtn.SetText("Agrandir l'apercu")
 		} else {
 			previewWin.Show()
-			previewToggleBtn.SetText("Masquer la preview du mur")
+			previewToggleBtn.SetText("Masquer l'apercu agrandi")
 		}
 		previewVisible = !previewVisible
 	}
 	previewWin.SetCloseIntercept(func() {
 		previewWin.Hide()
 		previewVisible = false
-		previewToggleBtn.SetText("Afficher la preview du mur")
+		previewToggleBtn.SetText("Agrandir l'apercu")
 	})
 
-	controlsPanel := container.NewVScroll(container.NewVBox(
+	// --- Pipeline de routage (P8) : 3 cartes toujours visibles, mêmes étapes
+	// que l'outil "Emitter Hub" du prof (source -> mapping -> sortie ArtNet).
+	// Chaque carte a son propre "Show monitor" (comme le prof) : le contenu
+	// live peut se cacher indépendamment sans perdre les réglages/contrôles.
+	// Les outils de test (ci-dessous) restent à part, repliés par défaut.
+	entityRangeLabel := widget.NewLabel("")
+
+	sourceMonitor := container.NewVBox(statusLabel, grid)
+	sourceCheck := widget.NewCheck("Show monitor", func(on bool) {
+		if on {
+			sourceMonitor.Show()
+		} else {
+			sourceMonitor.Hide()
+		}
+	})
+	sourceCheck.SetChecked(true)
+	sourceCard := widget.NewCard("1. eHuB -> Entites", "Reception UDP + apercu du mur", container.NewVBox(
+		sourceCheck,
+		sourceMonitor,
 		previewToggleBtn,
-		widget.NewSeparator(),
+	))
 
-		sectionTitle("Couleur"),
-		swatch,
-		widget.NewLabel("Rouge (0-255)"), rEntry,
-		widget.NewLabel("Vert (0-255)"), gEntry,
-		widget.NewLabel("Bleu (0-255)"), bEntry,
-		widget.NewSeparator(),
+	mappingMonitor := container.NewVBox(configInfoLabel, entityRangeLabel)
+	mappingCheck := widget.NewCheck("Show monitor", func(on bool) {
+		if on {
+			mappingMonitor.Show()
+		} else {
+			mappingMonitor.Hide()
+		}
+	})
+	mappingCheck.SetChecked(true)
+	mappingCard := widget.NewCard("2. Entites -> DMX", "Mapping entite -> bande/LED (formule de config.go)", container.NewVBox(
+		mappingCheck,
+		mappingMonitor,
+		widget.NewLabel("Reglages complets : onglet Configuration"),
+	))
 
-		sectionTitle("Test manuel (bande/LED)"),
-		widget.NewLabel("Bande"), stripEntry,
-		widget.NewLabel("LED"), ledEntry,
-		setLedBtn,
-		fillStripBtn,
-		widget.NewSeparator(),
-		fillAllBtn,
-		clearBtn,
-		widget.NewSeparator(),
+	artnetMonitor := container.NewVBox(dmxGrid, dmxLabel)
+	artnetCheck := widget.NewCheck("Show monitor", func(on bool) {
+		if on {
+			artnetMonitor.Show()
+		} else {
+			artnetMonitor.Hide()
+		}
+	})
+	artnetCheck.SetChecked(true)
+	artnetCard := widget.NewCard("3. DMX -> ArtNet", "Canaux bruts envoyes au controleur choisi (port ArtNet standard : 6454)", container.NewVBox(
+		container.NewGridWithColumns(2,
+			widget.NewLabel("Adresse IP"), ipSelect,
+			widget.NewLabel("Univers"), universeEntry,
+		),
+		artnetCheck,
+		artnetMonitor,
+	))
 
-		sectionTitle("Mode univers brut (IP/univers/ID)"),
-		widget.NewLabel("Adresse IP"), ipSelect,
-		widget.NewLabel("Univers"), universeEntry,
-		widget.NewLabel("ID debut"), startIDEntry,
-		widget.NewLabel("ID fin"), endIDEntry,
-		rawSendBtn,
-		widget.NewSeparator(),
+	pipelineRow := container.NewGridWithColumns(3, sourceCard, mappingCard, artnetCard)
 
-		sectionTitle("Canaux DMX bruts de cet univers"),
-		widget.NewLabel("512 canaux, noir=0, blanc=255, lecture gauche->droite puis haut->bas (3 canaux = 1 LED RVB)"),
-		dmxGrid,
-		dmxLabel,
-		widget.NewSeparator(),
+	toolsAccordion := widget.NewAccordion(
+		widget.NewAccordionItem("Couleur", container.NewVBox(
+			swatch,
+			widget.NewLabel("Rouge (0-255)"), rEntry,
+			widget.NewLabel("Vert (0-255)"), gEntry,
+			widget.NewLabel("Bleu (0-255)"), bEntry,
+		)),
+		widget.NewAccordionItem("Test manuel (bande/LED)", container.NewVBox(
+			widget.NewLabel("Bande"), stripEntry,
+			widget.NewLabel("LED"), ledEntry,
+			setLedBtn,
+			fillStripBtn,
+			widget.NewSeparator(),
+			fillAllBtn,
+			clearBtn,
+		)),
+		widget.NewAccordionItem("Mode univers brut (ID)", container.NewVBox(
+			widget.NewLabel("IP/univers : voir la carte \"DMX -> ArtNet\" ci-dessus"),
+			widget.NewLabel("ID debut"), startIDEntry,
+			widget.NewLabel("ID fin"), endIDEntry,
+			rawSendBtn,
+		)),
+	)
 
-		sectionTitle("Etat eHuB"),
-		statusLabel,
+	monitoringPanel := container.NewVScroll(container.NewVBox(
+		pipelineRow,
+		widget.NewSeparator(),
+		sectionTitle("Outils de test"),
+		toolsAccordion,
 	))
 
 	tabs := container.NewAppTabs(
+		container.NewTabItem("Monitoring", monitoringPanel),
 		container.NewTabItem("Configuration", configPanel),
-		container.NewTabItem("Controles", controlsPanel),
 	)
 	win.SetContent(tabs)
-	win.Resize(fyne.NewSize(520, 700))
+	win.Resize(fyne.NewSize(1000, 760))
 
 	go state.listenEhub(*port)
 	go runArtnetFlushLoop(state, sender, *fps)
-	go runPreviewLoop(state, ipSelect, universeEntry, *port, img, grid, dmxImg, dmxGrid, dmxLabel, statusLabel)
+	go runPreviewLoop(state, ipSelect, universeEntry, *port, img, grid, gridBig, dmxImg, dmxGrid, dmxLabel, statusLabel, entityRangeLabel)
 
 	win.ShowAndRun()
 }
@@ -337,25 +446,12 @@ func runArtnetFlushLoop(state *sharedState, sender *artnet.Sender, fps int) {
 	var seq byte
 	for range ticker.C {
 		state.mu.Lock()
-		cfg := state.cfg
 		frame := state.frame
-		sendFixture := state.fixtureDirty
-		state.fixtureDirty = false
-		var fixtureSnapshot [512]byte
-		if sendFixture {
-			fixtureSnapshot = state.fixtureData
-		}
 		flushErr := frame.Flush(sender, seq)
 		state.mu.Unlock()
 
 		if flushErr != nil {
 			fmt.Println("erreur d'envoi ArtNet:", flushErr)
-		}
-		if sendFixture {
-			ip, universe, _, _ := cfg.FixtureChannel(1)
-			if err := sender.Send(ip, universe, seq, fixtureSnapshot[:]); err != nil {
-				fmt.Println("erreur d'envoi ArtNet (fixtures):", err)
-			}
 		}
 		seq++
 	}
@@ -370,9 +466,10 @@ func runPreviewLoop(
 	port int,
 	img *image.RGBA,
 	grid *canvas.Image,
+	gridBig *canvas.Image,
 	dmxImg *image.RGBA,
 	dmxGrid *canvas.Image,
-	dmxLabel, statusLabel *widget.Label,
+	dmxLabel, statusLabel, entityRangeLabel *widget.Label,
 ) {
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
@@ -385,6 +482,7 @@ func runPreviewLoop(
 		frame := state.frame
 		n, unk, src := state.updateCount, state.unknownCount, state.lastSource
 		channels, chOK := state.channelsFor(monitorIP, uint16(monitorUniverse))
+		rangeMin, rangeMax, rangeOK := cfg.EntityRangeForIP(monitorIP)
 		state.mu.Unlock()
 
 		w, h := cfg.Width(), cfg.Height
@@ -399,7 +497,7 @@ func runPreviewLoop(
 				if !ok {
 					continue
 				}
-				r, g, b := frame.GetLED(strip, led)
+				r, g, b, _ := frame.GetLED(strip, led)
 				cx := (x-1)*cellSize + cellSize/2
 				cy := (h-1-y)*cellSize + cellSize/2 // (0,0) en haut a gauche a l'ecran
 				drawDot(img, cx, cy, dotRadius, color.NRGBA{R: r, G: g, B: b, A: 255})
@@ -420,6 +518,10 @@ func runPreviewLoop(
 		if src == "" {
 			src = "(aucun)"
 		}
+		rangeText := fmt.Sprintf("Entites -> %s : aucune (IP hors config)", monitorIP)
+		if rangeOK {
+			rangeText = fmt.Sprintf("Entites -> %s : %d a %d", monitorIP, rangeMin, rangeMax)
+		}
 		// Les mises a jour d'UI depuis une goroutine externe doivent passer
 		// par fyne.Do pour rester sur le thread de rendu.
 		fyne.Do(func() {
@@ -429,11 +531,14 @@ func runPreviewLoop(
 			))
 			grid.Image = img
 			grid.Refresh()
+			gridBig.Image = img
+			gridBig.Refresh()
 			dmxLabel.SetText(dmxText)
 			if chOK {
 				dmxGrid.Image = newDmxImg
 				dmxGrid.Refresh()
 			}
+			entityRangeLabel.SetText(rangeText)
 		})
 	}
 }
