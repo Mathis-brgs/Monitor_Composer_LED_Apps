@@ -192,23 +192,26 @@ func (c Config) EntityRangeForIP(ip string) (min, max int, ok bool) {
 // utilisant Patch si non vide (source de vérité explicite, une ligne = un
 // univers), sinon la formule (EntityLocation/LEDAddress) puis FixtureChannel
 // pour les fixtures (ID < EntityBase) — comportement par défaut inchangé.
-func (c Config) ResolveEntity(entityID int) (ip string, universe uint16, channelOffset int, ok bool) {
+// isFixture=true signifie "canal DMX brut, un seul octet (R) compte" (spot/lyre,
+// via FixtureChannel) — par opposition à une LED de bande, qui occupe
+// ChannelsPerLED() octets consécutifs (R,G,B[,W]).
+func (c Config) ResolveEntity(entityID int) (ip string, universe uint16, channelOffset int, isFixture, ok bool) {
 	if len(c.Patch) > 0 {
 		for _, row := range c.Patch {
 			if entityID >= row.EntityStart && entityID <= row.EntityEnd {
-				return row.IP, row.Universe, (entityID - row.EntityStart) * c.ChannelsPerLED(), true
+				return row.IP, row.Universe, (entityID - row.EntityStart) * c.ChannelsPerLED(), false, true
 			}
 		}
-		return "", 0, 0, false
+		return "", 0, 0, false, false
 	}
 	if strip, led, located := c.EntityLocation(entityID); located {
 		ip, universe, ch := c.LEDAddress(strip, led)
-		return ip, universe, ch, true
+		return ip, universe, ch, false, true
 	}
 	if ip, universe, ch, located := c.FixtureChannel(entityID); located {
-		return ip, universe, ch, true
+		return ip, universe, ch, true, true
 	}
-	return "", 0, 0, false
+	return "", 0, 0, false, false
 }
 
 // IsVisible exclut les 3 LED de fixation d'une bande (base, milieu, fin).

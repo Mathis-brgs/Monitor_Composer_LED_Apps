@@ -65,16 +65,19 @@ func TestResolveEntityPatchOverridesFormula(t *testing.T) {
 		{Name: "1", EntityStart: 100, EntityEnd: 269, IP: "10.0.0.9", Universe: 7},
 	}
 
-	ip, universe, ch, ok := cfg.ResolveEntity(150)
+	ip, universe, ch, isFixture, ok := cfg.ResolveEntity(150)
 	if !ok || ip != "10.0.0.9" || universe != 7 {
 		t.Fatalf("attendu (10.0.0.9, univers 7), recu (%s, %d, ok=%v)", ip, universe, ok)
+	}
+	if isFixture {
+		t.Error("une ligne de patch n'est pas un canal fixture brut")
 	}
 	wantCh := (150 - 100) * cfg.ChannelsPerLED()
 	if ch != wantCh {
 		t.Errorf("offset canal : recu %d, attendu %d", ch, wantCh)
 	}
 
-	if _, _, _, ok := cfg.ResolveEntity(9999); ok {
+	if _, _, _, _, ok := cfg.ResolveEntity(9999); ok {
 		t.Error("entite hors patch : attendu ok=false")
 	}
 }
@@ -83,9 +86,12 @@ func TestResolveEntityPatchOverridesFormula(t *testing.T) {
 // (EntityLocation/LEDAddress) gouverne comme avant.
 func TestResolveEntityFormulaFallback(t *testing.T) {
 	cfg := DefaultConfig()
-	ip, universe, ch, ok := cfg.ResolveEntity(102) // entite 102 = 1ere LED visible de la bande 1
+	ip, universe, ch, isFixture, ok := cfg.ResolveEntity(102) // entite 102 = 1ere LED visible de la bande 1
 	if !ok {
 		t.Fatal("attendu ok=true")
+	}
+	if isFixture {
+		t.Error("une LED de bande n'est pas un canal fixture brut")
 	}
 	wantIP, wantUniverse, wantCh := cfg.LEDAddress(1, 3)
 	if ip != wantIP || universe != wantUniverse || ch != wantCh {
@@ -120,6 +126,11 @@ func TestFrameSetEntityUnifiesLEDsAndFixtures(t *testing.T) {
 	fixChannels, ok := f.ChannelsFor(fixIP, FixtureUniverse)
 	if !ok || fixChannels[0] != 40 {
 		t.Errorf("canal fixture inattendu : %v (ok=%v)", fixChannels[:2], ok)
+	}
+	// Un canal fixture n'ecrit qu'un seul octet (R) : les 2 canaux suivants ne
+	// doivent PAS etre touches (ex: Pan d'une lyre qui ecraserait Pan fin/Tilt).
+	if fixChannels[1] != 0 || fixChannels[2] != 0 {
+		t.Errorf("un canal fixture a ecrase ses voisins : %v", fixChannels[:3])
 	}
 }
 

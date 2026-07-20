@@ -18,6 +18,10 @@ export class VideoWallLayer extends Layer {
     this._tex?.dispose();
     this._el = el;
     this._tex = new VideoTexture(el);
+    // three.js applique flipY=true par défaut (convention GL bas-gauche) ; le
+    // compositeur attend lui une origine haut-gauche (cf. rasterizeShapes, qui
+    // pré-compense côté CPU pour les DataTexture) — d'où l'image inversée sans ça.
+    this._tex.flipY = false;
   }
 
   build(_ctx: LayerContext): TSLNode {
