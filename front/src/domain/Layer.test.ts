@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   findLayer, findGroup, findParent, groupChildren,
-  makeGroup, makeShape, makeShaderLayer, type Document,
+  makeGroup, makeShape, makeShaderLayer, makeAudio, type Document,
   layerActiveAt, moveClip, trimIn, trimOut, wouldCycle,
   mediaClipLength, mediaClipTimelineOut, mediaClipActiveAt, mediaSourceFrameAt,
   moveMediaClip, trimMediaIn, trimMediaOut, splitMediaClip, applyMap,
@@ -88,6 +88,14 @@ test("trimOut bouge out sans passer sous in ni sortir des bornes", () => {
   assert.deepEqual(trimOut(c, 30, 100), { in: 10, out: 30 });
   assert.deepEqual(trimOut(c, 5, 100), { in: 10, out: 10 }); // min 1 frame
   assert.deepEqual(trimOut(c, 200, 100), { in: 10, out: 100 });
+});
+
+test("makeAudio : type audio, gain 1, exclu du rendu (pas de couleur/fill)", () => {
+  const a = makeAudio("a1", "Piste son", "asset-42");
+  assert.equal(a.type, "audio");
+  assert.equal(a.assetId, "asset-42");
+  assert.equal(a.gain, 1);
+  assert.equal(a.visible, true);
 });
 
 test("mediaClip : longueur et fin timeline selon vitesse", () => {

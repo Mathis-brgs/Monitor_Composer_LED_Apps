@@ -83,6 +83,8 @@ export interface ShapeLayer extends LayerBase { type: "shape"; shape: ShapeKind;
 export interface GroupLayer extends LayerBase { type: "group"; children: Layer[]; }
 export interface ImageLayer extends LayerBase { type: "image"; assetId: string; /** Montage (edit list) ; absent = source entière. */ clips?: MediaClip[]; }
 export interface VideoLayer extends LayerBase { type: "video"; assetId: string; /** Montage (edit list) ; absent = source entière. */ clips?: MediaClip[]; }
+/** Piste audio : non spatiale, exclue du rendu mur/3D. `gain` = volume (0..1+). */
+export interface AudioLayer extends LayerBase { type: "audio"; assetId: string; gain: number; /** Montage (edit list) ; absent = source entière. */ clips?: MediaClip[]; }
 
 /**
  * Appareils DMX du show (doc prof) : adressés en canaux bruts sur le 4e
@@ -103,7 +105,7 @@ export interface SpotLayer extends LayerBase { type: "spot"; baseChannel: number
 /** Lyre (tête mobile) : `baseChannel` = 1er de ses 13 canaux — éditable si le patch DMX change. */
 export interface LyreLayer extends LayerBase { type: "lyre"; baseChannel: number; channels: LyreChannels; }
 
-export type Layer = ShaderLayer | ShapeLayer | GroupLayer | ImageLayer | VideoLayer | SpotLayer | LyreLayer;
+export type Layer = ShaderLayer | ShapeLayer | GroupLayer | ImageLayer | VideoLayer | AudioLayer | SpotLayer | LyreLayer;
 
 /** Suggestions de départ (doc prof), purement indicatives — `baseChannel` reste libre et modifiable ensuite. */
 export const SPOT_DEFAULT_BASE = 1;
@@ -254,6 +256,10 @@ export function makeShape(id: string, shape: ShapeKind, name: string): ShapeLaye
 }
 export function makeShaderLayer(id: string, shader: ShaderId, name: string): ShaderLayer {
   return { ...base(id, name), type: "shader", shader, params: {}, color: WHITE() };
+}
+/** Piste audio : gain 1 par défaut. Transform/opacity hérités de base mais ignorés au rendu. */
+export function makeAudio(id: string, name: string, assetId: string): AudioLayer {
+  return { ...base(id, name), type: "audio", assetId, gain: 1 };
 }
 /** Éteint par défaut (sécurité physique : pas de flash inattendu à la création). */
 export function makeSpot(id: string, name: string, baseChannel: number): SpotLayer {

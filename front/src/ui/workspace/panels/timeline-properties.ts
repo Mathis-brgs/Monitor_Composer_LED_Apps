@@ -28,6 +28,8 @@ export function animatableProps(layer: Layer): PropGroup[] {
     case "spot":
     case "lyre":
       return [POSITION, OPACITY];
+    case "audio":
+      return []; // volume automation : différée (M4) — l'audio se pilote via waveform/clip
     default: // group / image / video
       return [OPACITY];
   }
