@@ -90,6 +90,14 @@ export class Animator {
     this._comp.tracks = this._comp.tracks.filter((t) => t.layerId !== layerId);
   }
 
+  /** Duplique toutes les tracks d'un calque vers un nouvel id (Split Layer : le clone doit
+   *  garder la même animation que l'original). */
+  cloneLayer(fromLayerId: string, toLayerId: string): void {
+    for (const t of this._comp.tracks.filter((t) => t.layerId === fromLayerId)) {
+      this._comp.tracks.push({ layerId: toLayerId, channel: t.channel, keyframes: t.keyframes.map((k) => ({ ...k })) });
+    }
+  }
+
   private _find(layerId: string, channel: string): Track | undefined {
     return this._comp.tracks.find((t) => t.layerId === layerId && t.channel === channel);
   }

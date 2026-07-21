@@ -1,4 +1,4 @@
-import { createMemo, For, Show, createSignal, type Accessor, type JSX } from "solid-js";
+import { createEffect, createMemo, For, Show, createSignal, type Accessor, type JSX } from "solid-js";
 import type { Editor } from "@core/Editor.ts";
 import type { Layer } from "@domain/Layer.ts";
 import { createIcon } from "@ui/icons/Icon.ts";
@@ -15,8 +15,52 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
   const atRoot = createMemo(() => { changed(); return editor.activeGroupId === editor.rootId; });
   const count = createMemo(() => { changed(); return editor.children.length; });
 
+  // Sélection multiple (shift = plage, ctrl/cmd = ajout un par un) — locale à l'Outliner, comme
+  // la sélection de clés dans la Timeline. `editor.selectedId` (unique) reste la "sélection
+  // primaire" pour l'Inspecteur/gizmo 3D ; ce set n'ajoute qu'une couche de sélection groupée
+  // pour les actions en masse (supprimer).
+  const [multiSelected, setMultiSelected] = createSignal<Set<string>>(new Set());
+  let anchorIndex = -1;
+  let root!: HTMLDivElement;
+
+  // Une sélection venue d'ailleurs (viewport 3D, clic Timeline...) qui ne fait pas déjà partie
+  // du groupe courant réinitialise le groupe sur ce seul calque — évite un surlignage périmé.
+  createEffect(() => {
+    const id = editor.selectedId;
+    changed();
+    if (id && !multiSelected().has(id)) setMultiSelected(new Set([id]));
+    else if (!id) setMultiSelected(new Set<string>());
+  });
+
+  const onRowClick = (e: MouseEvent, layer: Layer, index: number): void => {
+    if (e.shiftKey && anchorIndex !== -1) {
+      const [a, b] = [anchorIndex, index].sort((x, y) => x - y);
+      setMultiSelected(new Set(layers().slice(a, b + 1).map((l) => l.id)));
+    } else if (e.metaKey || e.ctrlKey) {
+      const n = new Set(multiSelected());
+      if (n.has(layer.id)) n.delete(layer.id); else n.add(layer.id);
+      setMultiSelected(n);
+      anchorIndex = index;
+    } else {
+      setMultiSelected(new Set([layer.id]));
+      anchorIndex = index;
+    }
+    editor.select(layer.id);
+    root.focus();
+  };
+
+  const onKeyDown = (e: KeyboardEvent): void => {
+    if (e.key !== "Delete" && e.key !== "Backspace") return;
+    const ids = multiSelected();
+    if (ids.size === 0) return;
+    e.preventDefault();
+    e.stopPropagation(); // évite de déclencher aussi le raccourci Suppr. de la Timeline
+    for (const id of ids) editor.deleteLayer(id);
+    setMultiSelected(new Set<string>());
+  };
+
   return (
-    <>
+    <div class="layer-tree" ref={root} tabIndex={-1} onKeyDown={onKeyDown}>
       <div class="comp-bar">
         <Show when={!atRoot()}>
           <button type="button" class="comp-back" onClick={() => editor.exitGroup()}>
@@ -26,15 +70,20 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
         <span class="compositor__count">{count()} calques</span>
       </div>
       <For each={layers()}>
-        {(layer) => <LayerRow editor={editor} layer={layer} changed={changed} />}
+        {(layer, i) => (
+          <LayerRow editor={editor} layer={layer} changed={changed} multiSelected={multiSelected} onRowClick={(e) => onRowClick(e, layer, i())} />
+        )}
       </For>
-    </>
+    </div>
   );
 }
 
-function LayerRow(props: { editor: Editor; layer: Layer; changed: Accessor<unknown> }): JSX.Element {
+function LayerRow(props: {
+  editor: Editor; layer: Layer; changed: Accessor<unknown>;
+  multiSelected: Accessor<Set<string>>; onRowClick: (e: MouseEvent) => void;
+}): JSX.Element {
   const { editor, layer, changed } = props;
-  const selected = createMemo(() => { changed(); return editor.selectedId === layer.id; });
+  const selected = createMemo(() => { changed(); return editor.selectedId === layer.id || props.multiSelected().has(layer.id); });
   const visible = createMemo(() => { changed(); return layer.visible; });
   const additive = createMemo(() => { changed(); return layer.blend === "add"; });
   const opacity = createMemo(() => { changed(); return `${Math.round(layer.opacity * 100)}%`; });
@@ -111,7 +160,7 @@ function LayerRow(props: { editor: Editor; layer: Layer; changed: Accessor<unkno
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      onClick={() => editor.select(layer.id)}
+      onClick={(e) => props.onRowClick(e)}
       onDblClick={() => { if (layer.type === "group") editor.enterGroup(layer.id); }}
     >
       <button

@@ -250,6 +250,9 @@ func (f *Frame) SetRaw(ip string, universe uint16, data []byte) bool {
 }
 
 // Flush envoie uniquement les univers modifiés depuis le dernier Flush.
+// Pratique pour les commandes CLI mono-thread (single/fill/sweep/chase) ;
+// pour cmdListen/monitor (réception concurrente), préférer Snapshot+Send
+// (voir plus bas) pour ne pas tenir le verrou pendant les sendto() réseau.
 func (f *Frame) Flush(sender *artnet.Sender, seq byte) error {
 	for i := range f.slots {
 		if !f.slots[i].dirty {
@@ -259,6 +262,42 @@ func (f *Frame) Flush(sender *artnet.Sender, seq byte) error {
 			return err
 		}
 		f.slots[i].dirty = false
+	}
+	return nil
+}
+
+// FlushSnapshot est la copie d'un univers modifié, prête à être envoyée SANS
+// tenir le verrou qui protège l'état partagé (voir Snapshot/SendSnapshot).
+type FlushSnapshot struct {
+	ip       string
+	universe uint16
+	data     [512]byte
+}
+
+// Snapshot copie les univers actuellement marqués modifiés et les démarque,
+// mais N'ENVOIE RIEN sur le réseau — à appeler sous verrou (accès à l'état
+// partagé), très rapide (copie mémoire pure). Envoyer le résultat via
+// SendSnapshot APRÈS avoir libéré le verrou : sur une grosse installation
+// (beaucoup d'univers modifiés d'un coup), tenir le verrou pendant plusieurs
+// sendto() séquentiels bloquerait la réception eHuB pour rien.
+func (f *Frame) Snapshot() []FlushSnapshot {
+	var out []FlushSnapshot
+	for i := range f.slots {
+		if !f.slots[i].dirty {
+			continue
+		}
+		out = append(out, FlushSnapshot{ip: f.slots[i].ip, universe: f.slots[i].universe, data: f.slots[i].data})
+		f.slots[i].dirty = false
+	}
+	return out
+}
+
+// SendSnapshot envoie un instantané via ArtNet — à appeler HORS verrou.
+func SendSnapshot(sender *artnet.Sender, seq byte, snapshot []FlushSnapshot) error {
+	for _, s := range snapshot {
+		if err := sender.Send(s.ip, s.universe, seq, s.data[:]); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -1,9 +1,11 @@
 import type { Texture, WebGPURenderer } from "three/webgpu";
 import type { Fixture } from "@domain/Fixture.ts";
+import type { MaterialMode } from "@domain/Layer.ts";
 import type { Transport } from "../transport.ts";
 import { LayerStack } from "./LayerStack.ts";
 import { CompositePass } from "./passes.ts";
 import { EhubOutput } from "./EhubOutput.ts";
+import { MaterialBaker } from "./MaterialBaker.ts";
 import { createLayer } from "./layers/index.ts";
 import { LAYER_ID, type Layer } from "./layers/Layer.ts";
 
@@ -16,6 +18,7 @@ export class Engine {
   readonly stack: LayerStack;
   private readonly _composite: CompositePass;
   private readonly _output: EhubOutput;
+  private readonly _materialBaker = new MaterialBaker();
 
   constructor(
     private readonly _renderer: WebGPURenderer,
@@ -62,5 +65,10 @@ export class Engine {
   /** texture de sortie (RT) — consommée par les previews */
   get texture(): Texture {
     return this.stack.target.texture;
+  }
+
+  /** Bake un matériau personnalisé (fragment WGSL) en bitmap — voir `MaterialBaker`. */
+  async bakeMaterial(fragment: string, mode: MaterialMode, time: number): Promise<Uint8ClampedArray | null> {
+    return this._materialBaker.bake(this._renderer, fragment, mode, time);
   }
 }

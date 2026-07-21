@@ -7,6 +7,7 @@ import { Editor } from "@core/Editor.ts";
 import { AudioEngine } from "@core/AudioEngine.ts";
 import { LiveState } from "@core/LiveState.ts";
 import { AppShell } from "@ui/AppShell.ts";
+import { installEdgeAwareTooltips } from "@ui/tooltip-edge.ts";
 import { DEFAULT_SPACE, type SpaceId } from "@ui/workspace/spaces.ts";
 import { createProject } from "@domain/Project.ts";
 import type { View } from "@views/View.ts";
@@ -36,6 +37,8 @@ if (!(root instanceof HTMLElement)) {
   throw new Error("#app introuvable");
 }
 
+installEdgeAwareTooltips();
+
 const project = createProject();
 const clock = new Clock();
 const editor = new Editor();
@@ -43,6 +46,25 @@ const audio = new AudioEngine();
 const live = new LiveState();
 const shell = new AppShell({ project, clock, editor, audio, live });
 root.appendChild(shell.element);
+
+/** Undo/redo global (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z ou Ctrl+Y) : au niveau fenêtre pour marcher
+ *  depuis n'importe quel panneau (timeline, inspecteur, viewport 3D), pas juste un seul. Ignoré
+ *  pendant la saisie texte (un champ gère son propre undo natif). */
+window.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z") return;
+  const el = document.activeElement as HTMLElement | null;
+  if (el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable)) return;
+  e.preventDefault();
+  if (e.shiftKey) editor.redo();
+  else editor.undo();
+});
+window.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "y") return;
+  const el = document.activeElement as HTMLElement | null;
+  if (el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable)) return;
+  e.preventDefault();
+  editor.redo();
+});
 
 // Shell (DOM pur) monté ; le moteur WebGPU rend dans le canvas du viewport (non bloquant).
 const dismissLoader = shell.showViewportLoader();
