@@ -1696,8 +1696,18 @@ body {
 }
 
 .layer--selected {
-  background: var(--row);
+  background: color-mix(in srgb, var(--txt) 6%, transparent);
   border-left-color: var(--acc);
+}
+
+/* compteur de calques dans l'en-tête du panneau Outliner */
+.outliner__count {
+  margin-right: var(--space-8);
+  font-size: var(--fs-3);
+  color: var(--dim);
+  letter-spacing: var(--ls-caps);
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .layer--hidden {

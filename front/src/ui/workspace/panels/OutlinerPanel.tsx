@@ -14,8 +14,6 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
   const changed = fromStore(editor, () => editor.selectedId);
   const trail = fromStore(editor, () => editor.compTrail);
   const atGroupRoot = createMemo(() => { changed(); return editor.activeGroupId === editor.rootId; });
-  const insideComp = createMemo(() => trail().length > 1);
-  const count = createMemo(() => { changed(); return editor.children.length; });
   const [editingId, setEditingId] = createSignal<string | null>(null);
 
   // retour : d'abord remonter les groupes internes, puis sortir de la comp.
@@ -68,32 +66,26 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
   return (
     <div class="layer-tree" ref={root} tabIndex={-1} onKeyDown={onKeyDown}>
       <div class="comp-bar">
-        <Show when={!atGroupRoot() || insideComp()}>
-          <button type="button" class="comp-back" onClick={goBack}>
-            {createIcon("chevron-down", { size: 12 })} Retour
-          </button>
-        </Show>
-        <Show when={insideComp()}>
-          <div class="comp-trail">
-            <For each={trail()}>
-              {(c, i) => (
-                <>
-                  <Show when={i() > 0}><span class="comp-trail__sep">/</span></Show>
-                  <button
-                    type="button"
-                    class="comp-trail__seg"
-                    classList={{ "comp-trail__seg--current": i() === trail().length - 1 }}
-                    disabled={i() === trail().length - 1}
-                    onClick={() => editor.exitToComp(c.id)}
-                  >
-                    {c.name}
-                  </button>
-                </>
-              )}
-            </For>
-          </div>
-        </Show>
-        <span class="compositor__count">{count()} calques</span>
+        <button type="button" class="comp-back" onClick={goBack}>‹ Retour</button>
+        <span class="comp-trail__sep">|</span>
+        <div class="comp-trail">
+          <For each={trail()}>
+            {(c, i) => (
+              <>
+                <Show when={i() > 0}><span class="comp-trail__sep">/</span></Show>
+                <button
+                  type="button"
+                  class="comp-trail__seg"
+                  classList={{ "comp-trail__seg--current": i() === trail().length - 1 }}
+                  disabled={i() === trail().length - 1}
+                  onClick={() => editor.exitToComp(c.id)}
+                >
+                  {c.name}
+                </button>
+              </>
+            )}
+          </For>
+        </div>
       </div>
       <For each={layers()}>
         {(layer, i) => (
@@ -241,17 +233,21 @@ export function createOutlinerPanel(editor: Editor): Panel {
     id: "outliner",
     title: "Outliner",
     modifier: "compositor",
-    icon: "layers",
     bodyClass: "compositor",
     header: (header) => {
       const spacer = document.createElement("div");
       spacer.className = "panel__header-spacer";
+      const count = document.createElement("span");
+      count.className = "outliner__count";
+      const sync = () => { count.textContent = `${editor.children.length} calques`; };
+      sync();
+      editor.subscribe(sync);
       const add = document.createElement("button");
       add.type = "button";
       add.className = "compositor__add";
       add.appendChild(createIcon("plus", { size: 12 }));
       add.addEventListener("click", () => editor.addGroup());
-      header.append(spacer, add);
+      header.append(spacer, count, add);
     },
     body: () => <LayerTree editor={editor} />,
   });
