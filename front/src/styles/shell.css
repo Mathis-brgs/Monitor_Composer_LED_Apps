@@ -1660,10 +1660,9 @@ body {
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-10);
-  height: var(--row-h);
+  gap: var(--space-9);
+  height: 34px;
   padding: 0 var(--space-10);
-  border-bottom: var(--stroke-hairline) solid var(--line-2);
   border-left: 2px solid transparent;
   cursor: pointer;
 }
@@ -1703,58 +1702,49 @@ body {
   z-index: 10;
 }
 
-.layer__eye {
-  display: grid;
-  place-items: center;
-  flex: 0 0 auto;
-  color: var(--acc);
-  background: transparent;
-  border: 0;
-  cursor: pointer;
+/* Glyphe de type (identité du calque) — précomp ⧉ · prérendu ◎ · shader ◐ · shape ●◼… */
+.layer__glyph {
+  flex: 0 0 15px;
+  width: 15px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--dim);
 }
 
-.layer__eye--off {
-  color: var(--faint);
-}
-
-.layer__thumb {
-  width: 34px;
-  height: 26px;
-  flex: 0 0 auto;
-  border-radius: var(--radius-sm);
-  border: var(--stroke-hairline) solid var(--line);
-}
-
-.layer__info {
-  flex: 1;
-  min-width: 0;
+.layer--selected .layer__glyph {
+  color: var(--txt);
 }
 
 .layer__name {
+  flex: 1;
+  min-width: 0;
   font-size: var(--fs-2);
-  font-weight: 500;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.layer--selected .layer__name {
   color: var(--txt);
-  letter-spacing: var(--ls-label);
-  text-transform: uppercase;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
-.layer__type {
-  font-size: var(--fs-3);
-  color: var(--faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.layer__meta {
-  flex: 0 0 auto;
-  text-align: right;
+.layer__name-input {
+  flex: 1;
+  min-width: 0;
+  font-family: inherit;
+  font-size: var(--fs-2);
+  color: var(--txt);
+  background: var(--panel-2);
+  border: var(--stroke-hairline) solid var(--acc-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+  outline: none;
 }
 
 .layer__blend {
+  flex: 0 0 auto;
   font-size: var(--fs-3);
   color: var(--dim);
   letter-spacing: var(--ls-caps);
@@ -1766,8 +1756,31 @@ body {
 }
 
 .layer__opacity {
+  flex: 0 0 auto;
   font-size: var(--fs-3);
   color: var(--dim);
+}
+
+/* Œil de visibilité : discret, révélé au survol ; persistant quand le calque est masqué. */
+.layer__eye {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--dim);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.layer:hover .layer__eye,
+.layer--hidden .layer__eye {
+  opacity: 1;
+}
+
+.layer--hidden .layer__eye {
+  color: var(--faint);
 }
 
 /* ———————————————————————————— Prévisualisation ———————————————————————————— */

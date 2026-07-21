@@ -20,6 +20,30 @@ export function thumbBg(l: Layer): string {
   return "var(--row-hi)";
 }
 
+/** Glyphe monochrome représentant le type d'un calque (outliner compact). `precompKind` distingue précomp/prérendu. */
+export function layerGlyph(l: Layer, precompKind?: "precomp" | "prerender"): string {
+  switch (l.type) {
+    case "precomp": return precompKind === "prerender" ? "◎" : "⧉";
+    case "shader": return l.shader === "solid" ? "▭" : "◐";
+    case "shape":
+      switch (l.shape) {
+        case "sphere": return "●";
+        case "box": return "◼";
+        case "cone": return "▲";
+        case "cylinder": return "▮";
+        case "plane": return "▱";
+        case "torus": return "◍";
+      }
+      return "◆";
+    case "group": return "▸";
+    case "image": return "▨";
+    case "video": return "▷";
+    case "audio": return "♪";
+    case "spot": return "✦";
+    case "lyre": return "❋";
+  }
+}
+
 /** Sous-libellé (type lisible) d'un calque. */
 export function subtitle(l: Layer): string {
   switch (l.type) {

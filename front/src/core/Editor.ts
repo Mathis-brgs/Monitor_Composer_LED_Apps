@@ -13,6 +13,9 @@ export interface TransformPatch { position?: Partial<Vec3>; rotation?: Partial<V
 
 /** Outil actif de l'éditeur 3D : curseur de sélection ou l'un des trois modes de gizmo. */
 export type EditorTool = "select" | "translate" | "rotate" | "scale";
+
+/** Mode d'affichage du viewport 3D : wireframe · solide (helper seulement sur la sélection) · aucun helper. */
+export type RenderMode = "wireframe" | "solid" | "none";
 import { createLayer } from "./engine/layers/index.ts";
 import { LAYER_ID, type Layer as EngineLayer } from "./engine/layers/Layer.ts";
 import { Scene3DLayer } from "./engine/layers/Scene3D.layer.ts";
@@ -62,6 +65,7 @@ export class Editor {
   private _clock: Clock | null = null;   // horloge injectée : la durée suit la comp active
   private _counter = 0;
   private _tool: EditorTool = "select";
+  private _viewportMode: RenderMode = "wireframe"; // mode d'affichage de l'éditeur 3D
   private _frame = 0;              // dernier frame évalué (instant courant pour l'auto-key)
   private _fps = 24;              // fps courant (mapping temporel des comps imbriquées)
   private _sceneDirty = false;     // un canal de shape a changé → 1 seul recompute par frame
@@ -92,6 +96,7 @@ export class Editor {
   get activeGroupId(): string { return this._doc.activeGroupId; }
   get selectedId(): string | null { return this._doc.selectedId; }
   get tool(): EditorTool { return this._tool; }
+  get viewportMode(): RenderMode { return this._viewportMode; }
 
   /** enfants du groupe actif (ce qu'affichent Compositor/Scène/Editor 3D). */
   get children(): readonly Layer[] { return groupChildren(this._doc, this._doc.activeGroupId); }
@@ -168,6 +173,19 @@ export class Editor {
     if (tool === this._tool) return;
     this._tool = tool;
     this._emit();
+  }
+
+  /** Mode d'affichage du viewport 3D (wireframe / solide / aucun helper). */
+  setViewportMode(mode: RenderMode): void {
+    if (mode === this._viewportMode) return;
+    this._viewportMode = mode;
+    this._emit();
+  }
+
+  /** Fait défiler les modes d'affichage du viewport 3D. */
+  cycleViewportMode(): void {
+    const order: RenderMode[] = ["wireframe", "solid", "none"];
+    this.setViewportMode(order[(order.indexOf(this._viewportMode) + 1) % order.length]);
   }
 
   /** Une propriété (canal) est-elle animée ? (état du diamant inspecteur) */
@@ -393,6 +411,47 @@ export class Editor {
     if (this._doc.selectedId) {
       this.deleteLayer(this._doc.selectedId);
     }
+  }
+
+  /** Duplique le calque sélectionné (sous-arbre + ses tracks), inséré après l'original, puis le sélectionne. */
+  duplicateSelected(): string | null {
+    const sel = this.selected;
+    if (!sel) return null;
+    const parent = findParent(this._doc.root, sel.id);
+    if (!parent) return null;
+    const idx = parent.children.findIndex((c) => c.id === sel.id);
+    if (idx === -1) return null;
+
+    const idMap = new Map<string, string>();
+    const copy = this._cloneLayer(sel, idMap);
+
+    // dupliquer les tracks du sous-arbre, ré-adressées vers les nouveaux ids
+    const active = this.activeComp();
+    const extra: Track[] = active.tracks
+      .filter((t) => idMap.has(t.layerId))
+      .map((t) => ({ layerId: idMap.get(t.layerId)!, channel: t.channel, keyframes: t.keyframes.map((k) => ({ ...k })) }));
+    active.tracks = [...active.tracks, ...extra];
+
+    parent.children.splice(idx + 1, 0, copy);
+    this._doc.selectedId = copy.id;
+    this._push();
+    this._emit();
+    return copy.id;
+  }
+
+  /** Clone profond d'un calque avec de nouveaux ids (récursif pour les groupes) ; remplit `idMap` (ancien→nouveau). */
+  private _cloneLayer(layer: Layer, idMap: Map<string, string>): Layer {
+    const copy = structuredClone(layer) as Layer;
+    const reassign = (l: Layer): void => {
+      this._counter += 1;
+      const nid = `${l.type}-${this._counter}`;
+      idMap.set(l.id, nid); // l.id = ancien id (préservé par le clone) → nouveau
+      l.id = nid;
+      if (l.type === "group") for (const c of l.children) reassign(c);
+    };
+    reassign(copy);
+    copy.name = layer.name + " copie";
+    return copy;
   }
 
   // ———————————————————————————————— Création ————————————————————————————————

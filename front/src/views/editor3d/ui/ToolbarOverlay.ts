@@ -57,10 +57,22 @@ export class ToolbarOverlay {
     lyreBtn.addEventListener("click", () => editor.addLyre());
     this._root.appendChild(lyreBtn);
 
+    this._root.appendChild(divider());
+    const modeBtn = document.createElement("button");
+    modeBtn.type = "button";
+    modeBtn.className = "rail__tool";
+    modeBtn.style.fontSize = "10px";
+    modeBtn.style.fontWeight = "600";
+    modeBtn.dataset.tooltip = "Mode d'affichage 3D : fil / solide / aucun (Z)";
+    modeBtn.addEventListener("click", () => editor.cycleViewportMode());
+    this._root.appendChild(modeBtn);
+
     host.appendChild(this._root);
 
+    const MODE_LABEL: Record<string, string> = { wireframe: "W", solid: "S", none: "N" };
     const sync = (): void => {
       for (const { btn, tool } of toolButtons) btn.classList.toggle("rail__tool--active", editor.tool === tool);
+      modeBtn.textContent = MODE_LABEL[editor.viewportMode] ?? "?";
     };
     sync();
     this._unsub = editor.subscribe(sync);

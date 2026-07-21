@@ -4,7 +4,7 @@ import type { Layer } from "@domain/Layer.ts";
 import { createIcon } from "@ui/icons/Icon.ts";
 import { fromStore } from "@ui/solid/store.ts";
 import { solidPanel } from "@ui/solid/mount.ts";
-import { subtitle, thumbBg } from "./layer-display.ts";
+import { layerGlyph } from "./layer-display.ts";
 import type { Panel } from "../Panel.ts";
 
 /** Outliner : arbre du groupe actif. Panneau unique — mêmes données en 2D (compositor) et 3D (scène). */
@@ -16,6 +16,7 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
   const atGroupRoot = createMemo(() => { changed(); return editor.activeGroupId === editor.rootId; });
   const insideComp = createMemo(() => trail().length > 1);
   const count = createMemo(() => { changed(); return editor.children.length; });
+  const [editingId, setEditingId] = createSignal<string | null>(null);
 
   // retour : d'abord remonter les groupes internes, puis sortir de la comp.
   const goBack = () => { if (!atGroupRoot()) editor.exitGroup(); else editor.exitComp(); };
@@ -51,21 +52,28 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
         <span class="compositor__count">{count()} calques</span>
       </div>
       <For each={layers()}>
-        {(layer) => <LayerRow editor={editor} layer={layer} changed={changed} />}
+        {(layer) => <LayerRow editor={editor} layer={layer} changed={changed} editingId={editingId} setEditingId={setEditingId} />}
       </For>
     </>
   );
 }
 
-function LayerRow(props: { editor: Editor; layer: Layer; changed: Accessor<unknown> }): JSX.Element {
+function LayerRow(props: { editor: Editor; layer: Layer; changed: Accessor<unknown>; editingId: Accessor<string | null>; setEditingId: (id: string | null) => void }): JSX.Element {
   const { editor, layer, changed } = props;
+  const editing = createMemo(() => props.editingId() === layer.id);
   const selected = createMemo(() => { changed(); return editor.selectedId === layer.id; });
   const visible = createMemo(() => { changed(); return layer.visible; });
   const additive = createMemo(() => { changed(); return layer.blend === "add"; });
   const opacity = createMemo(() => { changed(); return `${Math.round(layer.opacity * 100)}%`; });
-  const thumb = createMemo(() => { changed(); return thumbBg(layer); });
-  const sub = createMemo(() => { changed(); return subtitle(layer); });
   const name = createMemo(() => { changed(); return layer.name; });
+  const glyph = createMemo(() => {
+    changed();
+    if (layer.type !== "precomp") return layerGlyph(layer);
+    const kind = editor.getCompositions()[layer.compId]?.kind;
+    return layerGlyph(layer, kind === "prerender" ? "prerender" : "precomp");
+  });
+  // blend + opacité : affichés seulement pour les calques visuels « feuille » (comme la maquette)
+  const showMeta = createMemo(() => ["shader", "shape", "video", "image"].includes(layer.type));
 
   const [isDragging, setIsDragging] = createSignal(false);
   const [dragOverPos, setDragOverPos] = createSignal<"above" | "below" | null>(null);
@@ -142,27 +150,35 @@ function LayerRow(props: { editor: Editor; layer: Layer; changed: Accessor<unkno
         else if (layer.type === "precomp") editor.enterComp(layer.compId);
       }}
     >
+      <span class="layer__glyph">{glyph()}</span>
+      <Show
+        when={editing()}
+        fallback={<div class="layer__name" onDblClick={(e) => { e.stopPropagation(); props.setEditingId(layer.id); }}>{name()}</div>}
+      >
+        <input
+          class="layer__name-input"
+          value={layer.name}
+          ref={(el) => requestAnimationFrame(() => { el.focus(); el.select(); })}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") { editor.setName(layer.id, e.currentTarget.value.trim() || layer.name); props.setEditingId(null); }
+            else if (e.key === "Escape") props.setEditingId(null);
+          }}
+          onBlur={(e) => { editor.setName(layer.id, e.currentTarget.value.trim() || layer.name); props.setEditingId(null); }}
+        />
+      </Show>
+      <Show when={showMeta()}>
+        <span class="layer__blend" classList={{ "layer__blend--accent": additive() }}>{additive() ? "ADDITIF" : "NORMAL"}</span>
+        <span class="layer__opacity">{opacity()}</span>
+      </Show>
       <button
         type="button"
         class="layer__eye"
-        onClick={(e) => {
-          e.stopPropagation();
-          editor.setVisible(layer.id, !layer.visible);
-        }}
+        onClick={(e) => { e.stopPropagation(); editor.setVisible(layer.id, !layer.visible); }}
       >
         {visible() ? createIcon("eye", { size: 13 }) : createIcon("eye-off", { size: 13 })}
       </button>
-      <div class="layer__thumb" style={{ background: thumb() }} />
-      <div class="layer__info">
-        <div class="layer__name">{name()}</div>
-        <div class="layer__type">{sub()}</div>
-      </div>
-      <div class="layer__meta">
-        <div class="layer__blend" classList={{ "layer__blend--accent": additive() }}>
-          {additive() ? "Additif" : "Normal"}
-        </div>
-        <div class="layer__opacity">{opacity()}</div>
-      </div>
     </div>
   );
 }

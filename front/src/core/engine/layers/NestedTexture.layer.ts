@@ -1,4 +1,4 @@
-import { texture, uv, vec4 } from "three/tsl";
+import { texture, uv, vec2, vec4 } from "three/tsl";
 import type { Texture } from "three/webgpu";
 import { Layer, LAYER_ID, type LayerContext, type TSLNode } from "./Layer.ts";
 
@@ -18,6 +18,7 @@ export class NestedTextureLayer extends Layer {
 
   build(_ctx: LayerContext): TSLNode {
     if (!this._tex) return vec4(0, 0, 0, 0) as unknown as TSLNode; // transparent tant qu'aucune RT
-    return texture(this._tex, uv()) as unknown as TSLNode;
+    // Flip vertical : une RT échantillonnée puis re-rendue dans le parent inverse l'axe V (origine WebGPU).
+    return texture(this._tex, vec2(uv().x, uv().y.oneMinus())) as unknown as TSLNode;
   }
 }

@@ -55,11 +55,19 @@ export class AppShell {
       new StatusBar(config).element,
     );
 
-    // Espace = play/pause global (transport), sauf pendant une saisie de texte.
+    // Raccourcis globaux (hors saisie de texte) : transport, suppression, duplication.
     window.addEventListener("keydown", (e) => {
-      if (e.code !== "Space" || isTyping(e.target)) return;
-      e.preventDefault(); // évite l'activation du bouton focus et le scroll
-      opts.clock.toggle();
+      if (isTyping(e.target)) return;
+      if (e.code === "Space") { e.preventDefault(); opts.clock.toggle(); return; }
+      if ((e.key === "Delete" || e.key === "Backspace") && opts.editor.selectedId) {
+        e.preventDefault();
+        opts.editor.deleteSelected();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === "d" || e.key === "D")) {
+        e.preventDefault();
+        opts.editor.duplicateSelected();
+      }
     });
   }
 

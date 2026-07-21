@@ -38,6 +38,7 @@ const HALF = 1;
 const PITCH = (2 * HALF) / (N - 1);      // espacement entre LEDs
 const LED_RADIUS = (PITCH * LED_FILL) / 2; // rayon physique d'une LED
 const ACCENT = new Color(0xff8a3d);
+const NEUTRAL = new Color(0x6b6560); // wireframe d'un objet NON sélectionné (neutre, plus d'orange)
 const HELPER_DIM = 0.28;  // opacité des helpers non sélectionnés (discrets)
 const HELPER_LIT = 0.9;   // opacité du helper sélectionné
 const CLICK_PX = 5;       // tolérance clic vs drag (sélection au clic)
@@ -156,16 +157,15 @@ export class Editor3DScene {
     this._gizmo.addEventListener("objectChange", () => this._commitGizmo());
     this._scene.add(this._gizmo.getHelper());
 
-    // g/r/s = outil déplacer/tourner/échelle ; Échap = curseur. Ignore si on tape dans un champ.
+    // g/r/s = outil déplacer/tourner/échelle ; z = mode d'affichage ; Échap = curseur.
+    // (Suppr est global — voir AppShell.) Ignore si on tape dans un champ.
     this._onKey = (e: KeyboardEvent): void => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.key === "g") this._editor.setTool("translate");
       else if (e.key === "r") this._editor.setTool("rotate");
       else if (e.key === "s") this._editor.setTool("scale");
+      else if (e.key === "z") this._editor.cycleViewportMode();
       else if (e.key === "Escape") this._editor.setTool("select");
-      else if (e.key === "Delete" || e.key === "Del") {
-        this._editor.deleteSelected();
-      }
     };
     window.addEventListener("keydown", this._onKey);
 
@@ -250,6 +250,7 @@ export class Editor3DScene {
 
   private _rebuild(): void {
     const selectedId = this._editor.selectedId;
+    const mode = this._editor.viewportMode;
     this._clearGroup(this._objects);
     this._clearGroup(this._picks);
 
@@ -258,29 +259,44 @@ export class Editor3DScene {
       const s = l as ShapeLayer;
       if (!s.visible) continue;
 
-      // cible de raycast : volume plein invisible (même si le helper est masqué)
+      // cible de raycast : volume plein invisible (sélection possible dans tous les modes)
       const pickGeo = unitGeometry(s.shape);
       const pick = new Mesh(pickGeo, this._pickMat);
-      applyTransform(pick, this._editor.worldTransform(s.id));
+      const transform = this._editor.worldTransform(s.id);
+      applyTransform(pick, transform);
       pick.userData.id = s.id;
       this._picks.add(pick);
 
-      if (!s.showHelper) continue; // helper caché → pas de wireframe (mais toujours sélectionnable)
+      if (mode === "none" || !s.showHelper) continue; // aucun helper (mais toujours sélectionnable)
 
       const selected = s.id === selectedId;
-      const unit = unitGeometry(s.shape);
-      const wf = new WireframeGeometry(unit);
       const preview = fillPreviewColor(s.fill);
-      const color = selected ? ACCENT : new Color(preview.r, preview.g, preview.b);
-      const mesh = new LineSegments(wf, helperMaterial(color, selected ? HELPER_LIT : HELPER_DIM));
-      applyTransform(mesh, this._editor.worldTransform(s.id));
-      this._objects.add(mesh);
-      unit.dispose();
+
+      if (mode === "solid") {
+        // solide couleur de fill ; wireframe accent seulement sur l'objet sélectionné
+        const solid = new Mesh(unitGeometry(s.shape), solidMaterial(new Color(preview.r, preview.g, preview.b)));
+        applyTransform(solid, transform);
+        this._objects.add(solid);
+        if (selected) {
+          const unit = unitGeometry(s.shape);
+          const outline = new LineSegments(new WireframeGeometry(unit), helperMaterial(ACCENT, HELPER_LIT));
+          applyTransform(outline, transform);
+          this._objects.add(outline);
+          unit.dispose();
+        }
+      } else {
+        // wireframe : non sélectionné en neutre (plus d'orange), sélectionné en accent
+        const unit = unitGeometry(s.shape);
+        const mesh = new LineSegments(new WireframeGeometry(unit), helperMaterial(selected ? ACCENT : NEUTRAL, selected ? HELPER_LIT : HELPER_DIM));
+        applyTransform(mesh, transform);
+        this._objects.add(mesh);
+        unit.dispose();
+      }
     }
 
     for (const l of this._editor.children) {
       if (l.type !== "spot" && l.type !== "lyre") continue;
-      if (!l.visible) continue;
+      if (!l.visible || mode === "none") continue;
       const p = l.transform.position;
 
       // cible de raycast (même volume simple pour les deux, pas de forme physique à représenter)
@@ -462,6 +478,15 @@ function helperMaterial(color: Color, opacity: number): LineBasicNodeMaterial {
   m.color = color;
   m.transparent = true;
   m.opacity = opacity;
+  return m;
+}
+
+/** Matériau plein (mode « solide ») : couleur de fill, légèrement translucide pour laisser deviner le mur. */
+function solidMaterial(color: Color): MeshBasicNodeMaterial {
+  const m = new MeshBasicNodeMaterial();
+  m.color = color;
+  m.transparent = true;
+  m.opacity = 0.9;
   return m;
 }
 
