@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sampleKeyframes, upsertKeyframe, removeKeyframe, moveKeyframe, type Keyframe } from "./Composition.ts";
+import { sampleKeyframes, upsertKeyframe, removeKeyframe, moveKeyframe, partitionTracks, type Keyframe, type Track } from "./Composition.ts";
+
+const trk = (layerId: string): Track => ({ layerId, channel: "opacity", keyframes: [] });
+
+test("partitionTracks : sépare selon l'ensemble d'ids, sans muter l'entrée", () => {
+  const tracks = [trk("a"), trk("b"), trk("c")];
+  const { inside, outside } = partitionTracks(tracks, new Set(["a", "c"]));
+  assert.deepEqual(inside.map((t) => t.layerId), ["a", "c"]);
+  assert.deepEqual(outside.map((t) => t.layerId), ["b"]);
+  assert.equal(tracks.length, 3); // entrée intacte
+});
 
 const kf = (frame: number, value: number, interp: "linear" | "hold" = "linear"): Keyframe => ({ frame, value, interp });
 

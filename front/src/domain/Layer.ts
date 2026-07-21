@@ -109,7 +109,22 @@ export interface SpotLayer extends LayerBase { type: "spot"; baseChannel: number
 /** Lyre (tête mobile) : `baseChannel` = 1er de ses 13 canaux — éditable si le patch DMX change. */
 export interface LyreLayer extends LayerBase { type: "lyre"; baseChannel: number; channels: LyreChannels; }
 
-export type Layer = ShaderLayer | ShapeLayer | GroupLayer | ImageLayer | VideoLayer | AudioLayer | SpotLayer | LyreLayer;
+/**
+ * Instance de composition imbriquée (précomp OU prérendu) : joue la composition `compId`
+ * et la rend comme un seul calque. Frontière opaque : son arbre vit dans SA composition,
+ * pas dans ce calque (pas de `children` ici). `timeOffset`/`speed` mappent le frame parent
+ * vers le temps local de la comp enfant.
+ */
+export interface PrecompLayer extends LayerBase {
+  type: "precomp";
+  compId: string;
+  /** Frame local de la comp au début (timelineIn) de l'instance. */
+  timeOffset: number;
+  /** Étirement temporel (1 = 1:1). */
+  speed: number;
+}
+
+export type Layer = ShaderLayer | ShapeLayer | GroupLayer | ImageLayer | VideoLayer | AudioLayer | SpotLayer | LyreLayer | PrecompLayer;
 
 /** Suggestions de départ (doc prof), purement indicatives — `baseChannel` reste libre et modifiable ensuite. */
 export const SPOT_DEFAULT_BASE = 1;
@@ -310,6 +325,25 @@ export function makeLyre(id: string, name: string, baseChannel: number): LyreLay
     channels: { pan: 127, panFine: 0, tilt: 127, tiltFine: 0, speed: 0, dimmer: 0, strobe: 0, r: 0, g: 0, b: 0, w: 0, special: 0, reset: 0 },
   };
 }
+/** Instance jouant la composition `compId` (précomp ou prérendu) : sans décalage, à vitesse 1. */
+export function makePrecomp(id: string, name: string, compId: string): PrecompLayer {
+  return { ...base(id, name), type: "precomp", compId, timeOffset: 0, speed: 1 };
+}
+
+/** L'instance de précomp est-elle active au frame parent ? (sa fenêtre de clip ; sans clip = toujours). */
+export function precompActiveAt(inst: PrecompLayer, parentFrame: number): boolean {
+  return layerActiveAt(inst.clip, parentFrame);
+}
+
+/**
+ * Frame local de la comp enfant pour un frame parent donné : `timeOffset` + (parent − début) × vitesse,
+ * clampé à `[0, childDuration[`. `début` = bord `in` du clip de l'instance (0 sans clip).
+ */
+export function precompChildFrame(inst: PrecompLayer, parentFrame: number, childDuration: number): number {
+  const start = inst.clip?.in ?? 0;
+  const local = inst.timeOffset + (parentFrame - start) * inst.speed;
+  return Math.max(0, Math.min(Math.max(0, childDuration - 1), Math.round(local)));
+}
 
 /** Recherche en profondeur d'un nœud par id (null si absent). */
 export function findLayer(root: GroupLayer, id: string): Layer | null {
@@ -345,4 +379,11 @@ export function findParent(root: GroupLayer, id: string): GroupLayer | null {
 /** Enfants du groupe donné (dans le document). */
 export function groupChildren(doc: Document, groupId: string): readonly Layer[] {
   return findGroup(doc.root, groupId)?.children ?? [];
+}
+
+/** Ids de tout le sous-arbre d'un calque (lui + descendants ; une precomp est opaque : pas de descente). */
+export function collectSubtreeIds(layer: Layer, out: Set<string> = new Set()): Set<string> {
+  out.add(layer.id);
+  if (layer.type === "group") for (const c of layer.children) collectSubtreeIds(c, out);
+  return out;
 }

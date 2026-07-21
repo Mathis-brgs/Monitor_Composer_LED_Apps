@@ -72,6 +72,10 @@ export class MenuBar {
         const dropdown = this._createEditDropdown();
         menuWrap.appendChild(dropdown);
         this._setupDropdownEvents(menuWrap, trigger);
+      } else if (label === "Composition") {
+        const dropdown = this._createCompositionDropdown();
+        menuWrap.appendChild(dropdown);
+        this._setupDropdownEvents(menuWrap, trigger);
       }
 
       nav.appendChild(menuWrap);
@@ -145,6 +149,26 @@ export class MenuBar {
     });
 
     dropdown.append(ehubItem);
+    return dropdown;
+  }
+
+  private _createCompositionDropdown(): HTMLElement {
+    const dropdown = document.createElement("div");
+    dropdown.className = "menu-item__dropdown";
+
+    const item = (label: string, run: () => void): HTMLElement => {
+      const el = document.createElement("div");
+      el.className = "menu-dropdown__item";
+      el.textContent = label;
+      el.addEventListener("click", run);
+      return el;
+    };
+
+    dropdown.append(
+      item("Précomposer la sélection", () => this._app?.context.editor.precomposeSelection()),
+      item("Nouvelle précomposition", () => this._app?.context.editor.addPrecomp()),
+      item("Nouveau prérendu", () => this._app?.context.editor.addPrerender()),
+    );
     return dropdown;
   }
 

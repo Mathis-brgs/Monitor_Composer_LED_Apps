@@ -31,5 +31,6 @@ export function subtitle(l: Layer): string {
     case "audio": return "Audio";
     case "spot": return "Projecteur statique";
     case "lyre": return `Lyre · canaux ${l.baseChannel}-${l.baseChannel + 12}`;
+    case "precomp": return "Précomposition";
   }
 }

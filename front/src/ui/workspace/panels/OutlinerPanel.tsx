@@ -12,16 +12,41 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
   const editor = props.editor;
   const layers = fromStore(editor, () => editor.children);
   const changed = fromStore(editor, () => editor.selectedId);
-  const atRoot = createMemo(() => { changed(); return editor.activeGroupId === editor.rootId; });
+  const trail = fromStore(editor, () => editor.compTrail);
+  const atGroupRoot = createMemo(() => { changed(); return editor.activeGroupId === editor.rootId; });
+  const insideComp = createMemo(() => trail().length > 1);
   const count = createMemo(() => { changed(); return editor.children.length; });
+
+  // retour : d'abord remonter les groupes internes, puis sortir de la comp.
+  const goBack = () => { if (!atGroupRoot()) editor.exitGroup(); else editor.exitComp(); };
 
   return (
     <>
       <div class="comp-bar">
-        <Show when={!atRoot()}>
-          <button type="button" class="comp-back" onClick={() => editor.exitGroup()}>
+        <Show when={!atGroupRoot() || insideComp()}>
+          <button type="button" class="comp-back" onClick={goBack}>
             {createIcon("chevron-down", { size: 12 })} Retour
           </button>
+        </Show>
+        <Show when={insideComp()}>
+          <div class="comp-trail">
+            <For each={trail()}>
+              {(c, i) => (
+                <>
+                  <Show when={i() > 0}><span class="comp-trail__sep">/</span></Show>
+                  <button
+                    type="button"
+                    class="comp-trail__seg"
+                    classList={{ "comp-trail__seg--current": i() === trail().length - 1 }}
+                    disabled={i() === trail().length - 1}
+                    onClick={() => editor.exitToComp(c.id)}
+                  >
+                    {c.name}
+                  </button>
+                </>
+              )}
+            </For>
+          </div>
         </Show>
         <span class="compositor__count">{count()} calques</span>
       </div>
@@ -112,7 +137,10 @@ function LayerRow(props: { editor: Editor; layer: Layer; changed: Accessor<unkno
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       onClick={() => editor.select(layer.id)}
-      onDblClick={() => { if (layer.type === "group") editor.enterGroup(layer.id); }}
+      onDblClick={() => {
+        if (layer.type === "group") editor.enterGroup(layer.id);
+        else if (layer.type === "precomp") editor.enterComp(layer.compId);
+      }}
     >
       <button
         type="button"

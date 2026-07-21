@@ -1,8 +1,8 @@
 import { Euler, Matrix4, Quaternion, Vector3 } from "three/webgpu";
 import type { Engine } from "./engine/Engine.ts";
 import {
-  makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, makeVideo, findLayer, findGroup, findParent, groupChildren,
-  fixtureDmxChannels, layerActiveAt, mediaClipActiveAt, mediaSourceFrameAt, mediaFadeGain, mediaGroupActiveAt,
+  makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, makeVideo, makePrecomp, findLayer, findGroup, findParent, groupChildren, collectSubtreeIds,
+  fixtureDmxChannels, layerActiveAt, mediaClipActiveAt, mediaSourceFrameAt, mediaFadeGain, mediaGroupActiveAt, precompActiveAt, precompChildFrame,
   wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
   type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer, type VideoLayer,
   type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type MediaClip, type SpotChannels, type LyreChannels,
@@ -18,9 +18,12 @@ import { LAYER_ID, type Layer as EngineLayer } from "./engine/layers/Layer.ts";
 import { Scene3DLayer } from "./engine/layers/Scene3D.layer.ts";
 import { SolidLayer } from "./engine/layers/Solid.layer.ts";
 import { VideoWallLayer } from "./engine/layers/Video.layer.ts";
+import { NestedTextureLayer } from "./engine/layers/NestedTexture.layer.ts";
+import { LayerStack } from "./engine/LayerStack.ts";
 import { countLit, type ShapeFill, type ShapeInput } from "./engine/shapes.ts";
 import { Animator } from "./Animator.ts";
-import { sampleKeyframes, type Composition, type Interp, type Track } from "@domain/Composition.ts";
+import { makeComposition, defaultPrerenderScene, partitionTracks, sampleKeyframes, type Composition, type Interp, type Track } from "@domain/Composition.ts";
+import type { Clock } from "./Clock.ts";
 
 /** Un point du chemin d'animation (motion path) : position monde du calque à un frame keyframé. */
 export interface MotionPoint { frame: number; x: number; y: number; z: number; }
@@ -39,31 +42,11 @@ const SHAPE_LABEL: Record<ShapeKind, string> = {
   sphere: "Sphère", box: "Cube", cylinder: "Cylindre", cone: "Cône", plane: "Plan", torus: "Tore",
 };
 
-/** Document seed : reprend les 3 calques shader + 2 objets 3D de l'état d'origine. */
-function seedDocument(): Document {
-  const root = makeGroup("root", "Composition");
+/** Un niveau de la pile de navigation de comps : quelle comp, + l'état d'édition à y restaurer. */
+interface NavFrame { compId: string; groupId: string; selectedId: string | null; frame: number; }
 
-  const sweep = makeShaderLayer("sweep-1", "sweep", "Balayage");
-  sweep.blend = "add";
-  sweep.opacity = 0.8;
-
-  const plasma = makeShaderLayer("plasma-1", "plasma", "Plasma");
-  plasma.params = { speed: 0.42, detail: 0.7, contrast: 0.55, hue: 0.57 };
-
-  const solid = makeShaderLayer("solid-1", "solid", "Couleur unie");
-  solid.color = { r: 0.11, g: 0.055, b: 0.024 }; // #1c0e06
-
-  const sphere = makeShape("sphere-1", "sphere", "Sphère 01");
-  sphere.transform = { position: { x: -0.28, y: 0.12, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 0.34, y: 0.34, z: 0.34 } };
-  sphere.fill = { type: "solid", color: { r: 1, g: 0.541, b: 0.239 } };
-
-  const box = makeShape("box-1", "box", "Cube 01");
-  box.transform = { position: { x: 0.42, y: -0.14, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 0.26, y: 0.26, z: 0.26 } };
-  box.fill = { type: "solid", color: { r: 1, g: 0.541, b: 0.239 } };
-
-  root.children.push(sweep, plasma, solid, sphere, box);
-  return { root, activeGroupId: "root", selectedId: "plasma-1" };
-}
+/** Compositor dédié à une comp imbriquée : son LayerStack+RT, sa DataTexture de shapes, et le calque parent qui échantillonne sa RT. */
+interface SubRenderer { stack: LayerStack; scene3d: Scene3DLayer; nested: NestedTextureLayer; sig: string; }
 
 /**
  * Store du document (arbre unifié) + miroir moteur. L'app le modifie ; le moteur en
@@ -71,18 +54,32 @@ function seedDocument(): Document {
  * de l'UI ; convention subscribe/notify (compatible pont Solid `fromStore`).
  */
 export class Editor {
-  private _doc = seedDocument();
   private readonly _listeners = new Set<EditorListener>();
   private readonly _shaderLive = new Map<string, EngineLayer>();
   private readonly _videoLive = new Map<string, EngineLayer>();
   private _scene3d: Scene3DLayer | null = null;
   private _engine: Engine | null = null;
+  private _clock: Clock | null = null;   // horloge injectée : la durée suit la comp active
   private _counter = 0;
   private _tool: EditorTool = "select";
   private _frame = 0;              // dernier frame évalué (instant courant pour l'auto-key)
+  private _fps = 24;              // fps courant (mapping temporel des comps imbriquées)
   private _sceneDirty = false;     // un canal de shape a changé → 1 seul recompute par frame
   private _lastActiveSig = "";     // signature du set de calques actifs (clips) au dernier _push
+  // compositors des comps imbriquées (précomps/prérendus), par id de comp (créés à la demande).
+  private readonly _subs = new Map<string, SubRenderer>();
   private readonly _animator = new Animator((id, channel, value) => this._applyChannel(id, channel, value));
+
+  // Compositions du projet (partagées par référence avec project.compositions).
+  private _compositions: Record<string, Composition> = { main: makeComposition("main", "Composition", "main") };
+  // Pile de navigation de comps (haut = contexte courant) ; snapshot d'édition à restaurer en sortie.
+  private _nav: NavFrame[] = [{ compId: "main", groupId: this._compositions.main.root.id, selectedId: null, frame: 0 }];
+  // Vue d'édition active : `_doc.root === activeComp().root` — tout le code d'arbre reste inchangé.
+  private _doc: Document = { root: this._compositions.main.root, activeGroupId: this._compositions.main.root.id, selectedId: null };
+
+  constructor() {
+    this._animator.load(this._compositions.main);
+  }
 
   // fills image/vidéo : décodage async + lecture, mis en cache hors du document (par id de shape)
   private readonly _imagePixels = new Map<string, DecodedBitmap>();
@@ -108,19 +105,45 @@ export class Editor {
     return this._doc;
   }
 
-  loadDocument(doc: Document): void {
-    this._doc = doc;
-    this._push();
-    this._emit();
-  }
-
-  loadComposition(comp: Composition): void {
-    this._animator.load(comp);
-  }
-
   getComposition(): Composition {
     return this._animator.composition;
   }
+
+  /** Toutes les compositions du projet (partagées par référence avec project.compositions). */
+  getCompositions(): Record<string, Composition> {
+    return this._compositions;
+  }
+
+  /** Injecte l'horloge : sa durée suit la comp active (reconfigurée à chaque enter/exit). */
+  setClock(clock: Clock): void {
+    this._clock = clock;
+  }
+
+  /** Charge tout le jeu de compositions (partagé avec le projet) et entre dans la comp principale. */
+  loadCompositions(compositions: Record<string, Composition>, mainCompId: string): void {
+    this._compositions = compositions;
+    const main = compositions[mainCompId] ?? makeComposition(mainCompId || "main", "Composition", "main");
+    if (!compositions[mainCompId]) compositions[mainCompId] = main;
+    this._nav = [{ compId: mainCompId, groupId: main.root.id, selectedId: null, frame: 0 }];
+    this._enterContext(main, main.root.id, null, 0);
+  }
+
+  /** Comp courante (haut de la pile de navigation). */
+  activeComp(): Composition {
+    return this._compositions[this._top.compId] ?? this._compositions[Object.keys(this._compositions)[0]];
+  }
+
+  get activeCompId(): string { return this._top.compId; }
+
+  /** Durée (frames) de la comp active — source de vérité de la règle de la timeline. */
+  get activeCompDuration(): number { return this.activeComp().durationFrames; }
+
+  /** Fil d'Ariane des comps (racine → comp courante), pour l'Outliner / la timeline. */
+  get compTrail(): { id: string; name: string }[] {
+    return this._nav.map((f) => ({ id: f.compId, name: this._compositions[f.compId]?.name ?? f.compId }));
+  }
+
+  private get _top(): NavFrame { return this._nav[this._nav.length - 1]; }
 
   // ————————————————————————————————— Moteur ——————————————————————————————————
 
@@ -295,6 +318,55 @@ export class Editor {
     this._emit();
   }
 
+  /** Entre dans une comp imbriquée (précomp/prérendu) : bascule vue + animation + horloge. */
+  enterComp(compId: string): void {
+    const comp = this._compositions[compId];
+    if (!comp || compId === this._top.compId) return;
+    if (this._nav.some((f) => f.compId === compId)) return; // anti-cycle : déjà dans la pile
+    this._snapshotTop();
+    this._nav.push({ compId, groupId: comp.root.id, selectedId: null, frame: 0 });
+    this._enterContext(comp, comp.root.id, null, 0);
+  }
+
+  /** Remonte d'un niveau de comp (restaure l'état d'édition du parent). No-op à la racine. */
+  exitComp(): void {
+    if (this._nav.length <= 1) return;
+    this._nav.pop();
+    const t = this._top;
+    this._enterContext(this._compositions[t.compId], t.groupId, t.selectedId, t.frame);
+  }
+
+  /** Entre dans la comp référencée par un calque precomp (no-op si le calque n'en est pas un). */
+  enterCompOf(layerId: string): void {
+    const l = findLayer(this._doc.root, layerId);
+    if (l?.type === "precomp") this.enterComp(l.compId);
+  }
+
+  /** Remonte jusqu'à une comp donnée du fil d'Ariane (clic sur un ancêtre). */
+  exitToComp(compId: string): void {
+    if (compId === this._top.compId || !this._nav.some((f) => f.compId === compId)) return;
+    while (this._nav.length > 1 && this._top.compId !== compId) this._nav.pop();
+    const t = this._top;
+    this._enterContext(this._compositions[t.compId], t.groupId, t.selectedId, t.frame);
+  }
+
+  private _snapshotTop(): void {
+    const t = this._top;
+    t.groupId = this._doc.activeGroupId;
+    t.selectedId = this._doc.selectedId;
+    if (this._clock) t.frame = this._clock.frame;
+  }
+
+  /** Bascule la vue active vers une comp : arbre + animation + durée d'horloge + playhead. */
+  private _enterContext(comp: Composition, groupId: string, selectedId: string | null, frame: number): void {
+    this._doc = { root: comp.root, activeGroupId: findGroup(comp.root, groupId) ? groupId : comp.root.id, selectedId };
+    this._animator.load(comp);
+    this._clock?.configure({ durationFrames: comp.durationFrames });
+    this._clock?.seekFrame(frame);
+    this._push();
+    this._emit();
+  }
+
   deleteLayer(id: string): void {
     const parent = findParent(this._doc.root, id);
     if (!parent) return;
@@ -368,6 +440,76 @@ export class Editor {
     this._push();
     this._emit();
     return id;
+  }
+
+  /**
+   * Précompose le calque sélectionné : le déplace (avec son sous-arbre + ses tracks) dans une
+   * nouvelle composition, remplacé à sa place par une instance de précomp. Renvoie l'id de la comp.
+   */
+  precomposeSelection(): string | null {
+    const sel = this.selected;
+    if (!sel) return null;
+    const parent = findParent(this._doc.root, sel.id);
+    if (!parent) return null; // la racine ne se précompose pas
+    const idx = parent.children.findIndex((c) => c.id === sel.id);
+    if (idx === -1) return null;
+
+    this._counter += 1;
+    const compId = `precomp-${this._counter}`;
+    const name = `Précomp ${String(this._counter).padStart(2, "0")}`;
+    const comp = makeComposition(compId, name, "precomp", { durationFrames: this.activeComp().durationFrames });
+
+    // déplacer le calque (et son sous-arbre) dans la nouvelle comp
+    parent.children.splice(idx, 1);
+    comp.root.children.push(sel);
+
+    // repartitionner les tracks du sous-arbre du calque vers la nouvelle comp
+    const active = this.activeComp();
+    const { inside, outside } = partitionTracks(active.tracks, collectSubtreeIds(sel));
+    comp.tracks = inside;
+    active.tracks = outside;
+
+    this._compositions[compId] = comp;
+
+    // instance à la place du calque, sélectionnée
+    const inst = makePrecomp(`${compId}-inst`, name, compId);
+    parent.children.splice(idx, 0, inst);
+    this._doc.selectedId = inst.id;
+
+    this._push();
+    this._emit();
+    return compId;
+  }
+
+  /** Ajoute une précomposition vide + son instance dans le groupe actif. */
+  addPrecomp(): string {
+    this._counter += 1;
+    const compId = `precomp-${this._counter}`;
+    const name = `Précomp ${String(this._counter).padStart(2, "0")}`;
+    this._compositions[compId] = makeComposition(compId, name, "precomp", { durationFrames: this.activeComp().durationFrames });
+    const inst = makePrecomp(`${compId}-inst`, name, compId);
+    this._activeGroup().children.unshift(inst);
+    this._doc.selectedId = inst.id;
+    this._push();
+    this._emit();
+    return inst.id;
+  }
+
+  /** Ajoute un prérendu (composition kind "prerender" + scène 3D par défaut) + son instance. */
+  addPrerender(): string {
+    this._counter += 1;
+    const compId = `prerender-${this._counter}`;
+    const name = `Prérendu ${String(this._counter).padStart(2, "0")}`;
+    this._compositions[compId] = makeComposition(compId, name, "prerender", {
+      durationFrames: this.activeComp().durationFrames,
+      scene: defaultPrerenderScene(),
+    });
+    const inst = makePrecomp(`${compId}-inst`, name, compId);
+    this._activeGroup().children.unshift(inst);
+    this._doc.selectedId = inst.id;
+    this._push();
+    this._emit();
+    return inst.id;
   }
 
   /** Ajoute une piste audio (asset déjà décodé). `sourceFrames` = longueur de la source →
@@ -703,12 +845,14 @@ export class Editor {
   /** appelé chaque frame moteur : évalue les keyframes puis (au besoin) re-rasterise les shapes. */
   tick(frame: number, playing = false, fps = 24): void {
     this._frame = frame;
+    this._fps = fps;
     this._sceneDirty = false;
     this._animator.evaluate(frame);
     if (this._activeSignature() !== this._lastActiveSig) {
-      this._push(); // un calque a franchi un bord de clip → reconstruit la pile (re-rasterise aussi les shapes)
-    } else if (this._sceneDirty || this._videoEls.size > 0) {
-      this._recomputeScene();
+      this._push(); // un calque a franchi un bord de clip → reconstruit la pile (+ `_syncNested`)
+    } else {
+      if (this._sceneDirty || this._videoEls.size > 0) this._recomputeScene();
+      this._syncNested(); // maj des comps imbriquées (animation/temps) même sans rebuild de la pile active
     }
     this._syncVideos(frame, playing, fps);
   }
@@ -744,12 +888,13 @@ export class Editor {
 
   /** Écrit la valeur d'un canal scalaire dans le modèle + le moteur (appelé par l'Animator). */
   private _applyChannel(id: string, channel: string, value: number): void {
-    const layer = findLayer(this._doc.root, id);
+    const layer = this._findAnywhere(id); // cross-comp : les tracks des comps imbriquées ciblent leurs propres calques
     if (!layer) return;
     if (channel === "opacity") {
       layer.opacity = value;
       const live = this._shaderLive.get(id);
       if (live) live.opacity = value;
+      if (layer.type === "precomp") { const s = this._subs.get(layer.compId); if (s) s.nested.opacity = value; }
       if (layer.type === "shape") this._sceneDirty = true;
       return;
     }
@@ -784,7 +929,7 @@ export class Editor {
 
   /** Lit la valeur courante d'un canal (pour la 1re clé). undefined si non applicable. */
   private _readChannel(id: string, channel: string): number | undefined {
-    const layer = findLayer(this._doc.root, id);
+    const layer = this._findAnywhere(id);
     if (!layer) return undefined;
     if (channel === "opacity") return layer.opacity;
     if (channel === "gain") return layer.type === "audio" ? layer.gain : undefined;
@@ -818,17 +963,36 @@ export class Editor {
 
   /** Matrice monde d'un calque (parentWorld * local), en remontant la chaîne (garde anti-cycle). */
   private _worldMatrix(id: string, guard: Set<string> = new Set()): Matrix4 {
-    const layer = findLayer(this._doc.root, id);
+    return this._worldMatrixIn(this._doc.root, id, guard);
+  }
+
+  /** Matrice monde d'un calque dans un arbre donné (pour rendre une comp imbriquée). */
+  private _worldMatrixIn(root: GroupLayer, id: string, guard: Set<string> = new Set()): Matrix4 {
+    const layer = findLayer(root, id);
     if (!layer) return new Matrix4();
     const local = this._matrixOf(layer.transform);
     if (!layer.parentId || guard.has(id)) return local;
     guard.add(id);
-    return this._worldMatrix(layer.parentId, guard).multiply(local);
+    return this._worldMatrixIn(root, layer.parentId, guard).multiply(local);
   }
 
   private _toInput(s: ShapeLayer): ShapeInput {
-    const w = this.worldTransform(s.id); // transform monde (parenté inclus) pour le rendu sur le mur
-    return { kind: s.shape, position: w.position, rotation: w.rotation, scale: w.scale, fill: this._resolveFill(s), opacity: s.opacity };
+    return this._toInputIn(this._doc.root, s);
+  }
+
+  /** ShapeInput d'une shape dans un arbre donné (transform monde calculé dans cet arbre). */
+  private _toInputIn(root: GroupLayer, s: ShapeLayer): ShapeInput {
+    const p = new Vector3(), q = new Quaternion(), sc = new Vector3();
+    this._worldMatrixIn(root, s.id).decompose(p, q, sc);
+    const e = new Euler().setFromQuaternion(q, "XYZ");
+    return {
+      kind: s.shape,
+      position: { x: p.x, y: p.y, z: p.z },
+      rotation: { x: e.x, y: e.y, z: e.z },
+      scale: { x: sc.x, y: sc.y, z: sc.z },
+      fill: this._resolveFill(s),
+      opacity: s.opacity,
+    };
   }
 
   /** Résout le `Fill` (modèle, sérialisable) en `ShapeFill` (pixels prêts pour le rasterizeur). */
@@ -905,7 +1069,50 @@ export class Editor {
 
   /** Un calque est-il actif au frame courant : sa propre fenêtre de clip ET son groupe média. */
   private _activeAt(layer: Layer): boolean {
-    return layerActiveAt(layer.clip, this._frame) && mediaGroupActiveAt(this._doc.root, layer, this._frame);
+    return this._activeAtIn(this._doc.root, layer, this._frame);
+  }
+
+  private _activeAtIn(root: GroupLayer, layer: Layer, frame: number): boolean {
+    return layerActiveAt(layer.clip, frame) && mediaGroupActiveAt(root, layer, frame);
+  }
+
+  /** Cherche un calque dans TOUTES les comps (les tracks d'une comp imbriquée ciblent ses propres calques). */
+  private _findAnywhere(id: string): Layer | null {
+    const active = findLayer(this._doc.root, id);
+    if (active) return active;
+    for (const c of Object.values(this._compositions)) {
+      if (c.root === this._doc.root) continue;
+      const l = findLayer(c.root, id);
+      if (l) return l;
+    }
+    return null;
+  }
+
+  /** Calques rendus (shader/shape/video/precomp) d'un arbre, groupes traversés, en ordre de composition. */
+  private _renderablesIn(group: GroupLayer, out: Layer[] = []): Layer[] {
+    for (const c of group.children) {
+      if (c.type === "group") this._renderablesIn(c, out);
+      else out.push(c);
+    }
+    return out;
+  }
+
+  private _anySoloIn(root: GroupLayer): boolean {
+    return this._renderablesIn(root).some((c) => c.solo && c.type !== "audio");
+  }
+
+  private _shapeInputsIn(root: GroupLayer, frame: number): ShapeInput[] {
+    const anySolo = this._anySoloIn(root);
+    return this._renderablesIn(root)
+      .filter((l): l is ShapeLayer => l.type === "shape" && l.visible && this._activeAtIn(root, l, frame) && (!anySolo || !!l.solo))
+      .map((s) => this._toInputIn(root, s));
+  }
+
+  /** Signature du set de calques actifs d'une comp à un frame (rebuild de son stack si ça change). */
+  private _compSigIn(comp: Composition, frame: number): string {
+    let sig = "";
+    for (const l of this._renderablesIn(comp.root)) if (this._activeAtIn(comp.root, l, frame)) sig += l.id + ",";
+    return sig;
   }
 
   /** Un calque VISUEL du groupe actif est-il en solo ? (si oui, seuls les solos visuels rendent).
@@ -978,6 +1185,8 @@ export class Editor {
     const scene3d = this._scene3d;
     if (!engine || !scene3d) return;
 
+    this._syncNested(); // (re)construit les comps imbriquées et alimente leurs RT avant de composer
+
     const shapes = this._shapeInputs();
     scene3d.setShapes(shapes);
     this._pushFixtures();
@@ -994,6 +1203,17 @@ export class Editor {
       } else if (child.type === "video") {
         const active = child.clips ? child.clips.some((c) => mediaClipActiveAt(c, this._frame)) : this._activeAt(child);
         if (child.visible && active && (!anySolo || child.solo)) stack.push(this._ensureVideo(child));
+      } else if (child.type === "precomp") {
+        // instance de précomp/prérendu : composite la RT de sa comp enfant (rendue par `_syncNested`)
+        if (child.visible && this._activeAt(child) && precompActiveAt(child, this._frame) && (!anySolo || child.solo)) {
+          const sub = this._subs.get(child.compId);
+          if (sub) {
+            sub.nested.enabled = true;
+            sub.nested.opacity = child.opacity;
+            sub.nested.blend = child.blend;
+            stack.push(sub.nested);
+          }
+        }
       }
       // group/image/spot/lyre : non rendus sur le mur (navigables / repère visuel seulement)
     }
@@ -1009,6 +1229,70 @@ export class Editor {
       if (this._activeAt(child)) sig += child.id + ",";
     }
     return sig;
+  }
+
+  /** (Re)construit le graphe des comps imbriquées atteignables depuis le groupe actif et alimente leurs RT. */
+  private _syncNested(): void {
+    const engine = this._engine;
+    if (!engine) return;
+    const ordered: LayerStack[] = [];
+    const guard = new Set<string>();
+    for (const child of this._activeGroup().children) {
+      if (child.type !== "precomp" || !child.visible || !this._activeAt(child) || !precompActiveAt(child, this._frame)) continue;
+      const comp = this._compositions[child.compId];
+      if (!comp) continue;
+      const frame = precompChildFrame(child, this._frame, comp.durationFrames);
+      this._updateSub(comp, frame, ordered, guard);
+    }
+    engine.setNested(ordered); // ordonnées plus profond d'abord (les enfants se poussent avant leur parent)
+  }
+
+  /**
+   * Met à jour (ou crée) le compositor d'une comp imbriquée à un frame local : évalue son animation,
+   * rasterise ses shapes, (re)construit son stack au besoin, puis la fait rendre dans sa RT. Récursif
+   * (enfants d'abord). `guard` = garde de cycle (une comp déjà dans la chaîne n'est pas ré-entrée).
+   */
+  private _updateSub(comp: Composition, frame: number, ordered: LayerStack[], guard: Set<string>): SubRenderer | null {
+    const engine = this._engine;
+    if (!engine || guard.has(comp.id)) return null;
+    guard.add(comp.id);
+
+    let sub = this._subs.get(comp.id);
+    if (!sub) {
+      const stack = new LayerStack(engine.fixture.width, engine.fixture.height);
+      const scene3d = new Scene3DLayer(`${comp.id}:scene3d`, engine.fixture.width, engine.fixture.height);
+      const nested = new NestedTextureLayer(`${comp.id}:nested`);
+      nested.setTexture(stack.target.texture);
+      sub = { stack, scene3d, nested, sig: "" };
+      this._subs.set(comp.id, sub);
+    }
+
+    this._animator.evaluateAt(comp.tracks, frame);                 // animation de la comp à son frame local
+    sub.scene3d.setShapes(this._shapeInputsIn(comp.root, frame));  // shapes de la comp (raster CPU dans sa DataTexture)
+
+    const anySolo = this._anySoloIn(comp.root);
+    const layers: EngineLayer[] = [];
+    let sceneAdded = false;
+    for (const layer of this._renderablesIn(comp.root)) {
+      if (!layer.visible || !this._activeAtIn(comp.root, layer, frame) || (anySolo && !layer.solo)) continue;
+      if (layer.type === "shader") layers.push(this._ensureShader(layer));
+      else if (layer.type === "shape") { if (!sceneAdded) { layers.push(sub.scene3d); sceneAdded = true; } }
+      else if (layer.type === "video") layers.push(this._ensureVideo(layer));
+      else if (layer.type === "precomp") {
+        const cc = this._compositions[layer.compId];
+        if (cc && precompActiveAt(layer, frame)) {
+          const cf = precompChildFrame(layer, frame, cc.durationFrames);
+          const cs = this._updateSub(cc, cf, ordered, guard);
+          if (cs) { cs.nested.enabled = true; cs.nested.opacity = layer.opacity; cs.nested.blend = layer.blend; layers.push(cs.nested); }
+        }
+      }
+    }
+
+    const sig = this._compSigIn(comp, frame);
+    if (sig !== sub.sig) { sub.stack.setLayers([...layers].reverse()); sub.sig = sig; }
+    sub.stack.setTime(this._fps > 0 ? frame / this._fps : 0);
+    ordered.push(sub.stack);
+    return sub;
   }
 
   /** engine layer d'un calque vidéo (VideoTexture plein-cadre), créé une fois puis synchronisé. */

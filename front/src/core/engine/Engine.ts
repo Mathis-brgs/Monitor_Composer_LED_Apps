@@ -16,6 +16,7 @@ export class Engine {
   readonly stack: LayerStack;
   private readonly _composite: CompositePass;
   private readonly _output: EhubOutput;
+  private _nested: LayerStack[] = [];
 
   constructor(
     private readonly _renderer: WebGPURenderer,
@@ -33,8 +34,18 @@ export class Engine {
     this.stack.setLayers(layers);
   }
 
-  /** chaque frame : fixe le temps de composition (piloté par l'horloge) et compose dans la RT */
+  /** Compositors des comps imbriquées (précomps/prérendus), ordonnés du plus profond au moins profond. */
+  setNested(nested: LayerStack[]): void {
+    this._nested = nested;
+  }
+
+  /** chaque frame : rend d'abord les comps imbriquées dans leurs RT, puis compose la comp active. */
   update(time: number): void {
+    for (const sub of this._nested) {
+      this._renderer.setRenderTarget(sub.target);
+      this._renderer.render(sub.scene, sub.camera);
+    }
+    this._renderer.setRenderTarget(null);
     this.stack.setTime(time);
     this._composite.render(this._renderer);
   }

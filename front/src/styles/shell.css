@@ -2080,6 +2080,39 @@ body {
   color: var(--txt);
 }
 
+.comp-trail {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.comp-trail__seg {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-3);
+  color: var(--dim);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.comp-trail__seg:hover:not(:disabled) {
+  color: var(--txt);
+}
+
+.comp-trail__seg--current {
+  color: var(--acc);
+  cursor: default;
+}
+
+.comp-trail__sep {
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
 .insp-empty {
   padding: var(--space-12);
   color: var(--faint);

@@ -44,7 +44,7 @@ export class App {
     audio: AudioEngine = new AudioEngine(),
   ): Promise<App> {
     const renderer = await createRenderer(canvas);
-    clock.configure({ fps: project.config.frequency ?? 24 });
+    clock.configure({ fps: project.config.frequency ?? 24 }); // la durée est pilotée par la comp active
 
     const assets = new AssetStore();
     await assets.load(ASSET_MANIFEST);
@@ -58,8 +58,9 @@ export class App {
     // TODO: résoudre la fixture depuis project.config.fixture via un registre
     const fixture = new WallFixture();
     const engine = new Engine(renderer, fixture, transport);
+    editor.setClock(clock);
     editor.attach(engine);
-    editor.loadComposition(project.composition);
+    editor.loadCompositions(project.compositions, project.mainCompId);
 
     const app = new App({
       renderer,
@@ -98,9 +99,9 @@ export class App {
       // Mettre à jour le projet en place à chaud (pour garder la référence de context.project)
       const p = this.context.project;
       p.config = loaded.config;
-      p.composition = loaded.composition;
+      p.compositions = loaded.compositions;
+      p.mainCompId = loaded.mainCompId;
       p.objects = loaded.objects;
-      p.document = loaded.document;
 
       // Extraire le nom du fichier du chemin pour le nom du projet
       const fileName = res.filePath.split(/[\\/]/).pop() || "new project";
@@ -110,11 +111,8 @@ export class App {
       // Mettre à jour l'IP / Port cible du transport eHuB
       this.context.transport.updateTarget(p.config.ehub.host, p.config.ehub.port);
 
-      // Charger le document dans l'éditeur s'il est présent
-      if (loaded.document) {
-        this.context.editor.loadDocument(loaded.document);
-      }
-      this.context.editor.loadComposition(p.composition);
+      // Charger toutes les compositions ; l'éditeur entre dans la comp principale (durée d'horloge incluse)
+      this.context.editor.loadCompositions(p.compositions, p.mainCompId);
 
       // Mettre à jour la fréquence d'envoi eHuB
       this.updateFrequency(p.config.frequency ?? 24);
@@ -135,8 +133,9 @@ export class App {
 
   async saveProject(): Promise<void> {
     try {
-      this.context.project.document = this.context.editor.getDocument();
-      this.context.project.composition = this.context.editor.getComposition();
+      // Compositions éditées en place (partagées avec l'éditeur) ; on synchronise juste la
+      // durée vivante de la comp active depuis l'horloge avant de sérialiser.
+      this.context.editor.activeComp().durationFrames = this.context.clock.durationFrames;
       const json = serializeProject(this.context.project);
       await window.led?.saveProject(json, this.context.project.config.name);
       console.log("Projet sauvegardé avec succès");
