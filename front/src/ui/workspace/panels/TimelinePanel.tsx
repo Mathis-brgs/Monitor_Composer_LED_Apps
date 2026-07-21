@@ -402,6 +402,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     e.stopPropagation();
     if (row.locked) return;
     editor.select(row.layerId);
+    if (tlTool() === "razor") { editor.splitLayer(row.layerId, snapFrame(frameAt(e.clientX)), clock.durationFrames); return; }
     const dur = clock.durationFrames;
     const base: Clip = row.clip ?? { in: 0, out: dur };
     const startFrame = frameAt(e.clientX);
@@ -519,16 +520,21 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
   };
 
   /** Coupe le clip audio sélectionné au playhead (rasoir façon Premiere / ⌘K). */
+  /** Coupe au playhead (⌘K) : le clip média sélectionné, sinon le calque sélectionné (Split Layer). */
   const splitSelectedClip = (): void => {
     const s = selectedClip();
-    if (!s) return;
-    const row = rows().find((r) => r.layerId === s.layerId);
-    const mc = row?.mediaClips.find((c) => c.id === s.clipId);
-    if (!row || !mc) return;
-    const parts = splitMediaClip(mc, frame(), `${mc.id}.${++clipSeq}`);
-    if (!parts) return;
-    setClips(row,row.mediaClips.flatMap((c) => (c.id === mc.id ? parts : [c])));
-    setSelectedClip({ layerId: row.layerId, clipId: parts[0].id });
+    if (s) {
+      const row = rows().find((r) => r.layerId === s.layerId);
+      const mc = row?.mediaClips.find((c) => c.id === s.clipId);
+      if (!row || !mc) return;
+      const parts = splitMediaClip(mc, frame(), `${mc.id}.${++clipSeq}`);
+      if (!parts) return;
+      setClips(row, row.mediaClips.flatMap((c) => (c.id === mc.id ? parts : [c])));
+      setSelectedClip({ layerId: row.layerId, clipId: parts[0].id });
+      return;
+    }
+    const id = selectedId();
+    if (id) editor.splitLayer(id, frame(), clock.durationFrames);
   };
 
   const deleteSelectedClip = (): boolean => {
@@ -1057,6 +1063,15 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                         data-tooltip={row.locked ? "Déverrouiller" : "Verrouiller"}
                         onClick={(e) => { e.stopPropagation(); editor.setLocked(row.layerId, !row.locked); }}
                       >{createIcon("lock", { size: 12 })}</button>
+                      <button
+                        type="button"
+                        class="seq__delete"
+                        data-tooltip="Supprimer definitivement ce calque"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (window.confirm(`Supprimer "${row.name}" definitivement ? (pas juste le masquer)`)) editor.deleteLayer(row.layerId);
+                        }}
+                      >{createIcon("trash", { size: 12 })}</button>
                     </div>
                     <Show when={isExpanded(row.layerId)}>
                       <For each={row.props}>

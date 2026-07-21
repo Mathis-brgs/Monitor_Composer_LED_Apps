@@ -6,6 +6,7 @@ import {
   wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
   type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer, type VideoLayer,
   type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type MediaClip, type SpotChannels, type LyreChannels,
+  type MaterialPreset, type MaterialMode,
 } from "@domain/Layer.ts";
 
 /** Patch de transform : chaque canal (position/rotation/échelle) partiellement modifiable. */
@@ -27,6 +28,13 @@ export interface MotionPoint { frame: number; x: number; y: number; z: number; }
 
 /** Pixels décodés d'une image (ou d'une frame vidéo) — mis en cache hors du document (non sérialisable). */
 interface DecodedBitmap { data: Uint8ClampedArray; width: number; height: number; }
+
+/** Snapshot d'historique (undo/redo) : tout ce qui définit l'état éditable. */
+interface HistorySnapshot { document: Document; composition: Composition }
+/** Rafales groupées en un seul pas d'historique si elles se suivent à moins de 400ms. */
+const HISTORY_DEBOUNCE_MS = 400;
+/** Profondeur max de l'historique — borne la mémoire (snapshots pleins, voir `HistorySnapshot`). */
+const HISTORY_LIMIT = 50;
 /** Résolution de secours tant qu'une image/vidéo n'est pas encore décodée : noir
  *  (pas de flash blanc sur le vrai mur pendant le chargement) — le wireframe/helper
  *  reste visible dans l'éditeur 3D pour situer la forme en attendant. */
@@ -34,6 +42,17 @@ const FALLBACK_FILL: ShapeFill = { kind: "solid", color: { r: 0, g: 0, b: 0 } };
 /** Taille d'échantillonnage d'une frame vidéo : alignée sur la résolution max du mur (128×128),
  *  sinon le rendu est visiblement pixelisé dès qu'une forme couvre une bonne partie du mur. */
 const VIDEO_SAMPLE_SIZE = 128;
+/** Fragment WGSL par défaut d'un nouveau preset de matériau (dégradé UV simple, sert d'exemple). */
+const DEFAULT_MATERIAL_FRAGMENT = `fn materialColor(uv: vec2<f32>, time: f32) -> vec3<f32> {
+  return vec3<f32>(uv.x, uv.y, 0.5 + 0.5 * sin(time));
+}`;
+/** Bitmap magenta plein cadre : signale un échec de bake de matériau (WGSL invalide) de façon
+ *  visible, plutôt qu'un noir indiscernable d'un chargement normal. */
+function magentaBitmap(size: number): Uint8ClampedArray {
+  const data = new Uint8ClampedArray(size * size * 4);
+  for (let i = 0; i < data.length; i += 4) { data[i] = 255; data[i + 1] = 0; data[i + 2] = 255; data[i + 3] = 255; }
+  return data;
+}
 
 export type EditorListener = () => void;
 
@@ -88,10 +107,27 @@ export class Editor {
   private _lastActiveSig = "";     // signature du set de calques actifs (clips) au dernier _push
   private readonly _animator = new Animator((id, channel, value) => this._applyChannel(id, channel, value));
 
+  // Historique (undo/redo) : snapshots pleins de document+composition (pas de command-pattern —
+  // trop de méthodes mutantes à instrumenter une par une vu le délai). Regroupées par rafale
+  // (debounce) pour qu'un drag continu (gizmo, scrub de clé) s'annule en un seul Ctrl+Z, pas un
+  // par micro-changement. Coût connu : un document avec de gros médias (vidéo/image en data URL
+  // embarquée) rend chaque snapshot plus lourd — acceptable pour ce projet, mais à garder en tête.
+  private _undoStack: HistorySnapshot[] = [];
+  private _redoStack: HistorySnapshot[] = [];
+  private _lastSnapshot: HistorySnapshot = this._snapshot();
+  private _historyBurstOpen = false;
+  private _historyTimer: ReturnType<typeof setTimeout> | null = null;
+  private _restoringHistory = false; // suspend l'enregistrement pendant qu'on restaure un snapshot
+
   // fills image/vidéo : décodage async + lecture, mis en cache hors du document (par id de shape)
   private readonly _imagePixels = new Map<string, DecodedBitmap>();
   private readonly _videoEls = new Map<string, HTMLVideoElement>();
   private _videoSampleCanvas: HTMLCanvasElement | null = null;
+  // fill matériau : bitmap baké (par id de shape) — voir `_bakeMaterialFor`/`MaterialBaker`
+  private readonly _materialPixels = new Map<string, DecodedBitmap>();
+  // shapes en fill matériau actuellement en cours de bake — évite les bakes qui se chevauchent
+  // (best-effort : on saute le tick si le précédent n'est pas fini, comme `EhubOutput._busy`)
+  private readonly _materialBaking = new Set<string>();
 
   // ————————————————————————————————— Lecture —————————————————————————————————
 
@@ -328,6 +364,40 @@ export class Editor {
     if (this._doc.selectedId) {
       this.deleteLayer(this._doc.selectedId);
     }
+  }
+
+  /**
+   * Coupe un calque en deux au frame donné (façon "Split Layer" AE, ⌘⇧D) : duplique le calque
+   * ET ses clés d'animation, l'original garde `[in, frame-1]`, le clone `[frame, out]`.
+   * Non applicable aux groupes ni aux calques média (audio/vidéo ont leur propre rasoir sur
+   * les `MediaClip` — voir `Layer.ts` `splitMediaClip`). Renvoie `false` en no-op (hors bornes,
+   * verrouillé, type non supporté) pour que l'appelant sache que rien n'a été coupé.
+   */
+  splitLayer(id: string, frame: number, durationFrames: number): boolean {
+    const layer = findLayer(this._doc.root, id);
+    const parent = findParent(this._doc.root, id);
+    if (!layer || !parent || layer.locked) return false;
+    if (layer.type === "group" || layer.type === "audio" || layer.type === "video") return false;
+    const clip = layer.clip ?? { in: 0, out: durationFrames };
+    const f = Math.round(frame);
+    if (f <= clip.in || f > clip.out) return false;
+
+    this._counter += 1;
+    const clone = structuredClone(layer) as typeof layer;
+    clone.id = `${layer.type}-split-${this._counter}`;
+    clone.name = `${layer.name} (2)`;
+    clone.clip = { in: f, out: clip.out };
+    layer.clip = { in: clip.in, out: f - 1 };
+
+    this._animator.cloneLayer(id, clone.id);
+
+    const idx = parent.children.findIndex((c) => c.id === id);
+    parent.children.splice(idx + 1, 0, clone);
+
+    this._doc.selectedId = clone.id;
+    this._push();
+    this._emit();
+    return true;
   }
 
   // ———————————————————————————————— Création ————————————————————————————————
@@ -682,6 +752,9 @@ export class Editor {
     if (fill.type === "image") this._decodeImage(id, fill.dataUrl);
     else this._imagePixels.delete(id);
 
+    if (fill.type === "material") void this._bakeMaterialFor(id, fill.presetId);
+    else this._materialPixels.delete(id);
+
     if (fill.type === "solid") {
       this._animator.autoKey(id, "color.r", this._frame, fill.color.r);
       this._animator.autoKey(id, "color.g", this._frame, fill.color.g);
@@ -728,6 +801,7 @@ export class Editor {
       if (this._fixturesDirty) this._pushFixtures();
     }
     this._syncVideos(frame, playing, fps);
+    this._rebakeMaterials();
   }
 
   /**
@@ -899,8 +973,76 @@ export class Editor {
       }
       case "video":
         return this._sampleVideoFrame(s.id) ?? FALLBACK_FILL;
+      case "material": {
+        const bmp = this._materialPixels.get(s.id);
+        return bmp ? { kind: "bitmap", ...bmp } : FALLBACK_FILL;
+      }
     }
   }
+
+  // ————————————————————————————————— Matériaux ─────————————————————————————————
+
+  /** Bibliothèque de matériaux du document (presets réutilisables entre shapes). */
+  listMaterialPresets(): readonly MaterialPreset[] {
+    return this._doc.materials ?? [];
+  }
+
+  /** Crée un nouveau preset (fichier de matériau) dans le document. Renvoie son id. */
+  addMaterialPreset(name: string, mode: MaterialMode = "basic", fragment = DEFAULT_MATERIAL_FRAGMENT, vertex = ""): string {
+    this._counter += 1;
+    const id = `material-${this._counter}`;
+    const preset: MaterialPreset = { id, name, mode, fragment, vertex };
+    this._doc.materials = [...(this._doc.materials ?? []), preset];
+    this._emit();
+    return id;
+  }
+
+  /** Édite un preset existant (nom/mode/fragment/vertex) et re-bake toutes les shapes qui l'utilisent. */
+  updateMaterialPreset(id: string, patch: Partial<Omit<MaterialPreset, "id">>): void {
+    const list = this._doc.materials ?? [];
+    const idx = list.findIndex((p) => p.id === id);
+    if (idx === -1) return;
+    const updated = { ...list[idx], ...patch };
+    this._doc.materials = list.map((p, i) => (i === idx ? updated : p));
+    this._emit();
+    for (const shape of this._collect((l): l is ShapeLayer => l.type === "shape" && l.fill.type === "material" && l.fill.presetId === id)) {
+      void this._bakeMaterialFor(shape.id, id);
+    }
+  }
+
+  /** Bake (async, best-effort) le preset d'une shape en bitmap CPU, mis en cache par id de shape.
+   *  Un échec de bake (WGSL invalide) affiche du magenta plutôt que du noir : sinon un matériau
+   *  cassé est indiscernable d'un matériau qui charge encore — voir la console pour le détail
+   *  de l'erreur (`MaterialBaker: échec de compilation/rendu du fragment WGSL`). */
+  private async _bakeMaterialFor(shapeId: string, presetId: string): Promise<void> {
+    const preset = (this._doc.materials ?? []).find((p) => p.id === presetId);
+    if (!preset || !this._engine || this._materialBaking.has(shapeId)) return;
+    this._materialBaking.add(shapeId);
+    try {
+      const rgba = (await this._engine.bakeMaterial(preset.fragment, preset.mode, this._frame / 24))
+        ?? magentaBitmap(this.materialBakeSize);
+      // la shape peut avoir changé de fill (ou été supprimée) pendant le bake async — ignore si périmé
+      const layer = findLayer(this._doc.root, shapeId);
+      if (!layer || layer.type !== "shape" || layer.fill.type !== "material" || layer.fill.presetId !== presetId) return;
+      this._materialPixels.set(shapeId, { data: rgba, width: this.materialBakeSize, height: this.materialBakeSize });
+      this._recomputeScene();
+      this._emit();
+    } finally {
+      this._materialBaking.delete(shapeId);
+    }
+  }
+
+  /** Relance le bake de toutes les shapes en fill matériau — pour qu'un fragment utilisant
+   *  `time` s'anime réellement au lieu de rester figé sur l'instant du dernier edit. Best-effort
+   *  (une shape déjà en cours de bake est sautée ce tick, voir `_materialBaking`). */
+  private _rebakeMaterials(): void {
+    for (const shape of this._collect((l): l is ShapeLayer => l.type === "shape" && l.fill.type === "material")) {
+      if (shape.fill.type === "material") void this._bakeMaterialFor(shape.id, shape.fill.presetId);
+    }
+  }
+
+  /** Taille (côté, en px) du bitmap baké pour un matériau — voir `MaterialBaker`. */
+  readonly materialBakeSize = 128;
 
   /** Décode une image (data URL) en pixels CPU via un canvas hors-écran, met en cache par id de shape. */
   private _decodeImage(id: string, dataUrl: string): void {
@@ -1094,6 +1236,62 @@ export class Editor {
   }
 
   private _emit(): void {
+    this._noteHistory();
     for (const listener of this._listeners) listener();
+  }
+
+  // ————————————————————————————————— Historique ————————————————————————————————
+
+  private _snapshot(): HistorySnapshot {
+    return { document: structuredClone(this._doc), composition: structuredClone(this._animator.composition) };
+  }
+
+  private _restore(snap: HistorySnapshot): void {
+    this._restoringHistory = true;
+    this._doc = structuredClone(snap.document);
+    this._animator.load(structuredClone(snap.composition));
+    this._push();
+    this._emit();
+    this._restoringHistory = false;
+  }
+
+  /** Appelé à chaque `_emit()` : ouvre/prolonge une rafale d'historique (debounce). */
+  private _noteHistory(): void {
+    if (this._restoringHistory) return;
+    if (!this._historyBurstOpen) {
+      this._undoStack.push(this._lastSnapshot);
+      if (this._undoStack.length > HISTORY_LIMIT) this._undoStack.shift();
+      this._redoStack = [];
+      this._historyBurstOpen = true;
+    }
+    if (this._historyTimer) clearTimeout(this._historyTimer);
+    this._historyTimer = setTimeout(() => {
+      this._lastSnapshot = this._snapshot();
+      this._historyBurstOpen = false;
+      this._historyTimer = null;
+    }, HISTORY_DEBOUNCE_MS);
+  }
+
+  canUndo(): boolean { return this._undoStack.length > 0; }
+  canRedo(): boolean { return this._redoStack.length > 0; }
+
+  undo(): void {
+    if (this._historyTimer) { clearTimeout(this._historyTimer); this._historyTimer = null; }
+    this._historyBurstOpen = false;
+    const prev = this._undoStack.pop();
+    if (!prev) return;
+    this._redoStack.push(this._snapshot());
+    this._restore(prev);
+    this._lastSnapshot = prev;
+  }
+
+  redo(): void {
+    if (this._historyTimer) { clearTimeout(this._historyTimer); this._historyTimer = null; }
+    this._historyBurstOpen = false;
+    const next = this._redoStack.pop();
+    if (!next) return;
+    this._undoStack.push(this._snapshot());
+    this._restore(next);
+    this._lastSnapshot = next;
   }
 }
