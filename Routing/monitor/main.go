@@ -446,12 +446,12 @@ func runArtnetFlushLoop(state *sharedState, sender *artnet.Sender, fps int) {
 	var seq byte
 	for range ticker.C {
 		state.mu.Lock()
-		frame := state.frame
-		flushErr := frame.Flush(sender, seq)
+		snapshot := state.frame.Snapshot() // copie memoire pure, verrou tenu tres brievement
 		state.mu.Unlock()
 
-		if flushErr != nil {
-			fmt.Println("erreur d'envoi ArtNet:", flushErr)
+		// envoi reseau HORS verrou : ne bloque jamais la reception eHuB
+		if err := wall.SendSnapshot(sender, seq, snapshot); err != nil {
+			fmt.Println("erreur d'envoi ArtNet:", err)
 		}
 		seq++
 	}

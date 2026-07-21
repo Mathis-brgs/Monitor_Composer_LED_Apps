@@ -267,11 +267,13 @@ func cmdListen(cfg wall.Config, s *artnet.Sender, args []string) {
 	fmt.Printf("ecoute eHuB sur le port %d, envoi ArtNet a %d Hz, Ctrl+C pour arreter\n", *port, *fps)
 	for range ticker.C {
 		mu.Lock()
-		flushErr := frame.Flush(s, seq)
+		snapshot := frame.Snapshot() // copie memoire pure, tres rapide : verrou tenu tres brievement
 		mu.Unlock()
 
-		if flushErr != nil {
-			fmt.Println("erreur d'envoi ArtNet:", flushErr)
+		// envoi reseau HORS verrou : la reception eHuB n'est jamais bloquee par
+		// plusieurs sendto() sequentiels (important sur une grosse installation)
+		if err := wall.SendSnapshot(s, seq, snapshot); err != nil {
+			fmt.Println("erreur d'envoi ArtNet:", err)
 		}
 		seq++
 	}
