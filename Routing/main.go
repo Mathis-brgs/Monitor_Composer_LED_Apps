@@ -42,6 +42,8 @@ func main() {
 		cmdChase(cfg, sender, os.Args[2:])
 	case "listen":
 		cmdListen(cfg, sender, os.Args[2:])
+	case "fixtures":
+		cmdFixtureTest(cfg, sender, os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -60,7 +62,8 @@ Commandes:
   fill   -strip N -r N -g N -b N          Remplit une bande (-strip 0 = tout le mur)
   sweep                                    Balaie chaque bande en rouge/vert/bleu (debug cablage)
   chase  -fps N                            Anime un point lumineux sur tout le mur (test perf/synchro)
-  listen -port N -fps N                    Ecoute le flux eHuB (config+update) et le route vers ArtNet`)
+  listen -port N -fps N                    Ecoute le flux eHuB (config+update) et le route vers ArtNet
+  fixtures                                  Teste projecteur + 4 lyres une par une (bypass front/eHuB, debug cross-talk)`)
 }
 
 func cmdSingle(cfg wall.Config, s *artnet.Sender, args []string) {
@@ -264,11 +267,13 @@ func cmdListen(cfg wall.Config, s *artnet.Sender, args []string) {
 	fmt.Printf("ecoute eHuB sur le port %d, envoi ArtNet a %d Hz, Ctrl+C pour arreter\n", *port, *fps)
 	for range ticker.C {
 		mu.Lock()
-		flushErr := frame.Flush(s, seq)
+		snapshot := frame.Snapshot() // copie memoire pure, tres rapide : verrou tenu tres brievement
 		mu.Unlock()
 
-		if flushErr != nil {
-			fmt.Println("erreur d'envoi ArtNet:", flushErr)
+		// envoi reseau HORS verrou : la reception eHuB n'est jamais bloquee par
+		// plusieurs sendto() sequentiels (important sur une grosse installation)
+		if err := wall.SendSnapshot(s, seq, snapshot); err != nil {
+			fmt.Println("erreur d'envoi ArtNet:", err)
 		}
 		seq++
 	}

@@ -76,12 +76,35 @@ interface LayerBase {
 
 export interface ShaderLayer extends LayerBase { type: "shader"; shader: ShaderId; params: Record<string, number>; color: RGB; }
 
-/** Remplissage d'une shape : couleur unie, dégradé linéaire (angle en radians), ou média (data URL, embarqué dans le projet). */
+/** Remplissage d'une shape : couleur unie, dégradé linéaire (angle en radians), média (data URL,
+ *  embarqué dans le projet), ou matériau personnalisé (référence un `MaterialPreset` du document). */
 export type Fill =
   | { type: "solid"; color: RGB }
   | { type: "gradient"; from: RGB; to: RGB; angle: number }
   | { type: "image"; dataUrl: string }
-  | { type: "video"; dataUrl: string };
+  | { type: "video"; dataUrl: string }
+  | { type: "material"; presetId: string };
+
+/** Mode de rendu d'un matériau : "basic" = couleur brute (unlit), "emission" = même couleur
+ *  boostée en intensité (effet "qui brille" pour des LEDs pilotées en valeurs brutes — pas de
+ *  PBR/éclairage réaliste, jamais de "standard" : le mur est un afficheur, pas une scène éclairée). */
+export type MaterialMode = "basic" | "emission";
+
+/**
+ * Matériau personnalisé : un fragment WGSL (TSL `wgslFn`) baké hors-écran en texture, puis
+ * échantillonné comme un fill bitmap classique (même chemin qu'image/vidéo) — voir
+ * `Editor._resolveFill` / `MaterialBaker`. Stocké dans `Document.materials`, réutilisable par
+ * plusieurs shapes via `Fill.presetId` (façon bibliothèque de presets).
+ * `vertex` est réservé : un fill est une texture plate échantillonnée sur la géométrie de la
+ * shape, pas une géométrie déformable — il n'est pas encore évalué au rendu.
+ */
+export interface MaterialPreset {
+  id: string;
+  name: string;
+  mode: MaterialMode;
+  fragment: string;
+  vertex: string;
+}
 
 export interface ShapeLayer extends LayerBase { type: "shape"; shape: ShapeKind; fill: Fill; /** afficher le wireframe (helper d'édition) dans l'Editor 3D */ showHelper: boolean; }
 export interface GroupLayer extends LayerBase { type: "group"; children: Layer[]; }
@@ -150,7 +173,8 @@ export function fillPreviewColor(fill: Fill): RGB {
     case "solid": return fill.color;
     case "gradient": return { r: (fill.from.r + fill.to.r) / 2, g: (fill.from.g + fill.to.g) / 2, b: (fill.from.b + fill.to.b) / 2 };
     case "image":
-    case "video": return { r: 1, g: 1, b: 1 };
+    case "video":
+    case "material": return { r: 1, g: 1, b: 1 };
   }
 }
 
@@ -285,8 +309,9 @@ export function wouldCycle(root: GroupLayer, id: string, parentId: string): bool
   return false;
 }
 
-/** Document = arbre (racine) + groupe où l'on se trouve + sélection. */
-export interface Document { root: GroupLayer; activeGroupId: string; selectedId: string | null; }
+/** Document = arbre (racine) + groupe où l'on se trouve + sélection + bibliothèque de matériaux.
+ *  `materials` optionnel : absent sur les documents/projets antérieurs à cette fonctionnalité. */
+export interface Document { root: GroupLayer; activeGroupId: string; selectedId: string | null; materials?: MaterialPreset[]; }
 
 const vec3 = (x = 0, y = 0, z = 0): Vec3 => ({ x, y, z });
 const ORIGIN = (): Transform => ({ position: vec3(), rotation: vec3(), scale: vec3(0.3, 0.3, 0.3) });

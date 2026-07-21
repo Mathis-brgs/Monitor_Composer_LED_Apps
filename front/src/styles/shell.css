@@ -227,6 +227,24 @@ body {
   opacity: 1;
 }
 
+/* Bascule d'alignement pres des bords du viewport (voir tooltip-edge.ts) :
+   evite que la bulle, centree par defaut, ne deborde et soit coupee. */
+.tooltip--edge-left::after {
+  left: 0;
+  transform: none;
+}
+
+.tooltip--edge-right::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.tooltip--edge-top::after {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
 /* barre d'outils viewport = verticale à gauche → tooltip à droite du bouton */
 .viewport-toolbar [data-tooltip]::after {
   top: 50%;
@@ -570,6 +588,7 @@ body {
 .seq__topbar-actions {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: var(--space-6);
 }
 
@@ -903,6 +922,8 @@ body {
 }
 
 .seq__zoom-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
   font-size: var(--fs-3);
   color: var(--dim);
   padding: var(--space-2) var(--space-8);
@@ -1361,7 +1382,8 @@ body {
 .seq__eye,
 .seq__solo,
 .seq__lock,
-.seq__mute {
+.seq__mute,
+.seq__delete {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -1374,6 +1396,8 @@ body {
   border: none;
   cursor: pointer;
 }
+
+.seq__delete:hover { color: var(--danger, #e57373); }
 
 .seq__solo,
 .seq__mute {
@@ -1654,6 +1678,10 @@ body {
 .compositor__add:hover {
   color: var(--txt);
   border-color: var(--acc-border);
+}
+
+.layer-tree:focus {
+  outline: none;
 }
 
 .layer {
@@ -2164,6 +2192,25 @@ body {
   border-color: var(--acc-border);
 }
 
+.insp-code {
+  flex: 1;
+  min-width: 0;
+  min-height: 96px;
+  padding: var(--space-4) var(--space-8);
+  background: var(--row);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-sm);
+  font: 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color: var(--txt);
+  resize: vertical;
+  white-space: pre;
+}
+
+.insp-code:focus {
+  outline: none;
+  border-color: var(--acc-border);
+}
+
 .insp-slider {
   display: flex;
   align-items: center;
@@ -2331,6 +2378,10 @@ body {
 }
 
 .seq-meta {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: var(--fs-3);
   color: var(--faint);
   letter-spacing: var(--ls-caps);

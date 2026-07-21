@@ -6,6 +6,7 @@ import {
   wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
   type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer, type VideoLayer,
   type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type MediaClip, type SpotChannels, type LyreChannels,
+  type MaterialPreset, type MaterialMode,
 } from "@domain/Layer.ts";
 
 /** Patch de transform : chaque canal (position/rotation/échelle) partiellement modifiable. */
@@ -33,10 +34,31 @@ export interface MotionPoint { frame: number; x: number; y: number; z: number; }
 
 /** Pixels décodés d'une image (ou d'une frame vidéo) — mis en cache hors du document (non sérialisable). */
 interface DecodedBitmap { data: Uint8ClampedArray; width: number; height: number; }
-/** Résolution de secours tant qu'une image/vidéo n'est pas encore décodée. */
-const FALLBACK_FILL: ShapeFill = { kind: "solid", color: { r: 1, g: 1, b: 1 } };
-/** Taille d'échantillonnage d'une frame vidéo : suffisant pour un mur LED, coûte peu à relire chaque frame. */
-const VIDEO_SAMPLE_SIZE = 64;
+
+/** Snapshot d'historique (undo/redo) : tout ce qui définit l'état éditable. */
+interface HistorySnapshot { compositions: Record<string, Composition>; nav: NavFrame[] }
+/** Rafales groupées en un seul pas d'historique si elles se suivent à moins de 400ms. */
+const HISTORY_DEBOUNCE_MS = 400;
+/** Profondeur max de l'historique — borne la mémoire (snapshots pleins, voir `HistorySnapshot`). */
+const HISTORY_LIMIT = 50;
+/** Résolution de secours tant qu'une image/vidéo n'est pas encore décodée : noir
+ *  (pas de flash blanc sur le vrai mur pendant le chargement) — le wireframe/helper
+ *  reste visible dans l'éditeur 3D pour situer la forme en attendant. */
+const FALLBACK_FILL: ShapeFill = { kind: "solid", color: { r: 0, g: 0, b: 0 } };
+/** Taille d'échantillonnage d'une frame vidéo : alignée sur la résolution max du mur (128×128),
+ *  sinon le rendu est visiblement pixelisé dès qu'une forme couvre une bonne partie du mur. */
+const VIDEO_SAMPLE_SIZE = 128;
+/** Fragment WGSL par défaut d'un nouveau preset de matériau (dégradé UV simple, sert d'exemple). */
+const DEFAULT_MATERIAL_FRAGMENT = `fn materialColor(uv: vec2<f32>, time: f32) -> vec3<f32> {
+  return vec3<f32>(uv.x, uv.y, 0.5 + 0.5 * sin(time));
+}`;
+/** Bitmap magenta plein cadre : signale un échec de bake de matériau (WGSL invalide) de façon
+ *  visible, plutôt qu'un noir indiscernable d'un chargement normal. */
+function magentaBitmap(size: number): Uint8ClampedArray {
+  const data = new Uint8ClampedArray(size * size * 4);
+  for (let i = 0; i < data.length; i += 4) { data[i] = 255; data[i + 1] = 0; data[i + 2] = 255; data[i + 3] = 255; }
+  return data;
+}
 
 export type EditorListener = () => void;
 
@@ -69,6 +91,7 @@ export class Editor {
   private _frame = 0;              // dernier frame évalué (instant courant pour l'auto-key)
   private _fps = 24;              // fps courant (mapping temporel des comps imbriquées)
   private _sceneDirty = false;     // un canal de shape a changé → 1 seul recompute par frame
+  private _fixturesDirty = false;  // un canal fx (spot/lyre) a changé → 1 seul push par frame
   private _lastActiveSig = "";     // signature du set de calques actifs (clips) au dernier _push
   // compositors des comps imbriquées (précomps/prérendus), par id de comp (créés à la demande).
   private readonly _subs = new Map<string, SubRenderer>();
@@ -81,6 +104,15 @@ export class Editor {
   // Vue d'édition active : `_doc.root === activeComp().root` — tout le code d'arbre reste inchangé.
   private _doc: Document = { root: this._compositions.main.root, activeGroupId: this._compositions.main.root.id, selectedId: null };
 
+  // Historique (undo/redo) : snapshots pleins de l'état éditable (compositions + navigation),
+  // regroupés par rafale (debounce) — un drag continu s'annule en un seul Ctrl+Z.
+  private _undoStack: HistorySnapshot[] = [];
+  private _redoStack: HistorySnapshot[] = [];
+  private _lastSnapshot: HistorySnapshot = this._snapshot();
+  private _historyBurstOpen = false;
+  private _historyTimer: ReturnType<typeof setTimeout> | null = null;
+  private _restoringHistory = false; // suspend l'enregistrement pendant qu'on restaure un snapshot
+
   constructor() {
     this._animator.load(this._compositions.main);
   }
@@ -89,6 +121,11 @@ export class Editor {
   private readonly _imagePixels = new Map<string, DecodedBitmap>();
   private readonly _videoEls = new Map<string, HTMLVideoElement>();
   private _videoSampleCanvas: HTMLCanvasElement | null = null;
+  // fill matériau : bitmap baké (par id de shape) — voir `_bakeMaterialFor`/`MaterialBaker`
+  private readonly _materialPixels = new Map<string, DecodedBitmap>();
+  // shapes en fill matériau actuellement en cours de bake — évite les bakes qui se chevauchent
+  // (best-effort : on saute le tick si le précédent n'est pas fini, comme `EhubOutput._busy`)
+  private readonly _materialBaking = new Set<string>();
 
   // ————————————————————————————————— Lecture —————————————————————————————————
 
@@ -259,6 +296,9 @@ export class Editor {
     } else if (group === "color") {
       if (layer.type === "shader") this.setColor(id, { ...layer.color, [key]: value } as RGB);
       else if (layer.type === "shape" && layer.fill.type === "solid") this.setFill(id, { type: "solid", color: { ...layer.fill.color, [key]: value } as RGB });
+    } else if (group === "fx") {
+      if (layer.type === "spot") this.setSpotChannels(id, { [key]: Math.round(value) } as Partial<SpotChannels>);
+      else if (layer.type === "lyre") this.setLyreChannels(id, { [key]: Math.round(value) } as Partial<LyreChannels>);
     }
   }
 
@@ -452,6 +492,40 @@ export class Editor {
     reassign(copy);
     copy.name = layer.name + " copie";
     return copy;
+  }
+
+  /**
+   * Coupe un calque en deux au frame donné (façon "Split Layer" AE, ⌘⇧D) : duplique le calque
+   * ET ses clés d'animation, l'original garde `[in, frame-1]`, le clone `[frame, out]`.
+   * Non applicable aux groupes ni aux calques média (audio/vidéo ont leur propre rasoir sur
+   * les `MediaClip` — voir `Layer.ts` `splitMediaClip`). Renvoie `false` en no-op (hors bornes,
+   * verrouillé, type non supporté) pour que l'appelant sache que rien n'a été coupé.
+   */
+  splitLayer(id: string, frame: number, durationFrames: number): boolean {
+    const layer = findLayer(this._doc.root, id);
+    const parent = findParent(this._doc.root, id);
+    if (!layer || !parent || layer.locked) return false;
+    if (layer.type === "group" || layer.type === "audio" || layer.type === "video") return false;
+    const clip = layer.clip ?? { in: 0, out: durationFrames };
+    const f = Math.round(frame);
+    if (f <= clip.in || f > clip.out) return false;
+
+    this._counter += 1;
+    const clone = structuredClone(layer) as typeof layer;
+    clone.id = `${layer.type}-split-${this._counter}`;
+    clone.name = `${layer.name} (2)`;
+    clone.clip = { in: f, out: clip.out };
+    layer.clip = { in: clip.in, out: f - 1 };
+
+    this._animator.cloneLayer(id, clone.id);
+
+    const idx = parent.children.findIndex((c) => c.id === id);
+    parent.children.splice(idx + 1, 0, clone);
+
+    this._doc.selectedId = clone.id;
+    this._push();
+    this._emit();
+    return true;
   }
 
   // ———————————————————————————————— Création ————————————————————————————————
@@ -876,6 +950,9 @@ export class Editor {
     if (fill.type === "image") this._decodeImage(id, fill.dataUrl);
     else this._imagePixels.delete(id);
 
+    if (fill.type === "material") void this._bakeMaterialFor(id, fill.presetId);
+    else this._materialPixels.delete(id);
+
     if (fill.type === "solid") {
       this._animator.autoKey(id, "color.r", this._frame, fill.color.r);
       this._animator.autoKey(id, "color.g", this._frame, fill.color.g);
@@ -889,6 +966,10 @@ export class Editor {
     const layer = findLayer(this._doc.root, id);
     if (!layer || layer.type !== "spot") return;
     layer.channels = { ...layer.channels, ...patch };
+    for (const k in patch) {
+      const v = patch[k as keyof SpotChannels];
+      if (v !== undefined) this._animator.autoKey(id, "fx." + k, this._frame, v);
+    }
     this._pushFixtures();
     this._emit();
   }
@@ -897,44 +978,76 @@ export class Editor {
     const layer = findLayer(this._doc.root, id);
     if (!layer || layer.type !== "lyre") return;
     layer.channels = { ...layer.channels, ...patch };
+    for (const k in patch) {
+      const v = patch[k as keyof LyreChannels];
+      if (v !== undefined) this._animator.autoKey(id, "fx." + k, this._frame, v);
+    }
     this._pushFixtures();
     this._emit();
   }
 
-  /** appelé chaque frame moteur : évalue les keyframes puis (au besoin) re-rasterise les shapes. */
+  /** appelé chaque frame moteur : évalue les keyframes puis (au besoin) re-rasterise/repousse. */
   tick(frame: number, playing = false, fps = 24): void {
     this._frame = frame;
     this._fps = fps;
     this._sceneDirty = false;
+    this._fixturesDirty = false;
     this._animator.evaluate(frame);
     if (this._activeSignature() !== this._lastActiveSig) {
-      this._push(); // un calque a franchi un bord de clip → reconstruit la pile (+ `_syncNested`)
+      this._push(); // franchissement de bord de clip → reconstruit la pile (+ `_syncNested`)
     } else {
       if (this._sceneDirty || this._videoEls.size > 0) this._recomputeScene();
+      if (this._fixturesDirty) this._pushFixtures();
       this._syncNested(); // maj des comps imbriquées (animation/temps) même sans rebuild de la pile active
     }
     this._syncVideos(frame, playing, fps);
+    this._rebakeMaterials();
   }
 
-  /** Synchronise les `<video>` plein-cadre sur le playhead : play en lecture, seek en pause/scrub. */
+  /**
+   * Synchronise les `<video>` sur le playhead : play en lecture, seek en pause/scrub.
+   * Couvre les 2 usages (calque vidéo plein-cadre avec montage, ET fill vidéo d'une
+   * shape) — les deux doivent respecter la timeline, pas juste boucler en roue libre.
+   */
   private _syncVideos(frame: number, playing: boolean, fps: number): void {
+    const rate = fps > 0 ? fps : 24;
     for (const [id, el] of this._videoEls) {
       const layer = findLayer(this._doc.root, id);
-      if (layer?.type !== "video") continue; // les fills vidéo de shapes gardent leur boucle libre
-      const clip = layer.clips?.find((c) => mediaClipActiveAt(c, frame));
-      const active = layer.visible && (clip !== undefined || (!layer.clips && layerActiveAt(layer.clip, frame)));
-      if (!active) { if (!el.paused) el.pause(); continue; }
-      const targetSec = (clip ? mediaSourceFrameAt(clip, frame) : frame) / (fps > 0 ? fps : 24);
-      if (playing) {
-        if (el.paused) void el.play().catch(() => {});
-        if (Math.abs(el.currentTime - targetSec) > 0.2) el.currentTime = targetSec; // reslave
-      } else {
-        if (!el.paused) el.pause();
-        el.currentTime = targetSec; // scrub image par image
+      if (!layer) continue;
+
+      if (layer.type === "video") {
+        const clip = layer.clips?.find((c) => mediaClipActiveAt(c, frame));
+        const active = layer.visible && (clip !== undefined || (!layer.clips && layerActiveAt(layer.clip, frame)));
+        if (!active) { if (!el.paused) el.pause(); continue; }
+        const targetSec = (clip ? mediaSourceFrameAt(clip, frame) : frame) / rate;
+        this._driveVideoEl(el, targetSec, playing);
+        // fondu du clip → opacité du layer moteur (mise à jour continue)
+        const live = this._videoLive.get(id);
+        if (live && clip) live.opacity = layer.opacity * mediaFadeGain(clip, frame);
+        continue;
       }
-      // fondu du clip → opacité du layer moteur (mise à jour continue)
-      const live = this._videoLive.get(id);
-      if (live && clip) live.opacity = layer.opacity * mediaFadeGain(clip, frame);
+
+      if (layer.type === "shape" && layer.fill.type === "video") {
+        const active = layer.visible && layerActiveAt(layer.clip, frame);
+        if (!active) { if (!el.paused) el.pause(); continue; }
+        // pas de montage (MediaClip) pour un fill : lecture directe frame→temps, bouclée
+        // sur la durée réelle de la source une fois connue (sinon avance en continu).
+        const dur = el.duration && isFinite(el.duration) && el.duration > 0 ? el.duration : Infinity;
+        const raw = frame / rate;
+        const targetSec = isFinite(dur) ? raw % dur : raw;
+        this._driveVideoEl(el, targetSec, playing);
+      }
+    }
+  }
+
+  /** Applique play/pause + position à un `<video>` (reslave en lecture, seek exact en pause). */
+  private _driveVideoEl(el: HTMLVideoElement, targetSec: number, playing: boolean): void {
+    if (playing) {
+      if (el.paused) void el.play().catch(() => {});
+      if (Math.abs(el.currentTime - targetSec) > 0.2) el.currentTime = targetSec; // reslave
+    } else {
+      if (!el.paused) el.pause();
+      el.currentTime = targetSec; // scrub image par image
     }
   }
 
@@ -983,6 +1096,15 @@ export class Editor {
         layer.fill = { type: "solid", color: { ...layer.fill.color, [c]: value } as RGB };
         this._sceneDirty = true;
       }
+    } else if (group === "fx") {
+      const v = Math.round(value);
+      if (layer.type === "spot" && key in layer.channels) {
+        layer.channels = { ...layer.channels, [key]: v };
+        this._fixturesDirty = true;
+      } else if (layer.type === "lyre" && key in layer.channels) {
+        layer.channels = { ...layer.channels, [key]: v };
+        this._fixturesDirty = true;
+      }
     }
   }
 
@@ -1003,6 +1125,9 @@ export class Editor {
       const c = key as keyof RGB;
       if (layer.type === "shader") return layer.color[c];
       if (layer.type === "shape" && layer.fill.type === "solid") return layer.fill.color[c];
+    }
+    if (group === "fx" && (layer.type === "spot" || layer.type === "lyre") && key in layer.channels) {
+      return (layer.channels as unknown as Record<string, number>)[key];
     }
     return undefined;
   }
@@ -1068,8 +1193,76 @@ export class Editor {
       }
       case "video":
         return this._sampleVideoFrame(s.id) ?? FALLBACK_FILL;
+      case "material": {
+        const bmp = this._materialPixels.get(s.id);
+        return bmp ? { kind: "bitmap", ...bmp } : FALLBACK_FILL;
+      }
     }
   }
+
+  // ————————————————————————————————— Matériaux ─────————————————————————————————
+
+  /** Bibliothèque de matériaux du document (presets réutilisables entre shapes). */
+  listMaterialPresets(): readonly MaterialPreset[] {
+    return this._doc.materials ?? [];
+  }
+
+  /** Crée un nouveau preset (fichier de matériau) dans le document. Renvoie son id. */
+  addMaterialPreset(name: string, mode: MaterialMode = "basic", fragment = DEFAULT_MATERIAL_FRAGMENT, vertex = ""): string {
+    this._counter += 1;
+    const id = `material-${this._counter}`;
+    const preset: MaterialPreset = { id, name, mode, fragment, vertex };
+    this._doc.materials = [...(this._doc.materials ?? []), preset];
+    this._emit();
+    return id;
+  }
+
+  /** Édite un preset existant (nom/mode/fragment/vertex) et re-bake toutes les shapes qui l'utilisent. */
+  updateMaterialPreset(id: string, patch: Partial<Omit<MaterialPreset, "id">>): void {
+    const list = this._doc.materials ?? [];
+    const idx = list.findIndex((p) => p.id === id);
+    if (idx === -1) return;
+    const updated = { ...list[idx], ...patch };
+    this._doc.materials = list.map((p, i) => (i === idx ? updated : p));
+    this._emit();
+    for (const shape of this._collect((l): l is ShapeLayer => l.type === "shape" && l.fill.type === "material" && l.fill.presetId === id)) {
+      void this._bakeMaterialFor(shape.id, id);
+    }
+  }
+
+  /** Bake (async, best-effort) le preset d'une shape en bitmap CPU, mis en cache par id de shape.
+   *  Un échec de bake (WGSL invalide) affiche du magenta plutôt que du noir : sinon un matériau
+   *  cassé est indiscernable d'un matériau qui charge encore — voir la console pour le détail
+   *  de l'erreur (`MaterialBaker: échec de compilation/rendu du fragment WGSL`). */
+  private async _bakeMaterialFor(shapeId: string, presetId: string): Promise<void> {
+    const preset = (this._doc.materials ?? []).find((p) => p.id === presetId);
+    if (!preset || !this._engine || this._materialBaking.has(shapeId)) return;
+    this._materialBaking.add(shapeId);
+    try {
+      const rgba = (await this._engine.bakeMaterial(preset.fragment, preset.mode, this._frame / 24))
+        ?? magentaBitmap(this.materialBakeSize);
+      // la shape peut avoir changé de fill (ou été supprimée) pendant le bake async — ignore si périmé
+      const layer = findLayer(this._doc.root, shapeId);
+      if (!layer || layer.type !== "shape" || layer.fill.type !== "material" || layer.fill.presetId !== presetId) return;
+      this._materialPixels.set(shapeId, { data: rgba, width: this.materialBakeSize, height: this.materialBakeSize });
+      this._recomputeScene();
+      this._emit();
+    } finally {
+      this._materialBaking.delete(shapeId);
+    }
+  }
+
+  /** Relance le bake de toutes les shapes en fill matériau — pour qu'un fragment utilisant
+   *  `time` s'anime réellement au lieu de rester figé sur l'instant du dernier edit. Best-effort
+   *  (une shape déjà en cours de bake est sautée ce tick, voir `_materialBaking`). */
+  private _rebakeMaterials(): void {
+    for (const shape of this._collect((l): l is ShapeLayer => l.type === "shape" && l.fill.type === "material")) {
+      if (shape.fill.type === "material") void this._bakeMaterialFor(shape.id, shape.fill.presetId);
+    }
+  }
+
+  /** Taille (côté, en px) du bitmap baké pour un matériau — voir `MaterialBaker`. */
+  readonly materialBakeSize = 128;
 
   /** Décode une image (data URL) en pixels CPU via un canvas hors-écran, met en cache par id de shape. */
   private _decodeImage(id: string, dataUrl: string): void {
@@ -1383,6 +1576,66 @@ export class Editor {
   }
 
   private _emit(): void {
+    this._noteHistory();
     for (const listener of this._listeners) listener();
+  }
+
+  // ————————————————————————————————— Historique ————————————————————————————————
+
+  private _snapshot(): HistorySnapshot {
+    return { compositions: structuredClone(this._compositions), nav: structuredClone(this._nav) };
+  }
+
+  private _restore(snap: HistorySnapshot): void {
+    this._restoringHistory = true;
+    this._compositions = structuredClone(snap.compositions);
+    this._nav = structuredClone(snap.nav);
+    const top = this._nav[this._nav.length - 1];
+    const comp = this._compositions[top.compId] ?? this._compositions[Object.keys(this._compositions)[0]];
+    this._doc = { root: comp.root, activeGroupId: findGroup(comp.root, top.groupId) ? top.groupId : comp.root.id, selectedId: top.selectedId };
+    this._animator.load(comp);
+    this._push();
+    this._emit();
+    this._restoringHistory = false;
+  }
+
+  /** Appelé à chaque `_emit()` : ouvre/prolonge une rafale d'historique (debounce). */
+  private _noteHistory(): void {
+    if (this._restoringHistory) return;
+    if (!this._historyBurstOpen) {
+      this._undoStack.push(this._lastSnapshot);
+      if (this._undoStack.length > HISTORY_LIMIT) this._undoStack.shift();
+      this._redoStack = [];
+      this._historyBurstOpen = true;
+    }
+    if (this._historyTimer) clearTimeout(this._historyTimer);
+    this._historyTimer = setTimeout(() => {
+      this._lastSnapshot = this._snapshot();
+      this._historyBurstOpen = false;
+      this._historyTimer = null;
+    }, HISTORY_DEBOUNCE_MS);
+  }
+
+  canUndo(): boolean { return this._undoStack.length > 0; }
+  canRedo(): boolean { return this._redoStack.length > 0; }
+
+  undo(): void {
+    if (this._historyTimer) { clearTimeout(this._historyTimer); this._historyTimer = null; }
+    this._historyBurstOpen = false;
+    const prev = this._undoStack.pop();
+    if (!prev) return;
+    this._redoStack.push(this._snapshot());
+    this._restore(prev);
+    this._lastSnapshot = prev;
+  }
+
+  redo(): void {
+    if (this._historyTimer) { clearTimeout(this._historyTimer); this._historyTimer = null; }
+    this._historyBurstOpen = false;
+    const next = this._redoStack.pop();
+    if (!next) return;
+    this._undoStack.push(this._snapshot());
+    this._restore(next);
+    this._lastSnapshot = next;
   }
 }

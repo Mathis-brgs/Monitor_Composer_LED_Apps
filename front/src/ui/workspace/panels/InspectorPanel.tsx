@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, Show, type Accessor, type JSX } from "solid-js";
 import type { Editor } from "@core/Editor.ts";
-import type { Fill, GroupLayer, Layer, LyreLayer, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
+import type { Fill, GroupLayer, Layer, LyreLayer, MaterialMode, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
 import { fromStore } from "@ui/solid/store.ts";
 import { solidPanel } from "@ui/solid/mount.ts";
 import { Checkbox, ColorField, MediaField, NumberField, Row, Section, Segmented, Slider, TextField } from "@ui/solid/controls.tsx";
@@ -143,7 +143,9 @@ function ByteSlider(props: { value: number; onInput: (v: number) => void }): JSX
 }
 
 const DEFAULT_FILL_COLOR: RGB = { r: 1, g: 0.541, b: 0.239 };
-const FILL_TYPES: Fill["type"][] = ["solid", "gradient", "image", "video"];
+const FILL_TYPES: Fill["type"][] = ["solid", "gradient", "image", "video", "material"];
+const FILL_LABELS: Record<Fill["type"], string> = { solid: "Couleur", gradient: "Dégradé", image: "Image", video: "Vidéo", material: "Matériau" };
+const MATERIAL_MODES: MaterialMode[] = ["basic", "emission"];
 
 /**
  * Champs du remplissage d'une shape, contextuels au type courant. Signal local
@@ -162,19 +164,27 @@ function FillFields(props: { editor: Editor; id: string; fill: Fill }): JSX.Elem
   const asGradient = () => fill() as Extract<Fill, { type: "gradient" }>;
   const asImage = () => fill() as Extract<Fill, { type: "image" }>;
   const asVideo = () => fill() as Extract<Fill, { type: "video" }>;
+  const asMaterial = () => fill() as Extract<Fill, { type: "material" }>;
   return (
     <>
       <Row label="Remplissage">
-        <Segmented
-          options={["Couleur", "Dégradé", "Image", "Vidéo"]}
-          active={FILL_TYPES.indexOf(fill().type)}
-          onChange={(i) => {
-            const type = FILL_TYPES[i];
+        <select
+          class="insp-text insp-control"
+          value={fill().type}
+          onChange={(e) => {
+            const type = (e.currentTarget as HTMLSelectElement).value as Fill["type"];
             if (type === "solid") emit({ type, color: DEFAULT_FILL_COLOR });
             else if (type === "gradient") emit({ type, from: DEFAULT_FILL_COLOR, to: { r: 0.11, g: 0.055, b: 0.024 }, angle: 0 });
+            else if (type === "material") {
+              const existing = editor.listMaterialPresets()[0];
+              const presetId = existing ? existing.id : editor.addMaterialPreset(`Matériau ${editor.listMaterialPresets().length + 1}`);
+              emit({ type, presetId });
+            }
             else emit({ type, dataUrl: "" });
           }}
-        />
+        >
+          <For each={FILL_TYPES}>{(t) => <option value={t}>{FILL_LABELS[t]}</option>}</For>
+        </select>
       </Row>
       <Show when={fill().type === "solid"}>
         <Row label="Couleur">
@@ -203,7 +213,66 @@ function FillFields(props: { editor: Editor; id: string; fill: Fill }): JSX.Elem
           <MediaField kind="video" value={asVideo().dataUrl || undefined} onInput={(dataUrl) => emit({ type: "video", dataUrl })} />
         </Row>
       </Show>
+      <Show when={fill().type === "material"}>
+        <MaterialFields editor={editor} presetId={asMaterial().presetId} onRelink={(presetId) => emit({ type: "material", presetId })} />
+      </Show>
     </>
+  );
+}
+
+/**
+ * Champs d'un matériau personnalisé : nom + preset (lié à un preset existant du document ou
+ * nouveau), mode (Basic/Émission — jamais de "Standard"/PBR, le mur est un afficheur, pas une
+ * scène éclairée) et fragment WGSL. Le fragment est rebaké (async, hors-écran) à chaque édition
+ * validée — voir `Editor.updateMaterialPreset`/`MaterialBaker`.
+ */
+function MaterialFields(props: { editor: Editor; presetId: string; onRelink: (presetId: string) => void }): JSX.Element {
+  const { editor } = props;
+  const presets = fromStore(editor, () => editor.listMaterialPresets());
+  const current = () => presets().find((p) => p.id === props.presetId);
+  return (
+    <Show when={current()}>
+      {(preset) => (
+        <>
+          <Row label="Nom">
+            <TextField value={preset().name} onInput={(name) => editor.updateMaterialPreset(preset().id, { name })} />
+          </Row>
+          <Row label="Preset">
+            <select
+              class="insp-text insp-control"
+              value={preset().id}
+              onChange={(e) => props.onRelink((e.currentTarget as HTMLSelectElement).value)}
+            >
+              <For each={presets()}>{(p) => <option value={p.id}>{p.name}</option>}</For>
+            </select>
+          </Row>
+          <Row label="">
+            <button
+              type="button"
+              class="btn"
+              onClick={() => props.onRelink(editor.addMaterialPreset(`Matériau ${presets().length + 1}`))}
+            >
+              Nouveau preset
+            </button>
+          </Row>
+          <Row label="Mode">
+            <Segmented
+              options={["Basic", "Émission"]}
+              active={MATERIAL_MODES.indexOf(preset().mode)}
+              onChange={(i) => editor.updateMaterialPreset(preset().id, { mode: MATERIAL_MODES[i] })}
+            />
+          </Row>
+          <Row label="Fragment (WGSL)">
+            <textarea
+              class="insp-code"
+              value={preset().fragment}
+              spellcheck={false}
+              onChange={(e) => editor.updateMaterialPreset(preset().id, { fragment: (e.currentTarget as HTMLTextAreaElement).value })}
+            />
+          </Row>
+        </>
+      )}
+    </Show>
   );
 }
 
@@ -349,8 +418,12 @@ function SpotBody(props: { editor: Editor; node: SpotLayer; changed: Accessor<un
             value={{ r: channels().r / 255, g: channels().g / 255, b: channels().b / 255 }}
             onInput={(c) => editor.setSpotChannels(id, { r: Math.round(c.r * 255), g: Math.round(c.g * 255), b: Math.round(c.b * 255) })}
           />
+          <KeyDot editor={editor} id={id} channels={["fx.r", "fx.g", "fx.b"]} />
         </Row>
-        <Row label="Blanc"><ByteSlider value={channels().w} onInput={(v) => editor.setSpotChannels(id, { w: v })} /></Row>
+        <Row label="Blanc">
+          <ByteSlider value={channels().w} onInput={(v) => editor.setSpotChannels(id, { w: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.w"]} />
+        </Row>
       </Section>
       <Section title="Danger"><DeleteRow editor={editor} id={id} /></Section>
     </>
@@ -379,24 +452,55 @@ function LyreBody(props: { editor: Editor; node: LyreLayer; changed: Accessor<un
         <Row label=""><div class="insp-hint">Bloc de 13 canaux : {baseChannel()}-{baseChannel() + 12}</div></Row>
       </Section>
       <Section title="Mouvement">
-        <Row label="Pan"><ByteSlider value={channels().pan} onInput={(v) => set({ pan: v })} /></Row>
-        <Row label="Pan fin"><ByteSlider value={channels().panFine} onInput={(v) => set({ panFine: v })} /></Row>
-        <Row label="Tilt"><ByteSlider value={channels().tilt} onInput={(v) => set({ tilt: v })} /></Row>
-        <Row label="Tilt fin"><ByteSlider value={channels().tiltFine} onInput={(v) => set({ tiltFine: v })} /></Row>
-        <Row label="Vitesse"><ByteSlider value={channels().speed} onInput={(v) => set({ speed: v })} /></Row>
+        <Row label="Pan">
+          <ByteSlider value={channels().pan} onInput={(v) => set({ pan: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.pan"]} />
+        </Row>
+        <Row label="Pan fin">
+          <ByteSlider value={channels().panFine} onInput={(v) => set({ panFine: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.panFine"]} />
+        </Row>
+        <Row label="Tilt">
+          <ByteSlider value={channels().tilt} onInput={(v) => set({ tilt: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.tilt"]} />
+        </Row>
+        <Row label="Tilt fin">
+          <ByteSlider value={channels().tiltFine} onInput={(v) => set({ tiltFine: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.tiltFine"]} />
+        </Row>
+        <Row label="Vitesse">
+          <ByteSlider value={channels().speed} onInput={(v) => set({ speed: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.speed"]} />
+        </Row>
       </Section>
       <Section title="Couleur & effets">
-        <Row label="Dimmer"><ByteSlider value={channels().dimmer} onInput={(v) => set({ dimmer: v })} /></Row>
-        <Row label="Strobe"><ByteSlider value={channels().strobe} onInput={(v) => set({ strobe: v })} /></Row>
+        <Row label="Dimmer">
+          <ByteSlider value={channels().dimmer} onInput={(v) => set({ dimmer: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.dimmer"]} />
+        </Row>
+        <Row label="Strobe">
+          <ByteSlider value={channels().strobe} onInput={(v) => set({ strobe: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.strobe"]} />
+        </Row>
         <Row label="Couleur">
           <ColorField
             value={{ r: channels().r / 255, g: channels().g / 255, b: channels().b / 255 }}
             onInput={(c) => set({ r: Math.round(c.r * 255), g: Math.round(c.g * 255), b: Math.round(c.b * 255) })}
           />
+          <KeyDot editor={editor} id={id} channels={["fx.r", "fx.g", "fx.b"]} />
         </Row>
-        <Row label="Blanc"><ByteSlider value={channels().w} onInput={(v) => set({ w: v })} /></Row>
-        <Row label="Spécial"><ByteSlider value={channels().special} onInput={(v) => set({ special: v })} /></Row>
-        <Row label="Reset"><ByteSlider value={channels().reset} onInput={(v) => set({ reset: v })} /></Row>
+        <Row label="Blanc">
+          <ByteSlider value={channels().w} onInput={(v) => set({ w: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.w"]} />
+        </Row>
+        <Row label="Spécial">
+          <ByteSlider value={channels().special} onInput={(v) => set({ special: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.special"]} />
+        </Row>
+        <Row label="Reset">
+          <ByteSlider value={channels().reset} onInput={(v) => set({ reset: v })} />
+          <KeyDot editor={editor} id={id} channels={["fx.reset"]} />
+        </Row>
       </Section>
       <Section title="Danger"><DeleteRow editor={editor} id={id} /></Section>
     </>
@@ -428,10 +532,7 @@ export function createInspectorPanel(editor: Editor): Panel {
       const props = document.createElement("span");
       props.className = "insp-tab insp-tab--active";
       props.textContent = "Propriétés";
-      const obj = document.createElement("span");
-      obj.className = "insp-tab";
-      obj.textContent = "Objet";
-      header.append(spacer, props, obj);
+      header.append(spacer, props);
     },
     body: () => <Inspector editor={editor} />,
   });
