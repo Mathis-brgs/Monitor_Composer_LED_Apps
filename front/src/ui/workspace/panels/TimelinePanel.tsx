@@ -7,7 +7,7 @@ import {
   mediaClipLength, mediaClipTimelineOut,
   type Clip, type Layer, type MediaClip,
 } from "@domain/Layer.ts";
-import type { Interp } from "@domain/Composition.ts";
+import { getCubicBezierVelocity, sampleKeyframes, type Interp } from "@domain/Composition.ts";
 import { createIcon } from "@ui/icons/Icon.ts";
 import { NumberField } from "@ui/solid/controls.tsx";
 import { fromStore } from "@ui/solid/store.ts";
@@ -20,6 +20,21 @@ const AXIS_SHORT: Record<string, string> = { x: "X", y: "Y", z: "Z", r: "R", g: 
 function channelShort(channel: string): string {
   const k = channel.split(".")[1];
   return k ? (AXIS_SHORT[k] ?? k) : "";
+}
+
+function evaluateVelocity(interp: string, cp: readonly [number, number, number, number] | undefined, raw: number): number {
+  if (interp === "linear") return 1;
+  if (interp === "hold") return 0;
+  if (interp === "ease-in") return 2 * raw;
+  if (interp === "ease-out") return 2 * (1 - raw);
+  if (interp === "bezier") {
+    const x1 = cp ? cp[0] : 0.42;
+    const y1 = cp ? cp[1] : 0;
+    const x2 = cp ? cp[2] : 0.58;
+    const y2 = cp ? cp[3] : 1;
+    return getCubicBezierVelocity(x1, y1, x2, y2, raw);
+  }
+  return 0;
 }
 
 const MIN_PPS = 8;
@@ -245,8 +260,302 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
   const isSelected = (layerId: string, frame: number, channels: string[]): boolean =>
     selection().some((s) => sameKey(s, { layerId, frame, channels }));
 
-  // Éditeur de valeur d'une clé (double-clic sur un diamant) : popover flottant.
-  const [editKey, setEditKey] = createSignal<{ layerId: string; channels: string[]; frame: number; x: number; y: number } | null>(null);
+  // Éditeur de courbes intégré à la timeline
+  const [expandedCurves, setExpandedCurves] = createSignal<Set<string>>(new Set());
+  const isCurvesExpanded = (layerId: string, label: string): boolean => expandedCurves().has(`${layerId}|${label}`);
+  const toggleCurvesExpand = (layerId: string, label: string): void => {
+    const n = new Set(expandedCurves());
+    const k = `${layerId}|${label}`;
+    if (n.has(k)) n.delete(k);
+    else n.add(k);
+    setExpandedCurves(n);
+  };
+
+  const [activeGraphType, setActiveGraphType] = createSignal<Record<string, "value" | "velocity">>({});
+  const [activeCurveAxis, setActiveCurveAxis] = createSignal<Record<string, number>>({});
+
+  const getGraphType = (layerId: string, label: string): "value" | "velocity" => {
+    return activeGraphType()[`${layerId}|${label}`] ?? "value";
+  };
+  const setGraphType = (layerId: string, label: string, type: "value" | "velocity") => {
+    setActiveGraphType((prev) => ({ ...prev, [`${layerId}|${label}`]: type }));
+  };
+
+  const getCurveAxis = (layerId: string, label: string): number => {
+    return activeCurveAxis()[`${layerId}|${label}`] ?? 0;
+  };
+  const setCurveAxis = (layerId: string, label: string, axis: number) => {
+    setActiveCurveAxis((prev) => ({ ...prev, [`${layerId}|${label}`]: axis }));
+  };
+
+  const getSelectedKfsForProp = (layerId: string, p: PropRow): number[] => {
+    return selection()
+      .filter((s) => s.layerId === layerId && s.channels[0] === p.channels[0])
+      .map((s) => s.frame);
+  };
+
+  const applyPresetToSelected = (layerId: string, p: PropRow, preset: string) => {
+    const selectedFrames = getSelectedKfsForProp(layerId, p);
+    if (selectedFrames.length === 0) return;
+    const activeIdx = getCurveAxis(layerId, p.label);
+    const ch = p.channels[activeIdx];
+    if (!ch) return;
+    for (const frame of selectedFrames) {
+      if (preset === "linear") {
+        editor.setKeyframeInterp(layerId, ch, frame, "linear");
+      } else if (preset === "hold") {
+        editor.setKeyframeInterp(layerId, ch, frame, "hold");
+      } else if (preset === "bezier-ease") {
+        editor.setKeyframeInterp(layerId, ch, frame, "bezier", [0.42, 0, 0.58, 1]);
+      } else if (preset === "ease-in") {
+        editor.setKeyframeInterp(layerId, ch, frame, "bezier", [0.42, 0, 1, 1]);
+      } else if (preset === "ease-out") {
+        editor.setKeyframeInterp(layerId, ch, frame, "bezier", [0, 0, 0.58, 1]);
+      }
+    }
+  };
+
+  const getTrackBounds = (layerId: string, p: PropRow) => {
+    version();
+    let minVal = Infinity;
+    let maxVal = -Infinity;
+    let minVel = Infinity;
+    let maxVel = -Infinity;
+
+    for (const ch of p.channels) {
+      const track = editor.getComposition().tracks.find((t) => t.layerId === layerId && t.channel === ch);
+      if (!track || track.keyframes.length === 0) continue;
+
+      const kfs = track.keyframes;
+      const totalFrames = clock.durationFrames;
+      const samplePoints = new Set<number>();
+      for (const kf of kfs) samplePoints.add(kf.frame);
+      for (let f = 0; f <= totalFrames; f += Math.max(1, Math.floor(totalFrames / 50))) {
+        samplePoints.add(f);
+      }
+
+      for (const f of samplePoints) {
+        const val = sampleKeyframes(kfs, f);
+        if (val < minVal) minVal = val;
+        if (val > maxVal) maxVal = val;
+
+        const kfIndex = kfs.findIndex((k) => k.frame > f) - 1;
+        if (kfIndex >= 0 && kfIndex < kfs.length - 1) {
+          const a = kfs[kfIndex];
+          const b = kfs[kfIndex + 1];
+          const raw = (f - a.frame) / (b.frame - a.frame);
+          const scale = (b.value - a.value) / Math.max(1, b.frame - a.frame);
+          const vel = evaluateVelocity(a.interp, a.cp, raw) * scale;
+          if (vel < minVel) minVel = vel;
+          if (vel > maxVel) maxVel = vel;
+        } else {
+          if (0 < minVel) minVel = 0;
+          if (0 > maxVel) maxVel = 0;
+        }
+      }
+    }
+
+    if (minVal === maxVal) {
+      minVal -= 1;
+      maxVal += 1;
+    }
+    if (minVel === maxVel) {
+      minVel -= 1;
+      maxVel += 1;
+    }
+
+    return { minVal, maxVal, minVel, maxVel };
+  };
+
+  const trackBounds = (layerId: string, p: PropRow) => {
+    return getTrackBounds(layerId, p);
+  };
+
+  const getFullValuePath = (layerId: string, ch: string, bounds: { minVal: number; maxVal: number }) => {
+    version();
+    const track = editor.getComposition().tracks.find((t) => t.layerId === layerId && t.channel === ch);
+    if (!track || track.keyframes.length === 0) {
+      const val = editor.keyframeValue(layerId, ch, 0) ?? 0;
+      const y = 110 - ((val - bounds.minVal) / (bounds.maxVal - bounds.minVal)) * 100;
+      return `M 0 ${y} L ${framesToPx(clock.durationFrames)} ${y}`;
+    }
+    const kfs = track.keyframes;
+    const duration = clock.durationFrames;
+    let path = `M 0 ${110 - ((sampleKeyframes(kfs, 0) - bounds.minVal) / (bounds.maxVal - bounds.minVal)) * 100}`;
+
+    for (let f = 1; f <= duration; f++) {
+      const val = sampleKeyframes(kfs, f);
+      const x = framesToPx(f);
+      const y = 110 - ((val - bounds.minVal) / (bounds.maxVal - bounds.minVal)) * 100;
+      path += ` L ${x} ${y}`;
+    }
+    return path;
+  };
+
+  const getFullVelocityPath = (layerId: string, ch: string, bounds: { minVel: number; maxVel: number }) => {
+    version();
+    const track = editor.getComposition().tracks.find((t) => t.layerId === layerId && t.channel === ch);
+    if (!track || track.keyframes.length === 0) {
+      const y = 110 - ((0 - bounds.minVel) / (bounds.maxVel - bounds.minVel)) * 100;
+      return `M 0 ${y} L ${framesToPx(clock.durationFrames)} ${y}`;
+    }
+    const kfs = track.keyframes;
+    const duration = clock.durationFrames;
+
+    const getVelAt = (f: number) => {
+      const kfIndex = kfs.findIndex((k) => k.frame > f) - 1;
+      if (kfIndex >= 0 && kfIndex < kfs.length - 1) {
+        const a = kfs[kfIndex];
+        const b = kfs[kfIndex + 1];
+        const raw = (f - a.frame) / (b.frame - a.frame);
+        const scale = (b.value - a.value) / Math.max(1, b.frame - a.frame);
+        return evaluateVelocity(a.interp, a.cp, raw) * scale;
+      }
+      return 0;
+    };
+
+    let path = `M 0 ${110 - ((getVelAt(0) - bounds.minVel) / (bounds.maxVel - bounds.minVel)) * 100}`;
+    for (let f = 1; f <= duration; f++) {
+      const v = getVelAt(f);
+      const x = framesToPx(f);
+      const y = 110 - ((v - bounds.minVel) / (bounds.maxVel - bounds.minVel)) * 100;
+      path += ` L ${x} ${y}`;
+    }
+    return path;
+  };
+
+  const getCPPositions = (
+    layerId: string,
+    ch: string,
+    kfFrame: number,
+    mode: "value" | "velocity",
+    bounds: { minVal: number; maxVal: number; minVel: number; maxVel: number }
+  ) => {
+    version();
+    const track = editor.getComposition().tracks.find((t) => t.layerId === layerId && t.channel === ch);
+    if (!track) return null;
+    const kfs = track.keyframes;
+    const idx = kfs.findIndex((k) => k.frame === kfFrame);
+    if (idx < 0 || idx >= kfs.length - 1) return null;
+    const a = kfs[idx];
+    const b = kfs[idx + 1];
+    const f_start = a.frame;
+    const f_end = b.frame;
+    const duration = f_end - f_start;
+    const val_start = a.value;
+    const val_end = b.value;
+    const val_diff = val_end - val_start;
+    const scale = val_diff / Math.max(1, duration);
+
+    const cp = a.cp || (a.interp === "linear" ? [0, 0, 1, 1] : [0.42, 0, 0.58, 1]);
+    const x1 = cp[0], y1 = cp[1], x2 = cp[2], y2 = cp[3];
+
+    if (mode === "value") {
+      const val_cp1 = val_start + val_diff * y1;
+      const val_cp2 = val_start + val_diff * y2;
+      return {
+        cp1: { x: framesToPx(f_start + x1 * duration), y: 110 - ((val_cp1 - bounds.minVal) / (bounds.maxVal - bounds.minVal)) * 100 },
+        cp2: { x: framesToPx(f_start + x2 * duration), y: 110 - ((val_cp2 - bounds.minVal) / (bounds.maxVal - bounds.minVal)) * 100 }
+      };
+    } else {
+      const V_start = x1 !== 0 ? y1 / x1 : 0;
+      const V_end = (1 - x2) !== 0 ? (1 - y2) / (1 - x2) : 0;
+      return {
+        cp1: { x: framesToPx(f_start + x1 * duration), y: 110 - ((V_start * scale - bounds.minVel) / (bounds.maxVel - bounds.minVel)) * 100 },
+        cp2: { x: framesToPx(f_start + x2 * duration), y: 110 - ((V_end * scale - bounds.minVel) / (bounds.maxVel - bounds.minVel)) * 100 }
+      };
+    }
+  };
+
+  const onTimelineCPDown = (
+    layerId: string,
+    ch: string,
+    kfFrame: number,
+    cpIndex: 1 | 2,
+    mode: "value" | "velocity",
+    bounds: { minVal: number; maxVal: number; minVel: number; maxVel: number },
+    e: PointerEvent
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const target = e.currentTarget as SVGElement;
+    const svg = target.ownerSVGElement;
+    if (!svg) return;
+    try {
+      target.setPointerCapture(e.pointerId);
+    } catch (err) {
+      console.warn("Failed to set pointer capture:", err);
+    }
+    const rect = svg.getBoundingClientRect();
+
+    const track = editor.getComposition().tracks.find((t) => t.layerId === layerId && t.channel === ch);
+    if (!track) return;
+    const kfs = track.keyframes;
+    const idx = kfs.findIndex((k) => k.frame === kfFrame);
+    if (idx < 0 || idx >= kfs.length - 1) return;
+    const a = kfs[idx];
+    const b = kfs[idx + 1];
+    const f_start = a.frame;
+    const f_end = b.frame;
+    const duration = f_end - f_start;
+    const val_start = a.value;
+    const val_end = b.value;
+    const val_diff = val_end - val_start;
+    const scale = val_diff / Math.max(1, duration);
+
+    const move = (ev: PointerEvent) => {
+      const pointerX = ev.clientX - rect.left;
+      const pointerY = ev.clientY - rect.top;
+
+      const pointerFrame = (pointerX * clock.fps / pps()) - f_start;
+      const newX = Math.max(0, Math.min(1, pointerFrame / duration));
+
+      const cp = a.cp || (a.interp === "linear" ? [0, 0, 1, 1] : [0.42, 0, 0.58, 1]);
+      let x1 = cp[0], y1 = cp[1], x2 = cp[2], y2 = cp[3];
+
+      if (mode === "value") {
+        const val = bounds.minVal + ((110 - pointerY) / 100) * (bounds.maxVal - bounds.minVal);
+        let newY = 0;
+        if (val_diff !== 0) {
+          newY = (val - val_start) / val_diff;
+        } else {
+          newY = 1 - (pointerY - 10) / 100;
+        }
+        newY = Math.max(-0.5, Math.min(1.5, newY));
+
+        if (cpIndex === 1) {
+          x1 = newX;
+          y1 = newY;
+        } else {
+          x2 = newX;
+          y2 = newY;
+        }
+      } else {
+        const v = bounds.minVel + ((110 - pointerY) / 100) * (bounds.maxVel - bounds.minVel);
+        const v_norm = scale !== 0 ? v / scale : 0;
+
+        if (cpIndex === 1) {
+          x1 = newX;
+          y1 = Math.max(-0.5, Math.min(1.5, v_norm * x1));
+        } else {
+          x2 = newX;
+          y2 = Math.max(-0.5, Math.min(1.5, 1 - v_norm * (1 - x2)));
+        }
+      }
+
+      editor.setKeyframeInterp(layerId, ch, f_start, "bezier", [x1, y1, x2, y2] as const);
+    };
+
+    const up = (ev: PointerEvent) => {
+      target.releasePointerCapture(ev.pointerId);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
   // Menu contextuel d'interpolation (clic-droit sur un diamant).
   const [ctxMenu, setCtxMenu] = createSignal<{ layerId: string; channels: string[]; frame: number; x: number; y: number } | null>(null);
   // Palette de couleur de label (clic sur la pastille d'un calque).
@@ -285,7 +594,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     }
   };
   // Presse-papier de keyframes (offset relatif au 1er frame copié).
-  let clipboard: { layerId: string; channels: string[]; offset: number; values: number[]; interp: Interp }[] = [];
+  let clipboard: { layerId: string; channels: string[]; offset: number; values: number[]; interp: Interp; cp?: readonly [number, number, number, number] }[] = [];
 
   let scroller: HTMLDivElement | undefined;
   let namesEl: HTMLDivElement | undefined;
@@ -692,9 +1001,9 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
   };
 
   /** Double-clic sur un diamant : éditer sa valeur (façon After Effects). */
-  const onKfDblClick = (e: MouseEvent, row: LayerRow, p: PropRow, f: number): void => {
+  const onKfDblClick = (e: MouseEvent, row: LayerRow, p: PropRow, _f: number): void => {
     e.stopPropagation();
-    setEditKey({ layerId: row.layerId, channels: p.channels, frame: f, x: e.clientX, y: e.clientY });
+    toggleCurvesExpand(row.layerId, p.label);
   };
 
   /** Clic-droit sur un diamant : menu d'interpolation. */
@@ -721,6 +1030,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
       offset: s.frame - minFrame,
       values: s.channels.map((ch) => editor.keyframeValue(s.layerId, ch, s.frame) ?? 0),
       interp: editor.keyframeInterp(s.layerId, s.channels[0], s.frame) ?? "linear",
+      cp: editor.keyframeCP(s.layerId, s.channels[0], s.frame),
     }));
   };
   const pasteKeys = (): void => {
@@ -729,7 +1039,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     const pasted: SelKey[] = [];
     for (const c of clipboard) {
       const target = Math.max(0, Math.min(clock.durationFrames, base + c.offset));
-      c.channels.forEach((ch, i) => editor.putKeyframe(c.layerId, ch, target, c.values[i], c.interp));
+      c.channels.forEach((ch, i) => editor.putKeyframe(c.layerId, ch, target, c.values[i], c.interp, c.cp));
       pasted.push({ layerId: c.layerId, frame: target, channels: c.channels });
     }
     setSelection(pasted);
@@ -753,7 +1063,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     return !!el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable);
   };
   const onKeyDown = (e: KeyboardEvent): void => {
-    if (e.key === "Escape") { if (editKey()) setEditKey(null); if (ctxMenu()) setCtxMenu(null); return; }
+    if (e.key === "Escape") { if (ctxMenu()) setCtxMenu(null); return; }
     if (isTyping()) return;
     if (e.key === "ArrowRight") { e.preventDefault(); if (e.shiftKey) jumpKeyframe(1); else clock.stepFrame(1); }
     else if (e.key === "ArrowLeft") { e.preventDefault(); if (e.shiftKey) jumpKeyframe(-1); else clock.stepFrame(-1); }
@@ -874,6 +1184,8 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
               "seq__kf--selected": isSelected(row.layerId, f, p.channels),
               "seq__kf--hold": p.interps[i()] === "hold",
               "seq__kf--bezier": p.interps[i()] === "bezier",
+              "seq__kf--ease-in": p.interps[i()] === "ease-in",
+              "seq__kf--ease-out": p.interps[i()] === "ease-out",
             }}
             style={{ left: `${framesToPx(f)}px` }}
             data-layer={row.layerId}
@@ -1077,7 +1389,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                       <For each={row.props}>
                         {(p) => (
                           <>
-                            <div class="seq__name seq__name--child">
+                            <div class="seq__name seq__name--child" onClick={() => toggleCurvesExpand(row.layerId, p.label)} style={{ cursor: "pointer" }}>
                               {propCtl(row, p)}
                               <Show when={p.axes.length > 0}>
                                 <button
@@ -1096,8 +1408,68 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                                 >{createIcon("link", { size: 12 })}</button>
                               </Show>
                               <span class="seq__name-label">{p.label}</span>
-                              {propValue(row, p)}
+                              <div onClick={(e) => e.stopPropagation()}>
+                                {propValue(row, p)}
+                              </div>
+                              <button
+                                type="button"
+                                class="seq__curves-toggle-btn"
+                                classList={{ "seq__curves-toggle-btn--on": isCurvesExpanded(row.layerId, p.label) }}
+                                data-tooltip="Afficher l'éditeur de courbe"
+                                onClick={(e) => { e.stopPropagation(); toggleCurvesExpand(row.layerId, p.label); }}
+                              >
+                                {createIcon("graph", { size: 12 })}
+                              </button>
                             </div>
+                            <Show when={isCurvesExpanded(row.layerId, p.label)}>
+                              <div class="seq__name seq__name--curves">
+                                <div class="seq__curves-header">
+                                  <div class="seq__curves-header-controls">
+                                    <div class="seq__curves-ctrl-group">
+                                      <button
+                                        type="button"
+                                        class="seq__curves-ctrl-btn"
+                                        classList={{ "seq__curves-ctrl-btn--active": getGraphType(row.layerId, p.label) === "value" }}
+                                        onClick={() => setGraphType(row.layerId, p.label, "value")}
+                                      >
+                                        Val
+                                      </button>
+                                      <button
+                                        type="button"
+                                        class="seq__curves-ctrl-btn"
+                                        classList={{ "seq__curves-ctrl-btn--active": getGraphType(row.layerId, p.label) === "velocity" }}
+                                        onClick={() => setGraphType(row.layerId, p.label, "velocity")}
+                                      >
+                                        Vit
+                                      </button>
+                                    </div>
+
+                                    <Show when={p.channels.length > 1}>
+                                      <div class="seq__curves-ctrl-group">
+                                        <For each={p.channels}>
+                                          {(ch, idx) => (
+                                            <button
+                                              type="button"
+                                              class="seq__curves-ctrl-btn"
+                                              style={{ "--axis-color": ["#ff5a5a", "#7fd88a", "#5a9bff", "#ffd24a"][idx()] }}
+                                              classList={{ "seq__curves-ctrl-btn--active": getCurveAxis(row.layerId, p.label) === idx() }}
+                                              onClick={() => setCurveAxis(row.layerId, p.label, idx())}
+                                            >
+                                              {channelShort(ch) || `Ch ${idx() + 1}`}
+                                            </button>
+                                          )}
+                                        </For>
+                                      </div>
+                                    </Show>
+                                  </div>
+                                  <div class="seq__curves-presets">
+                                    <button type="button" class="seq__preset-mini-btn" data-tooltip="Linéaire" onClick={() => applyPresetToSelected(row.layerId, p, "linear")}>Lin</button>
+                                    <button type="button" class="seq__preset-mini-btn" data-tooltip="Ease" onClick={() => applyPresetToSelected(row.layerId, p, "bezier-ease")}>Ease</button>
+                                    <button type="button" class="seq__preset-mini-btn" data-tooltip="Hold" onClick={() => applyPresetToSelected(row.layerId, p, "hold")}>Hold</button>
+                                  </div>
+                                </div>
+                              </div>
+                            </Show>
                             <Show when={p.axes.length > 0 && isPropExpanded(row.layerId, p.label)}>
                               <For each={p.axes}>
                                 {(ax) => (
@@ -1229,6 +1601,123 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                               <div class="seq__lane seq__lane--child" onDblClick={(e) => onPropLaneDblClick(e, row, p)}>
                                 {kfLane(row, p)}
                               </div>
+                              <Show when={isCurvesExpanded(row.layerId, p.label)}>
+                                <div class="seq__lane seq__lane--curves" style={{ height: "120px", position: "relative" }}>
+                                  <svg
+                                    width={framesToPx(clock.durationFrames)}
+                                    height="120"
+                                    class="seq__curves-svg"
+                                    style={{ overflow: "visible" }}
+                                  >
+                                    {/* Horizontal grid lines */}
+                                    <line x1="0" y1="10" x2={framesToPx(clock.durationFrames)} y2="10" stroke="var(--line)" opacity="0.3" />
+                                    <line x1="0" y1="60" x2={framesToPx(clock.durationFrames)} y2="60" stroke="var(--line)" opacity="0.3" />
+                                    <line x1="0" y1="110" x2={framesToPx(clock.durationFrames)} y2="110" stroke="var(--line)" opacity="0.3" />
+                                    
+                                    {/* Curve path rendering */}
+                                    <For each={p.channels}>
+                                      {(ch, idx) => {
+                                        const bounds = trackBounds(row.layerId, p);
+                                        const color = ["#ff5a5a", "#7fd88a", "#5a9bff", "#ffd24a"][idx() % 4];
+                                        const isSelectedAxis = () => getCurveAxis(row.layerId, p.label) === idx();
+                                        const mode = () => getGraphType(row.layerId, p.label);
+                                        return (
+                                          <>
+                                            {/* Value Path */}
+                                            <path
+                                              d={getFullValuePath(row.layerId, ch, bounds)}
+                                              fill="none"
+                                              stroke={color}
+                                              stroke-width={mode() === "value" && isSelectedAxis() ? 2.5 : 1.2}
+                                              stroke-dasharray={mode() === "velocity" ? "1,3" : undefined}
+                                              opacity={mode() === "value" ? (isSelectedAxis() ? 1.0 : 0.4) : 0.25}
+                                            />
+                                            {/* Velocity Path */}
+                                            <path
+                                              d={getFullVelocityPath(row.layerId, ch, bounds)}
+                                              fill="none"
+                                              stroke={color}
+                                              stroke-width={mode() === "velocity" && isSelectedAxis() ? 2.5 : 1.2}
+                                              stroke-dasharray={mode() === "value" ? "3,3" : undefined}
+                                              opacity={mode() === "velocity" ? (isSelectedAxis() ? 1.0 : 0.4) : 0.25}
+                                            />
+
+                                            {/* Edit Handles if this axis is selected */}
+                                            <Show when={isSelectedAxis()}>
+                                              {(() => {
+                                                const track = editor.getComposition().tracks.find((t) => t.layerId === row.layerId && t.channel === ch);
+                                                const kfs = track?.keyframes || [];
+                                                const segments: JSX.Element[] = [];
+
+                                                for (let i = 0; i < kfs.length - 1; i++) {
+                                                  const a = kfs[i];
+                                                  const b = kfs[i + 1];
+                                                  const aSelected = isSelected(row.layerId, a.frame, p.channels);
+                                                  const bSelected = isSelected(row.layerId, b.frame, p.channels);
+
+                                                  if (aSelected || bSelected) {
+                                                    const cp = getCPPositions(row.layerId, ch, a.frame, mode(), bounds);
+                                                    if (cp) {
+                                                      segments.push(
+                                                        <>
+                                                          {/* Guide line and circle for CP1 (outgoing from a) */}
+                                                          <line
+                                                            x1={framesToPx(a.frame)}
+                                                            y1={mode() === "value" ? 110 - ((a.value - bounds.minVal) / (bounds.maxVal - bounds.minVal)) * 100 : 110 - ((0 - bounds.minVel) / (bounds.maxVel - bounds.minVel)) * 100}
+                                                            x2={cp.cp1.x}
+                                                            y2={cp.cp1.y}
+                                                            stroke={color}
+                                                            stroke-dasharray="2,2"
+                                                            stroke-width="1"
+                                                            opacity="0.6"
+                                                          />
+                                                          <circle
+                                                            cx={cp.cp1.x}
+                                                            cy={cp.cp1.y}
+                                                            r="5"
+                                                            fill={color}
+                                                            stroke="var(--panel-2)"
+                                                            stroke-width="1.5"
+                                                            cursor="grab"
+                                                            onPointerDown={(e) => onTimelineCPDown(row.layerId, ch, a.frame, 1, mode(), bounds, e)}
+                                                          />
+
+                                                          {/* Guide line and circle for CP2 (incoming to b) */}
+                                                          <line
+                                                            x1={framesToPx(b.frame)}
+                                                            y1={mode() === "value" ? 110 - ((b.value - bounds.minVal) / (bounds.maxVal - bounds.minVal)) * 100 : 110 - ((0 - bounds.minVel) / (bounds.maxVel - bounds.minVel)) * 100}
+                                                            x2={cp.cp2.x}
+                                                            y2={cp.cp2.y}
+                                                            stroke={color}
+                                                            stroke-dasharray="2,2"
+                                                            stroke-width="1"
+                                                            opacity="0.6"
+                                                          />
+                                                          <circle
+                                                            cx={cp.cp2.x}
+                                                            cy={cp.cp2.y}
+                                                            r="5"
+                                                            fill="#ffffff"
+                                                            stroke={color}
+                                                            stroke-width="1.5"
+                                                            cursor="grab"
+                                                            onPointerDown={(e) => onTimelineCPDown(row.layerId, ch, a.frame, 2, mode(), bounds, e)}
+                                                          />
+                                                        </>
+                                                      );
+                                                    }
+                                                  }
+                                                }
+                                                return segments;
+                                              })()}
+                                            </Show>
+                                          </>
+                                        );
+                                      }}
+                                    </For>
+                                  </svg>
+                                </div>
+                              </Show>
                               <Show when={p.axes.length > 0 && isPropExpanded(row.layerId, p.label)}>
                                 <For each={p.axes}>
                                   {(ax) => (
@@ -1258,28 +1747,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
         </div>
       </div>
       </div>
-      <Show when={editKey()}>
-        {(k) => (
-          <div class="seq__kf-editor-backdrop" onPointerDown={() => setEditKey(null)}>
-            <div class="seq__kf-editor" style={{ left: `${k().x}px`, top: `${k().y}px` }} onPointerDown={(e) => e.stopPropagation()}>
-              <For each={k().channels}>
-                {(ch) => (
-                  <label class="seq__kf-editor-field">
-                    <Show when={channelShort(ch)}>
-                      <span>{channelShort(ch)}</span>
-                    </Show>
-                    <NumberField
-                      value={editor.keyframeValue(k().layerId, ch, k().frame) ?? 0}
-                      step={0.01}
-                      onInput={(v) => editor.setKeyframeValue(k().layerId, ch, k().frame, v)}
-                    />
-                  </label>
-                )}
-              </For>
-            </div>
-          </div>
-        )}
-      </Show>
+
       <Show when={ctxMenu()}>
         {(m) => (
           <div
@@ -1291,6 +1759,8 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
               <div class="seq__ctx-title">Interpolation</div>
               <button type="button" class="seq__ctx-item" onClick={() => applyInterp("linear")}>Linéaire</button>
               <button type="button" class="seq__ctx-item" onClick={() => applyInterp("bezier")}>Bézier (ease)</button>
+              <button type="button" class="seq__ctx-item" onClick={() => applyInterp("ease-in")}>Ease In</button>
+              <button type="button" class="seq__ctx-item" onClick={() => applyInterp("ease-out")}>Ease Out</button>
               <button type="button" class="seq__ctx-item" onClick={() => applyInterp("hold")}>Hold</button>
             </div>
           </div>
