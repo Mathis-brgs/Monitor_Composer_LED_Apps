@@ -67,6 +67,16 @@ export class AppShell {
       if ((e.metaKey || e.ctrlKey) && (e.key === "d" || e.key === "D")) {
         e.preventDefault();
         opts.editor.duplicateSelected();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "c" || e.key === "C")) {
+        e.preventDefault();
+        opts.editor.precomposeSelection();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "g" || e.key === "G")) {
+        e.preventDefault();
+        opts.editor.groupSelection();
       }
     });
   }

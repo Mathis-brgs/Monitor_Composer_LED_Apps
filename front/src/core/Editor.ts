@@ -115,6 +115,10 @@ export class Editor {
   private _nav: NavFrame[] = [{ compId: "main", groupId: this._compositions.main.root.id, selectedId: null, frame: 0 }];
   // Vue d'édition active : `_doc.root === activeComp().root` — tout le code d'arbre reste inchangé.
   private _doc: Document = { root: this._compositions.main.root, activeGroupId: this._compositions.main.root.id, selectedId: null };
+  // Sélection multiple au niveau modèle : `_doc.selectedId` reste la sélection PRIMAIRE (Inspecteur/gizmo) ;
+  // `_multi` est le set complet pour les actions groupées (précomposer, grouper, supprimer). Toujours cohérents :
+  // une sélection simple = `{ selectedId }`, un `_multi` d'un seul élément.
+  private _multi = new Set<string>();
 
   // Historique (undo/redo) : snapshots pleins de l'état éditable (compositions + navigation),
   // regroupés par rafale (debounce) — un drag continu s'annule en un seul Ctrl+Z.
@@ -144,6 +148,8 @@ export class Editor {
   get rootId(): string { return this._doc.root.id; }
   get activeGroupId(): string { return this._doc.activeGroupId; }
   get selectedId(): string | null { return this._doc.selectedId; }
+  /** Ids de la sélection multiple (inclut la primaire). Vide si rien de sélectionné. */
+  get multiSelectedIds(): readonly string[] { return [...this._multi]; }
   get tool(): EditorTool { return this._tool; }
   get viewportMode(): RenderMode { return this._viewportMode; }
 
@@ -212,8 +218,18 @@ export class Editor {
 
   select(id: string | null): void {
     if (id && findLayer(this._doc.root, id)?.locked) return; // calque verrouillé → pas de sélection
-    if (id === this._doc.selectedId) return;
+    const multiCollapses = this._multi.size !== (id ? 1 : 0) || (id ? !this._multi.has(id) : false);
+    if (id === this._doc.selectedId && !multiCollapses) return;
     this._doc.selectedId = id;
+    this._multi = id ? new Set([id]) : new Set(); // une sélection simple réduit le multi à ce seul calque
+    this._emit();
+  }
+
+  /** Sélection multiple (Outliner) : `ids` = set sélectionné, `primary` = sélection primaire (Inspecteur/gizmo). */
+  selectMany(ids: readonly string[], primary: string | null): void {
+    const usable = ids.filter((id) => !findLayer(this._doc.root, id)?.locked);
+    this._multi = new Set(usable);
+    this._doc.selectedId = primary && this._multi.has(primary) ? primary : (usable.length ? usable[usable.length - 1] : null);
     this._emit();
   }
 
@@ -460,9 +476,9 @@ export class Editor {
   }
 
   deleteSelected(): void {
-    if (this._doc.selectedId) {
-      this.deleteLayer(this._doc.selectedId);
-    }
+    const ids = this._multi.size ? [...this._multi] : (this._doc.selectedId ? [this._doc.selectedId] : []);
+    for (const id of ids) this.deleteLayer(id);
+    this._multi = new Set();
   }
 
   /** Duplique le calque sélectionné (sous-arbre + ses tracks), inséré après l'original, puis le sélectionne. */
@@ -588,42 +604,77 @@ export class Editor {
   }
 
   /**
-   * Précompose le calque sélectionné : le déplace (avec son sous-arbre + ses tracks) dans une
-   * nouvelle composition, remplacé à sa place par une instance de précomp. Renvoie l'id de la comp.
+   * Calques cibles d'une action groupée (précomposer/grouper) : les frères sélectionnés du parent de la
+   * sélection primaire, en ordre d'arbre. Gère la sélection multiple (`_multi`) et la simple. Une sélection
+   * éparse sur plusieurs parents est réduite au parent de la primaire (comme After Effects).
+   */
+  private _siblingTargets(): { parent: GroupLayer; ordered: Layer[]; idx: number } | null {
+    const ids = this._multi.size ? [...this._multi] : (this._doc.selectedId ? [this._doc.selectedId] : []);
+    const primary = this.selected ?? (ids[0] ? findLayer(this._doc.root, ids[0]) : null);
+    if (!primary) return null;
+    const parent = findParent(this._doc.root, primary.id);
+    if (!parent) return null; // la racine ne se précompose/groupe pas
+    const set = new Set(ids);
+    const ordered = parent.children.filter((c) => set.has(c.id));
+    if (ordered.length === 0) return null;
+    const idx = parent.children.findIndex((c) => c.id === ordered[0].id);
+    return { parent, ordered, idx };
+  }
+
+  /**
+   * Précompose la sélection (un ou plusieurs calques frères) : les déplace avec leurs sous-arbres + tracks
+   * dans une nouvelle composition, remplacés à leur place par une seule instance de précomp. Renvoie l'id.
    */
   precomposeSelection(): string | null {
-    const sel = this.selected;
-    if (!sel) return null;
-    const parent = findParent(this._doc.root, sel.id);
-    if (!parent) return null; // la racine ne se précompose pas
-    const idx = parent.children.findIndex((c) => c.id === sel.id);
-    if (idx === -1) return null;
+    const t = this._siblingTargets();
+    if (!t) return null;
+    const { parent, ordered, idx } = t;
 
     this._counter += 1;
     const compId = `precomp-${this._counter}`;
     const name = `Précomp ${String(this._counter).padStart(2, "0")}`;
     const comp = makeComposition(compId, name, "precomp", { durationFrames: this.activeComp().durationFrames });
 
-    // déplacer le calque (et son sous-arbre) dans la nouvelle comp
-    parent.children.splice(idx, 1);
-    comp.root.children.push(sel);
+    // déplacer les calques (sous-arbres inclus, ordre préservé) dans la nouvelle comp
+    for (const l of ordered) parent.children.splice(parent.children.findIndex((c) => c.id === l.id), 1);
+    comp.root.children.push(...ordered);
 
-    // repartitionner les tracks du sous-arbre du calque vers la nouvelle comp
+    // repartitionner les tracks : union des sous-arbres de tous les calques déplacés
+    const movedIds = new Set<string>();
+    for (const l of ordered) for (const id of collectSubtreeIds(l)) movedIds.add(id);
     const active = this.activeComp();
-    const { inside, outside } = partitionTracks(active.tracks, collectSubtreeIds(sel));
+    const { inside, outside } = partitionTracks(active.tracks, movedIds);
     comp.tracks = inside;
     active.tracks = outside;
 
     this._compositions[compId] = comp;
 
-    // instance à la place du calque, sélectionnée
+    // une seule instance à la place des calques, sélectionnée
     const inst = makePrecomp(`${compId}-inst`, name, compId);
-    parent.children.splice(idx, 0, inst);
-    this._doc.selectedId = inst.id;
+    parent.children.splice(Math.min(idx, parent.children.length), 0, inst);
+    this.select(inst.id);
 
     this._push();
     this._emit();
     return compId;
+  }
+
+  /** Groupe la sélection (frères) dans un nouveau groupe, à leur place. Les ids/tracks sont conservés. */
+  groupSelection(): string | null {
+    const t = this._siblingTargets();
+    if (!t) return null;
+    const { parent, ordered, idx } = t;
+
+    this._counter += 1;
+    const group = makeGroup(`group-${this._counter}`, `Groupe ${String(this._counter).padStart(2, "0")}`);
+    for (const l of ordered) parent.children.splice(parent.children.findIndex((c) => c.id === l.id), 1);
+    group.children.push(...ordered);
+    parent.children.splice(Math.min(idx, parent.children.length), 0, group);
+    this.select(group.id);
+
+    this._push();
+    this._emit();
+    return group.id;
   }
 
   /** Ajoute une précomposition vide + son instance dans le groupe actif. */

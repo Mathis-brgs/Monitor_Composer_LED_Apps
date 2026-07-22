@@ -2578,6 +2578,65 @@ body {
   margin: var(--space-4) 0;
 }
 
+/* ————————————————————————— Menu contextuel (Outliner) ————————————————————————— */
+.ctx-menu {
+  position: fixed;
+  z-index: 12000;
+  min-width: 220px;
+  background: var(--panel-2);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-window);
+  padding: var(--space-4) 0;
+  -webkit-app-region: no-drag;
+}
+
+.ctx-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  width: 100%;
+  background: none;
+  border: none;
+  font: inherit;
+  text-align: left;
+  padding: var(--space-6) var(--space-12);
+  color: var(--txt);
+  font-size: var(--fs-2);
+  cursor: default;
+  transition: background 0.1s, color 0.1s;
+}
+
+.ctx-menu__item:hover:not(.ctx-menu__item--disabled) {
+  background: var(--acc-fill);
+  color: var(--acc);
+}
+
+.ctx-menu__item--danger {
+  color: var(--acc);
+}
+
+.ctx-menu__item--disabled {
+  color: var(--faint);
+}
+
+.ctx-menu__key {
+  color: var(--faint);
+  font-size: var(--fs-3);
+  letter-spacing: 0.02em;
+}
+
+.ctx-menu__item:hover:not(.ctx-menu__item--disabled) .ctx-menu__key {
+  color: var(--acc);
+}
+
+.ctx-menu__sep {
+  height: var(--stroke-hairline);
+  background: var(--line-2);
+  margin: var(--space-4) 0;
+}
+
 /* —————————————————————————————— Modal Dialogs —————————————————————————————— */
 .modal-overlay {
   position: fixed;

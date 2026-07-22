@@ -1,4 +1,4 @@
-import { createEffect, createMemo, For, Show, createSignal, type Accessor, type JSX } from "solid-js";
+import { createMemo, For, Show, createSignal, onCleanup, type Accessor, type JSX } from "solid-js";
 import type { Editor } from "@core/Editor.ts";
 import type { Layer } from "@domain/Layer.ts";
 import { createIcon } from "@ui/icons/Icon.ts";
@@ -7,67 +7,70 @@ import { solidPanel } from "@ui/solid/mount.ts";
 import { layerGlyph } from "./layer-display.ts";
 import type { Panel } from "../Panel.ts";
 
+/** Cible d'un menu contextuel : le calque cliqué + la position écran du curseur. */
+interface CtxTarget { layer: Layer; x: number; y: number }
+
 /** Outliner : arbre du groupe actif. Panneau unique — mêmes données en 2D (compositor) et 3D (scène). */
 function LayerTree(props: { editor: Editor }): JSX.Element {
   const editor = props.editor;
   const layers = fromStore(editor, () => editor.children);
   const changed = fromStore(editor, () => editor.selectedId);
   const trail = fromStore(editor, () => editor.compTrail);
+  const multi = fromStore(editor, () => editor.multiSelectedIds);
+  const multiSet = createMemo(() => new Set(multi()));
   const atGroupRoot = createMemo(() => { changed(); return editor.activeGroupId === editor.rootId; });
+  // Retour possible seulement s'il y a où aller : un sous-groupe interne OU une comp imbriquée (pas au main root).
+  const canGoBack = createMemo(() => !atGroupRoot() || trail().length > 1);
   const [editingId, setEditingId] = createSignal<string | null>(null);
+  const [ctx, setCtx] = createSignal<CtxTarget | null>(null);
 
   // retour : d'abord remonter les groupes internes, puis sortir de la comp.
   const goBack = () => { if (!atGroupRoot()) editor.exitGroup(); else editor.exitComp(); };
 
-  // Sélection multiple (shift = plage, ctrl/cmd = ajout un par un) — locale à l'Outliner, comme
-  // la sélection de clés dans la Timeline. `editor.selectedId` (unique) reste la "sélection
-  // primaire" pour l'Inspecteur/gizmo 3D ; ce set n'ajoute qu'une couche de sélection groupée
-  // pour les actions en masse (supprimer).
-  const [multiSelected, setMultiSelected] = createSignal<Set<string>>(new Set());
+  // Sélection multiple au niveau modèle (shift = plage, ctrl/cmd = ajout un par un). `editor.selectedId`
+  // (unique) reste la sélection primaire pour l'Inspecteur/gizmo ; `editor.multiSelectedIds` porte le set
+  // pour les actions groupées (précomposer, grouper, supprimer).
   let anchorIndex = -1;
   let root!: HTMLDivElement;
-
-  // Une sélection venue d'ailleurs (viewport 3D, clic Timeline...) qui ne fait pas déjà partie
-  // du groupe courant réinitialise le groupe sur ce seul calque — évite un surlignage périmé.
-  createEffect(() => {
-    const id = editor.selectedId;
-    changed();
-    if (id && !multiSelected().has(id)) setMultiSelected(new Set([id]));
-    else if (!id) setMultiSelected(new Set<string>());
-  });
 
   const onRowClick = (e: MouseEvent, layer: Layer, index: number): void => {
     if (e.shiftKey && anchorIndex !== -1) {
       const [a, b] = [anchorIndex, index].sort((x, y) => x - y);
-      setMultiSelected(new Set(layers().slice(a, b + 1).map((l) => l.id)));
+      editor.selectMany(layers().slice(a, b + 1).map((l) => l.id), layer.id);
     } else if (e.metaKey || e.ctrlKey) {
-      const n = new Set(multiSelected());
-      if (n.has(layer.id)) n.delete(layer.id); else n.add(layer.id);
-      setMultiSelected(n);
+      const set = new Set(editor.multiSelectedIds);
+      if (set.has(layer.id)) set.delete(layer.id); else set.add(layer.id);
+      editor.selectMany([...set], layer.id);
       anchorIndex = index;
     } else {
-      setMultiSelected(new Set([layer.id]));
+      editor.select(layer.id);
       anchorIndex = index;
     }
-    editor.select(layer.id);
     root.focus();
   };
 
   const onKeyDown = (e: KeyboardEvent): void => {
     if (e.key !== "Delete" && e.key !== "Backspace") return;
-    const ids = multiSelected();
-    if (ids.size === 0) return;
+    if (editor.multiSelectedIds.length === 0) return;
     e.preventDefault();
     e.stopPropagation(); // évite de déclencher aussi le raccourci Suppr. de la Timeline
-    for (const id of ids) editor.deleteLayer(id);
-    setMultiSelected(new Set<string>());
+    editor.deleteSelected();
+  };
+
+  // Clic droit : sélectionne la ligne (sauf si déjà dans la sélection multiple) puis ouvre le menu.
+  const onRowContext = (e: MouseEvent, layer: Layer): void => {
+    e.preventDefault();
+    if (!editor.multiSelectedIds.includes(layer.id)) editor.select(layer.id);
+    setCtx({ layer, x: e.clientX, y: e.clientY });
   };
 
   return (
     <div class="layer-tree" ref={root} tabIndex={-1} onKeyDown={onKeyDown}>
       <div class="comp-bar">
-        <button type="button" class="comp-back" onClick={goBack}>‹ Retour</button>
-        <span class="comp-trail__sep">|</span>
+        <Show when={canGoBack()}>
+          <button type="button" class="comp-back" onClick={goBack}>‹ Retour</button>
+          <span class="comp-trail__sep">|</span>
+        </Show>
         <div class="comp-trail">
           <For each={trail()}>
             {(c, i) => (
@@ -91,9 +94,63 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
         {(layer, i) => (
           <LayerRow editor={editor} layer={layer} changed={changed}
             editingId={editingId} setEditingId={setEditingId}
-            multiSelected={multiSelected} onRowClick={(e) => onRowClick(e, layer, i())} />
+            multiSet={multiSet} onRowClick={(e) => onRowClick(e, layer, i())}
+            onContext={(e) => onRowContext(e, layer)} />
         )}
       </For>
+      <Show when={ctx()}>
+        {(target) => (
+          <ContextMenu editor={editor} target={target()} close={() => setCtx(null)} startRename={(id) => setEditingId(id)} />
+        )}
+      </Show>
+    </div>
+  );
+}
+
+/** Une action du menu contextuel : libellé, raccourci affiché, handler, état grisé. */
+function MenuItem(props: { label: string; shortcut?: string; danger?: boolean; disabled?: boolean; onRun: () => void; close: () => void }): JSX.Element {
+  return (
+    <button
+      type="button"
+      class="ctx-menu__item"
+      classList={{ "ctx-menu__item--danger": props.danger, "ctx-menu__item--disabled": props.disabled }}
+      disabled={props.disabled}
+      onClick={() => { if (!props.disabled) { props.onRun(); props.close(); } }}
+    >
+      <span>{props.label}</span>
+      <Show when={props.shortcut}><span class="ctx-menu__key">{props.shortcut}</span></Show>
+    </button>
+  );
+}
+
+/**
+ * Menu contextuel de l'Outliner (clic droit) : une seule liste pour tous les types, les actions non
+ * pertinentes sont grisées. Se ferme au clic ailleurs, à Échap ou après une action.
+ */
+function ContextMenu(props: { editor: Editor; target: CtxTarget; close: () => void; startRename: (id: string) => void }): JSX.Element {
+  const { editor, target, close } = props;
+  const layer = target.layer;
+  const isPrecomp = layer.type === "precomp";
+
+  const onDocDown = (e: MouseEvent) => { if (!(e.target as HTMLElement).closest(".ctx-menu")) close(); };
+  const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  window.addEventListener("pointerdown", onDocDown, true);
+  window.addEventListener("keydown", onEsc, true);
+  onCleanup(() => {
+    window.removeEventListener("pointerdown", onDocDown, true);
+    window.removeEventListener("keydown", onEsc, true);
+  });
+
+  return (
+    <div class="ctx-menu" style={{ left: `${target.x}px`, top: `${target.y}px` }}>
+      <MenuItem label="Renommer" close={close} onRun={() => props.startRename(layer.id)} />
+      <MenuItem label="Dupliquer" shortcut="⌘D" close={close} onRun={() => { editor.select(layer.id); editor.duplicateSelected(); }} />
+      <MenuItem label="Ouvrir la composition" disabled={!isPrecomp} close={close} onRun={() => { if (isPrecomp) editor.enterComp(layer.compId); }} />
+      <div class="ctx-menu__sep" />
+      <MenuItem label="Précomposer la sélection" shortcut="⌘⇧C" close={close} onRun={() => editor.precomposeSelection()} />
+      <MenuItem label="Grouper" shortcut="⌘G" close={close} onRun={() => editor.groupSelection()} />
+      <div class="ctx-menu__sep" />
+      <MenuItem label="Supprimer" danger close={close} onRun={() => editor.deleteSelected()} />
     </div>
   );
 }
@@ -101,11 +158,11 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
 function LayerRow(props: {
   editor: Editor; layer: Layer; changed: Accessor<unknown>;
   editingId: Accessor<string | null>; setEditingId: (id: string | null) => void;
-  multiSelected: Accessor<Set<string>>; onRowClick: (e: MouseEvent) => void;
+  multiSet: Accessor<Set<string>>; onRowClick: (e: MouseEvent) => void; onContext: (e: MouseEvent) => void;
 }): JSX.Element {
   const { editor, layer, changed } = props;
   const editing = createMemo(() => props.editingId() === layer.id);
-  const selected = createMemo(() => { changed(); return editor.selectedId === layer.id || props.multiSelected().has(layer.id); });
+  const selected = createMemo(() => { changed(); return editor.selectedId === layer.id || props.multiSet().has(layer.id); });
   const visible = createMemo(() => { changed(); return layer.visible; });
   const additive = createMemo(() => { changed(); return layer.blend === "add"; });
   const opacity = createMemo(() => { changed(); return `${Math.round(layer.opacity * 100)}%`; });
@@ -189,7 +246,9 @@ function LayerRow(props: {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       onClick={(e) => props.onRowClick(e)}
+      onContextMenu={(e) => props.onContext(e)}
       onDblClick={() => {
+        // double-clic = ENTRER dans la composition/groupe (le renommage passe par le clic droit).
         if (layer.type === "group") editor.enterGroup(layer.id);
         else if (layer.type === "precomp") editor.enterComp(layer.compId);
       }}
@@ -197,7 +256,7 @@ function LayerRow(props: {
       <span class="layer__glyph">{glyph()}</span>
       <Show
         when={editing()}
-        fallback={<div class="layer__name" onDblClick={(e) => { e.stopPropagation(); props.setEditingId(layer.id); }}>{name()}</div>}
+        fallback={<div class="layer__name">{name()}</div>}
       >
         <input
           class="layer__name-input"
