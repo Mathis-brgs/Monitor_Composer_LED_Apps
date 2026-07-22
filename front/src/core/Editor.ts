@@ -371,6 +371,27 @@ export class Editor {
     }
   }
 
+  duplicateLayer(id: string): string | null {
+    const layer = findLayer(this._doc.root, id);
+    const parent = findParent(this._doc.root, id);
+    if (!layer || !parent) return null;
+
+    const clone = structuredClone(layer) as typeof layer;
+    this._counter++;
+    clone.id = `${layer.type}-copy-${this._counter}`;
+    clone.name = `${layer.name} (copie)`;
+
+    const idx = parent.children.findIndex((c) => c.id === id);
+    if (idx !== -1) {
+      parent.children.splice(idx + 1, 0, clone);
+      this._animator.cloneLayer(id, clone.id);
+      this._push();
+      this._emit();
+      return clone.id;
+    }
+    return null;
+  }
+
   /**
    * Coupe un calque en deux au frame donné (façon "Split Layer" AE, ⌘⇧D) : duplique le calque
    * ET ses clés d'animation, l'original garde `[in, frame-1]`, le clone `[frame, out]`.

@@ -22,6 +22,28 @@ body {
   overflow: hidden;
 }
 
+/* — Custom Scrollbars — */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--faint);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s ease;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dim);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 #app {
   height: 100vh;
 }
@@ -1807,8 +1829,37 @@ body {
   opacity: 0.5;
 }
 
+.layer--locked {
+  opacity: 0.55;
+}
+
+.layer--solo {
+  border-left-color: var(--axis-y);
+}
+
 .layer--dragging {
   opacity: 0.4;
+}
+
+.layer__lock-badge {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--dim);
+}
+
+.layer__solo-badge {
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  color: var(--app);
+  background: var(--axis-y);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: bold;
 }
 
 .layer--drag-over-above::before {
@@ -1869,6 +1920,22 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.layer__name-input {
+  font-family: inherit;
+  font-size: var(--fs-2);
+  font-weight: 500;
+  color: var(--txt);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  background: var(--row-hi);
+  border: var(--stroke-hairline) solid var(--acc-border);
+  border-radius: var(--radius-xs, 2px);
+  padding: 0 var(--space-4, 4px);
+  width: 100%;
+  outline: none;
+  height: 18px;
 }
 
 .layer__type {
@@ -2504,8 +2571,7 @@ body {
 .viewport-toolbar {
   position: absolute;
   left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 72px;
   z-index: 4;
   display: flex;
   flex-direction: column;
@@ -2517,8 +2583,19 @@ body {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-window);
   backdrop-filter: blur(7px);
+  transition: padding 0.15s ease;
 }
 .viewport-toolbar--hidden { display: none; }
+.viewport-toolbar--collapsed {
+  padding: var(--space-5);
+}
+.viewport-toolbar--collapsed > *:not(.rail__tool--active) {
+  display: none !important;
+}
+.viewport-toolbar__toggle .icon {
+  transform: rotate(90deg);
+  transition: transform 0.2s ease;
+}
 
 /* ———————————————————————— Loader d'init du viewport ———————————————————————— */
 
@@ -2611,6 +2688,12 @@ body {
   cursor: default;
   user-select: none;
   transition: background 0.1s, color 0.1s;
+}
+
+.menu-dropdown__shortcut {
+  color: var(--faint);
+  font-size: var(--fs-3);
+  margin-left: var(--space-16);
 }
 
 .menu-dropdown__item:hover {

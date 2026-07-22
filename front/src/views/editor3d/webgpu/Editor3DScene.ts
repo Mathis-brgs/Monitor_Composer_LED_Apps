@@ -12,6 +12,7 @@ import {
   Matrix4,
   Mesh,
   MeshBasicNodeMaterial,
+  MOUSE,
   Object3D,
   PerspectiveCamera,
   Plane,
@@ -40,7 +41,6 @@ const LED_RADIUS = (PITCH * LED_FILL) / 2; // rayon physique d'une LED
 const ACCENT = new Color(0xff8a3d);
 const HELPER_DIM = 0.28;  // opacité des helpers non sélectionnés (discrets)
 const HELPER_LIT = 0.9;   // opacité du helper sélectionné
-const CLICK_PX = 5;       // tolérance clic vs drag (sélection au clic)
 const FIXTURE_MARKER_RADIUS = 0.06; // repère visuel spot/lyre (position seule, pas de calcul sur le mur)
 
 export type OrientAxis = "x" | "y" | "z" | "-x" | "-y" | "-z";
@@ -90,9 +90,11 @@ export class Editor3DScene {
   private readonly _onDown: (e: PointerEvent) => void;
   private readonly _onUp: (e: PointerEvent) => void;
   private _dragging = false;
-  private _downX = 0;
-  private _downY = 0;
   private _aspect = 0;
+  private _onMove: ((e: PointerEvent) => void) | null = null;
+  private _onUpMove: ((e: PointerEvent) => void) | null = null;
+  private readonly _marquee: HTMLElement;
+  private readonly _onContextMenu = (e: MouseEvent): void => e.preventDefault();
 
   constructor(renderer: WebGPURenderer, editor: Editor, engineTexture: Texture) {
     this._renderer = renderer;
@@ -104,6 +106,11 @@ export class Editor3DScene {
     this._controls.enableDamping = true;
     this._controls.dampingFactor = 0.08;
     this._controls.target.set(0, 0, 0);
+    this._controls.mouseButtons = {
+      LEFT: null as any,
+      MIDDLE: MOUSE.PAN,
+      RIGHT: MOUSE.ROTATE,
+    };
 
     // Géométrie de base du mur = plan segmenté 128×128 (demain : sphère/cube → LEDs suivent).
     const base = new PlaneGeometry(2 * HALF, 2 * HALF, N - 1, N - 1);
@@ -171,13 +178,97 @@ export class Editor3DScene {
 
     // Sélection au clic (raycast) : on distingue un clic d'un drag d'orbite / gizmo.
     const dom = renderer.domElement;
-    this._onDown = (e: PointerEvent): void => { this._downX = e.clientX; this._downY = e.clientY; };
-    this._onUp = (e: PointerEvent): void => this._pick(e);
+    const parent = dom.parentElement || document.body;
+    const marquee = document.createElement("div");
+    marquee.className = "seq__marquee";
+    marquee.style.display = "none";
+    parent.appendChild(marquee);
+    this._marquee = marquee;
+
+    this._onDown = (e: PointerEvent): void => {
+      if (e.button === 0 && !this._dragging && !this._handleDrag) {
+        const rect = dom.getBoundingClientRect();
+
+        // Si le gizmo est actif, vérifier si on clique dessus pour éviter de changer de sélection
+        if (this._gizmo.object) {
+          this._ndc.set(
+            ((e.clientX - rect.left) / rect.width) * 2 - 1,
+            -((e.clientY - rect.top) / rect.height) * 2 + 1,
+          );
+          this._raycaster.setFromCamera(this._ndc, this._camera);
+          const gizmoHits = this._raycaster.intersectObject(this._gizmo.getHelper(), true);
+          if (gizmoHits.length > 0) {
+            return;
+          }
+        }
+
+        const startX = e.clientX;
+        const startY = e.clientY;
+        let moved = false;
+
+        this._onMove = (moveEvent: PointerEvent): void => {
+          if (this._dragging || this._handleDrag) return;
+          const currentRect = dom.getBoundingClientRect();
+          if (currentRect.width === 0 || currentRect.height === 0) return;
+
+          const dx = moveEvent.clientX - startX;
+          const dy = moveEvent.clientY - startY;
+
+          if (!moved && Math.hypot(dx, dy) > 4) {
+            moved = true;
+            marquee.style.display = "block";
+          }
+
+          if (moved) {
+            const left = Math.min(startX, moveEvent.clientX) - currentRect.left;
+            const top = Math.min(startY, moveEvent.clientY) - currentRect.top;
+            const width = Math.abs(dx);
+            const height = Math.abs(dy);
+
+            marquee.style.left = `${left}px`;
+            marquee.style.top = `${top}px`;
+            marquee.style.width = `${width}px`;
+            marquee.style.height = `${height}px`;
+          }
+        };
+
+        this._onUpMove = (upEvent: PointerEvent): void => {
+          if (this._onMove) {
+            window.removeEventListener("pointermove", this._onMove);
+            this._onMove = null;
+          }
+          if (this._onUpMove) {
+            window.removeEventListener("pointerup", this._onUpMove);
+            this._onUpMove = null;
+          }
+
+          marquee.style.display = "none";
+
+          if (moved) {
+            this._pickBox(startX, startY, upEvent.clientX, upEvent.clientY);
+          } else {
+            this._pickAt(startX, startY);
+          }
+        };
+
+        window.addEventListener("pointermove", this._onMove);
+        window.addEventListener("pointerup", this._onUpMove);
+      }
+    };
+    this._onUp = (_e: PointerEvent): void => this._pick();
     // Phase capture : intercepte un clic sur une poignée de motion path AVANT l'orbite / la sélection.
-    this._onDownCapture = (e: PointerEvent): void => this._beginHandleDrag(e);
+    this._onDownCapture = (e: PointerEvent): void => {
+      this._beginHandleDrag(e);
+      if (this._handleDrag) {
+        this._controls.enabled = false;
+      } else {
+        this._controls.enabled = true;
+      }
+    };
     dom.addEventListener("pointerdown", this._onDownCapture, true);
     dom.addEventListener("pointerdown", this._onDown);
     dom.addEventListener("pointerup", this._onUp);
+    dom.addEventListener("contextmenu", this._onContextMenu);
 
     this._unsub = editor.subscribe(() => this._rebuild());
     this._rebuild();
@@ -221,6 +312,16 @@ export class Editor3DScene {
     dom.removeEventListener("pointerdown", this._onDownCapture, true);
     dom.removeEventListener("pointerdown", this._onDown);
     dom.removeEventListener("pointerup", this._onUp);
+    dom.removeEventListener("contextmenu", this._onContextMenu);
+    if (this._onMove) {
+      window.removeEventListener("pointermove", this._onMove);
+      this._onMove = null;
+    }
+    if (this._onUpMove) {
+      window.removeEventListener("pointerup", this._onUpMove);
+      this._onUpMove = null;
+    }
+    this._marquee.remove();
     this._clearGroup(this._objects);
     this._clearGroup(this._picks);
     this._clearPath();
@@ -417,19 +518,74 @@ export class Editor3DScene {
     });
   }
 
-  /** clic (pas un drag) → sélectionne la shape sous le curseur, sinon désélectionne. */
-  private _pick(e: PointerEvent): void {
-    if (this._dragging || this._handleDrag) return; // relâché après un drag de gizmo / de poignée
-    if (Math.hypot(e.clientX - this._downX, e.clientY - this._downY) > CLICK_PX) return; // c'était un orbit
+  /** Relâchement du pointer : ré-active OrbitControls pour les autres interactions (ex: zoom) */
+  private _pick(): void {
+    this._controls.enabled = true;
+  }
+
+  /** Sélectionne l'objet à la coordonnée spécifiée (raycast) sans déplacer la caméra */
+  private _pickAt(clientX: number, clientY: number): void {
+    if (this._dragging || this._handleDrag) return;
     const rect = this._renderer.domElement.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
+
     this._ndc.set(
-      ((e.clientX - rect.left) / rect.width) * 2 - 1,
-      -((e.clientY - rect.top) / rect.height) * 2 + 1,
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
     );
     this._raycaster.setFromCamera(this._ndc, this._camera);
+
+    // Si le gizmo est actif, vérifier si on clique dessus pour éviter de changer de sélection
+    if (this._gizmo.object) {
+      const gizmoHits = this._raycaster.intersectObject(this._gizmo.getHelper(), true);
+      if (gizmoHits.length > 0) {
+        return;
+      }
+    }
+
     const hits = this._raycaster.intersectObjects(this._picks.children, false);
     this._editor.select(hits.length ? (hits[0].object.userData.id as string) : null);
+  }
+
+  /** Sélectionne le premier objet visible dont la projection 2D intersecte la boîte 2D */
+  private _pickBox(startX: number, startY: number, endX: number, endY: number): void {
+    const box = {
+      left: Math.min(startX, endX),
+      top: Math.min(startY, endY),
+      right: Math.max(startX, endX),
+      bottom: Math.max(startY, endY),
+    };
+
+    const rect = this._renderer.domElement.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+
+    const tempV = new Vector3();
+    const candidates: { id: string; depth: number }[] = [];
+
+    for (const child of this._picks.children) {
+      const worldPos = new Vector3();
+      worldPos.setFromMatrixPosition(child.matrixWorld);
+
+      // Projecter en NDC
+      tempV.copy(worldPos).project(this._camera);
+
+      // Convertir en coordonnées pixel écran
+      const pxX = ((tempV.x + 1) / 2) * rect.width + rect.left;
+      const pxY = (-(tempV.y - 1) / 2) * rect.height + rect.top;
+
+      if (pxX >= box.left && pxX <= box.right && pxY >= box.top && pxY <= box.bottom) {
+        const dist = worldPos.distanceTo(this._camera.position);
+        candidates.push({ id: child.userData.id as string, depth: dist });
+      }
+    }
+
+    if (candidates.length > 0) {
+      // Trier par profondeur (le plus proche de la caméra en premier)
+      candidates.sort((a, b) => a.depth - b.depth);
+      this._editor.select(candidates[0].id);
+    } else {
+      this._editor.select(null);
+    }
   }
 
   private _clearGroup(group: Group): void {
