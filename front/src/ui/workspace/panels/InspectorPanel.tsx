@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, Show, type Accessor, type JSX } from "solid-js";
 import type { Editor } from "@core/Editor.ts";
-import type { Fill, GroupLayer, Layer, LyreLayer, MaterialMode, PrecompLayer, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
+import type { Fill, Layer, LyreLayer, MaterialMode, PrecompLayer, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
 import { fromStore } from "@ui/solid/store.ts";
 import { solidPanel } from "@ui/solid/mount.ts";
 import { Checkbox, ColorField, MediaField, NumberField, Row, Section, Segmented, Slider, TextField } from "@ui/solid/controls.tsx";
@@ -44,28 +44,6 @@ function Vec3Field(props: {
   );
 }
 
-/** Sélecteur de parent (transform hérité) : « Aucun » + les autres calques du groupe actif. */
-function ParentField(props: { editor: Editor; node: Layer; changed: Accessor<unknown> }): JSX.Element {
-  const { editor, node, changed } = props;
-  const options = createMemo(() => { changed(); return editor.children.filter((l) => l.id !== node.id); });
-  const current = createMemo(() => { changed(); return node.parentId ?? ""; });
-  return (
-    <select
-      class="insp-field insp-field--editable insp-control insp-select"
-      value={current()}
-      onChange={(e) => {
-        editor.setParent(node.id, e.currentTarget.value || null);
-        e.currentTarget.value = node.parentId ?? ""; // resync si refusé (cycle)
-      }}
-    >
-      <option value="">Aucun</option>
-      <For each={options()}>
-        {(l) => <option value={l.id}>{l.name}</option>}
-      </For>
-    </select>
-  );
-}
-
 /** Association « groupé sous un média » : le calque n'est actif que dans la fenêtre du média parent. */
 function MediaGroupField(props: { editor: Editor; node: Layer; changed: Accessor<unknown> }): JSX.Element {
   const { editor, node, changed } = props;
@@ -102,12 +80,12 @@ function Inspector(props: { editor: Editor }): JSX.Element {
 function NodeBody(props: { editor: Editor; node: Layer | null; changed: Accessor<unknown> }): JSX.Element {
   const { editor, node, changed } = props;
   if (!node) return <div class="insp-empty">Aucune sélection</div>;
+  const name = createMemo(() => { changed(); return node.name; });
   return (
     <>
-      <ObjectHeader node={node} />
+      <ObjectHeader node={node} changed={changed} />
       <Section title="Général">
-        <Row label="Nom"><TextField value={node.name} onInput={(v) => editor.setName(node.id, v)} /></Row>
-        <Row label="Parent"><ParentField editor={editor} node={node} changed={changed} /></Row>
+        <Row label="Nom"><TextField value={name()} onInput={(v) => editor.setName(node.id, v)} /></Row>
         <Show when={node.type !== "audio" && node.type !== "video"}>
           <Row label="Groupe média"><MediaGroupField editor={editor} node={node} changed={changed} /></Row>
         </Show>
@@ -116,10 +94,7 @@ function NodeBody(props: { editor: Editor; node: Layer | null; changed: Accessor
         <ShapeBody editor={editor} node={node as ShapeLayer} changed={changed} />
       </Show>
       <Show when={node.type === "shader"}>
-        <ShaderBody editor={editor} node={node as ShaderLayer} />
-      </Show>
-      <Show when={node.type === "group"}>
-        <GroupBody editor={editor} node={node as GroupLayer} />
+        <ShaderBody editor={editor} node={node as ShaderLayer} changed={changed} />
       </Show>
       <Show when={node.type === "spot"}>
         <SpotBody editor={editor} node={node as SpotLayer} changed={changed} />
@@ -374,6 +349,8 @@ function ShapeBody(props: { editor: Editor; node: ShapeLayer; changed: Accessor<
   const position = createMemo(() => { changed(); return node.transform.position; });
   const rotation = createMemo(() => { changed(); return node.transform.rotation; });
   const scale = createMemo(() => { changed(); return node.transform.scale; });
+  const opacity = createMemo(() => { changed(); return node.opacity; });
+  const showHelper = createMemo(() => { changed(); return node.showHelper; });
   return (
     <>
       <Section title="Transform">
@@ -398,70 +375,55 @@ function ShapeBody(props: { editor: Editor; node: ShapeLayer; changed: Accessor<
       <Section title="Apparence">
         <FillFields editor={editor} id={id} fill={node.fill} />
         <Row label="Opacité">
-          <Slider value={node.opacity} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
+          <Slider value={opacity()} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
           <KeyDot editor={editor} id={id} channels={["opacity"]} />
         </Row>
-        <Row label="Helper"><Checkbox checked={node.showHelper} onChange={(v) => editor.setShowHelper(id, v)} /></Row>
+        <Row label="Helper"><Checkbox checked={showHelper()} onChange={(v) => editor.setShowHelper(id, v)} /></Row>
       </Section>
     </>
   );
 }
 
-function ShaderBody(props: { editor: Editor; node: ShaderLayer }): JSX.Element {
-  const { editor, node } = props;
+function ShaderBody(props: { editor: Editor; node: ShaderLayer; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
   const id = node.id;
+  const param = (k: "speed" | "detail" | "contrast") => createMemo(() => { changed(); return node.params[k] ?? 0; });
+  const speed = param("speed"), detail = param("detail"), contrast = param("contrast");
+  const color = createMemo(() => { changed(); return node.color; });
+  const blend = createMemo(() => { changed(); return node.blend; });
+  const opacity = createMemo(() => { changed(); return node.opacity; });
   return (
     <Section title={node.name}>
       <Show when={node.shader === "plasma"}>
         <Row label="Vitesse">
-          <Slider value={node.params.speed ?? 0} onInput={(v) => editor.setParam(id, "speed", v)} />
+          <Slider value={speed()} onInput={(v) => editor.setParam(id, "speed", v)} />
           <KeyDot editor={editor} id={id} channels={["param.speed"]} />
         </Row>
         <Row label="Détail">
-          <Slider value={node.params.detail ?? 0} onInput={(v) => editor.setParam(id, "detail", v)} />
+          <Slider value={detail()} onInput={(v) => editor.setParam(id, "detail", v)} />
           <KeyDot editor={editor} id={id} channels={["param.detail"]} />
         </Row>
         <Row label="Contraste">
-          <Slider value={node.params.contrast ?? 0} onInput={(v) => editor.setParam(id, "contrast", v)} />
+          <Slider value={contrast()} onInput={(v) => editor.setParam(id, "contrast", v)} />
           <KeyDot editor={editor} id={id} channels={["param.contrast"]} />
         </Row>
       </Show>
       <Show when={node.shader === "solid"}>
         <Row label="Couleur">
-          <ColorField value={node.color} onInput={(c) => editor.setColor(id, c)} />
+          <ColorField value={color()} onInput={(c) => editor.setColor(id, c)} />
           <KeyDot editor={editor} id={id} channels={["color.r", "color.g", "color.b"]} />
         </Row>
       </Show>
       <Row label="Fusion">
         <Segmented
           options={["Normal", "Additif"]}
-          active={node.blend === "add" ? 1 : 0}
+          active={blend() === "add" ? 1 : 0}
           onChange={(i) => editor.setBlend(id, i === 1 ? "add" : "normal")}
         />
       </Row>
       <Row label="Opacité">
-        <Slider value={node.opacity} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
+        <Slider value={opacity()} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
         <KeyDot editor={editor} id={id} channels={["opacity"]} />
-      </Row>
-    </Section>
-  );
-}
-
-function GroupBody(props: { editor: Editor; node: GroupLayer }): JSX.Element {
-  const { editor, node } = props;
-  const id = node.id;
-  return (
-    <Section title="Groupe">
-      <Row label="Calques"><div class="insp-field insp-control">{`${node.children.length}`}</div></Row>
-      <Row label="Fusion">
-        <Segmented
-          options={["Normal", "Additif"]}
-          active={node.blend === "add" ? 1 : 0}
-          onChange={(i) => editor.setBlend(id, i === 1 ? "add" : "normal")}
-        />
-      </Row>
-      <Row label="Opacité">
-        <Slider value={node.opacity} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
       </Row>
     </Section>
   );
@@ -593,13 +555,16 @@ function LyreBody(props: { editor: Editor; node: LyreLayer; changed: Accessor<un
   );
 }
 
-function ObjectHeader(props: { node: Layer }): JSX.Element {
+function ObjectHeader(props: { node: Layer; changed: Accessor<unknown> }): JSX.Element {
+  const name = createMemo(() => { props.changed(); return props.node.name; });
+  const sub = createMemo(() => { props.changed(); return subtitle(props.node); });
+  const thumb = createMemo(() => { props.changed(); return thumbBg(props.node); });
   return (
     <div class="insp-object">
-      <div class="insp-object__thumb" style={{ background: thumbBg(props.node) }} />
+      <div class="insp-object__thumb" style={{ background: thumb() }} />
       <div class="insp-object__info">
-        <div class="insp-object__name">{props.node.name}</div>
-        <div class="insp-object__sub">{subtitle(props.node)}</div>
+        <div class="insp-object__name">{name()}</div>
+        <div class="insp-object__sub">{sub()}</div>
       </div>
     </div>
   );

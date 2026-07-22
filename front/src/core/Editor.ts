@@ -1,9 +1,9 @@
 import { Euler, Matrix4, Quaternion, Vector3 } from "three/webgpu";
 import type { Engine } from "./engine/Engine.ts";
 import {
-  makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, makeVideo, makePrecomp, findLayer, findGroup, findParent, groupChildren, collectSubtreeIds,
+  makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, makeVideo, makePrecomp, findLayer, findGroup, findParent, groupChildren, collectSubtreeIds,
   fixtureDmxChannels, layerActiveAt, mediaClipActiveAt, mediaSourceFrameAt, mediaFadeGain, mediaGroupActiveAt, precompActiveAt, precompChildFrame,
-  wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
+  SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
   type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer, type VideoLayer,
   type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type MediaClip, type SpotChannels, type LyreChannels,
   type MaterialPreset, type MaterialMode,
@@ -380,32 +380,11 @@ export class Editor {
     for (const t of [tx, ty, tz]) if (t) for (const k of t.keyframes) frames.add(k.frame);
     const layer = findLayer(this._doc.root, id);
     const base = layer?.transform.position ?? { x: 0, y: 0, z: 0 };
-    // parenté : le chemin (positions locales keyframées) est exprimé dans l'espace du parent
-    const parentM = layer?.parentId ? this._worldMatrix(layer.parentId) : null;
     const at = (t: Track | undefined, fallback: number, frame: number): number =>
       t && t.keyframes.length ? sampleKeyframes(t.keyframes, frame) : fallback;
-    return [...frames].sort((a, b) => a - b).map((frame) => {
-      const local = new Vector3(at(tx, base.x, frame), at(ty, base.y, frame), at(tz, base.z, frame));
-      if (parentM) local.applyMatrix4(parentM);
-      return { frame, x: local.x, y: local.y, z: local.z };
-    });
-  }
-
-  enterGroup(id: string): void {
-    if (!findGroup(this._doc.root, id)) return;
-    this._doc.activeGroupId = id;
-    this._doc.selectedId = null;
-    this._push();
-    this._emit();
-  }
-
-  exitGroup(): void {
-    const parent = findParent(this._doc.root, this._doc.activeGroupId);
-    if (!parent) return;
-    this._doc.activeGroupId = parent.id;
-    this._doc.selectedId = null;
-    this._push();
-    this._emit();
+    return [...frames].sort((a, b) => a - b).map((frame) => ({
+      frame, x: at(tx, base.x, frame), y: at(ty, base.y, frame), z: at(tz, base.z, frame),
+    }));
   }
 
   /** Entre dans une comp imbriquée (précomp/prérendu) : bascule vue + animation + horloge. */
@@ -617,21 +596,10 @@ export class Editor {
     return id;
   }
 
-  addGroup(): string {
-    this._counter += 1;
-    const id = `group-${this._counter}`;
-    const group = makeGroup(id, `Groupe ${String(this._counter).padStart(2, "0")}`);
-    this._activeGroup().children.unshift(group);
-    this._doc.selectedId = id;
-    this._push();
-    this._emit();
-    return id;
-  }
-
   /**
-   * Calques cibles d'une action groupée (précomposer/grouper) : les frères sélectionnés du parent de la
-   * sélection primaire, en ordre d'arbre. Gère la sélection multiple (`_multi`) et la simple. Une sélection
-   * éparse sur plusieurs parents est réduite au parent de la primaire (comme After Effects).
+   * Calques cibles d'une précomposition : les frères sélectionnés du parent de la sélection primaire,
+   * en ordre d'arbre. Gère la sélection multiple (`_multi`) et la simple. Une sélection éparse sur
+   * plusieurs parents est réduite au parent de la primaire (comme After Effects).
    */
   private _siblingTargets(): { parent: GroupLayer; ordered: Layer[]; idx: number } | null {
     const ids = this._multi.size ? [...this._multi] : (this._doc.selectedId ? [this._doc.selectedId] : []);
@@ -682,24 +650,6 @@ export class Editor {
     this._push();
     this._emit();
     return compId;
-  }
-
-  /** Groupe la sélection (frères) dans un nouveau groupe, à leur place. Les ids/tracks sont conservés. */
-  groupSelection(): string | null {
-    const t = this._siblingTargets();
-    if (!t) return null;
-    const { parent, ordered, idx } = t;
-
-    this._counter += 1;
-    const group = makeGroup(`group-${this._counter}`, `Groupe ${String(this._counter).padStart(2, "0")}`);
-    for (const l of ordered) parent.children.splice(parent.children.findIndex((c) => c.id === l.id), 1);
-    group.children.push(...ordered);
-    parent.children.splice(Math.min(idx, parent.children.length), 0, group);
-    this.select(group.id);
-
-    this._push();
-    this._emit();
-    return group.id;
   }
 
   /** Ajoute une précomposition vide + son instance dans le groupe actif. */
@@ -938,17 +888,7 @@ export class Editor {
     this._emit();
   }
 
-  /** Parente un calque (transform hérité), ou le détache (null). Refuse un cycle. */
-  setParent(id: string, parentId: string | null): void {
-    const layer = findLayer(this._doc.root, id);
-    if (!layer || id === parentId) return;
-    if (parentId && wouldCycle(this._doc.root, id, parentId)) return;
-    layer.parentId = parentId || undefined;
-    this._recomputeScene();
-    this._emit();
-  }
-
-  /** Transform monde d'un calque (compose la chaîne de parents). */
+  /** Transform monde d'un calque. Sans parenting = transform local (normalisé via quaternion). */
   worldTransform(id: string): Transform {
     const p = new Vector3(), q = new Quaternion(), s = new Vector3();
     this._worldMatrix(id).decompose(p, q, s);
@@ -956,14 +896,12 @@ export class Editor {
     return { position: { x: p.x, y: p.y, z: p.z }, rotation: { x: e.x, y: e.y, z: e.z }, scale: { x: s.x, y: s.y, z: s.z } };
   }
 
-  /** Écrit un transform exprimé en monde → stocke le local (monde ÷ parent). Pour le gizmo d'un calque parenté. */
+  /** Écrit un transform exprimé en monde (= local sans parenting). Pour le gizmo. */
   setWorldTransform(id: string, world: Transform): void {
     const layer = findLayer(this._doc.root, id);
     if (!layer) return;
-    let local = this._matrixOf(world);
-    if (layer.parentId) local = this._worldMatrix(layer.parentId).invert().multiply(local);
     const p = new Vector3(), q = new Quaternion(), s = new Vector3();
-    local.decompose(p, q, s);
+    this._matrixOf(world).decompose(p, q, s);
     const e = new Euler().setFromQuaternion(q, "XYZ");
     this.setTransform(id, { position: { x: p.x, y: p.y, z: p.z }, rotation: { x: e.x, y: e.y, z: e.z }, scale: { x: s.x, y: s.y, z: s.z } });
   }
@@ -1268,19 +1206,16 @@ export class Editor {
     );
   }
 
-  /** Matrice monde d'un calque (parentWorld * local), en remontant la chaîne (garde anti-cycle). */
-  private _worldMatrix(id: string, guard: Set<string> = new Set()): Matrix4 {
-    return this._worldMatrixIn(this._doc.root, id, guard);
+  /** Matrice monde d'un calque (= matrice locale, sans parenting). */
+  private _worldMatrix(id: string): Matrix4 {
+    return this._worldMatrixIn(this._doc.root, id);
   }
 
-  /** Matrice monde d'un calque dans un arbre donné (pour rendre une comp imbriquée). */
-  private _worldMatrixIn(root: GroupLayer, id: string, guard: Set<string> = new Set()): Matrix4 {
+  /** Matrice locale d'un calque dans un arbre donné (pour rendre une comp imbriquée). */
+  private _worldMatrixIn(root: GroupLayer, id: string): Matrix4 {
     const layer = findLayer(root, id);
     if (!layer) return new Matrix4();
-    const local = this._matrixOf(layer.transform);
-    if (!layer.parentId || guard.has(id)) return local;
-    guard.add(id);
-    return this._worldMatrixIn(root, layer.parentId, guard).multiply(local);
+    return this._matrixOf(layer.transform);
   }
 
   private _toInput(s: ShapeLayer): ShapeInput {

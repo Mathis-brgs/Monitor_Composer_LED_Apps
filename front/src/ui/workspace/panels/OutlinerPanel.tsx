@@ -18,18 +18,16 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
   const trail = fromStore(editor, () => editor.compTrail);
   const multi = fromStore(editor, () => editor.multiSelectedIds);
   const multiSet = createMemo(() => new Set(multi()));
-  const atGroupRoot = createMemo(() => { changed(); return editor.activeGroupId === editor.rootId; });
-  // Retour possible seulement s'il y a où aller : un sous-groupe interne OU une comp imbriquée (pas au main root).
-  const canGoBack = createMemo(() => !atGroupRoot() || trail().length > 1);
+  // Retour possible seulement s'il y a où aller : une comp imbriquée (pas au niveau du main).
+  const canGoBack = createMemo(() => trail().length > 1);
   const [editingId, setEditingId] = createSignal<string | null>(null);
   const [ctx, setCtx] = createSignal<CtxTarget | null>(null);
 
-  // retour : d'abord remonter les groupes internes, puis sortir de la comp.
-  const goBack = () => { if (!atGroupRoot()) editor.exitGroup(); else editor.exitComp(); };
+  const goBack = () => editor.exitComp();
 
   // Sélection multiple au niveau modèle (shift = plage, ctrl/cmd = ajout un par un). `editor.selectedId`
   // (unique) reste la sélection primaire pour l'Inspecteur/gizmo ; `editor.multiSelectedIds` porte le set
-  // pour les actions groupées (précomposer, grouper, supprimer).
+  // pour les actions groupées (précomposer, supprimer).
   let anchorIndex = -1;
   let root!: HTMLDivElement;
 
@@ -148,7 +146,6 @@ function ContextMenu(props: { editor: Editor; target: CtxTarget; close: () => vo
       <MenuItem label="Ouvrir la composition" disabled={!isPrecomp} close={close} onRun={() => { if (isPrecomp) editor.enterComp(layer.compId); }} />
       <div class="ctx-menu__sep" />
       <MenuItem label="Précomposer la sélection" shortcut="⌘⇧C" close={close} onRun={() => editor.precomposeSelection()} />
-      <MenuItem label="Grouper" shortcut="⌘G" close={close} onRun={() => editor.groupSelection()} />
       <div class="ctx-menu__sep" />
       <MenuItem label="Supprimer" danger close={close} onRun={() => editor.deleteSelected()} />
     </div>
@@ -248,9 +245,8 @@ function LayerRow(props: {
       onClick={(e) => props.onRowClick(e)}
       onContextMenu={(e) => props.onContext(e)}
       onDblClick={() => {
-        // double-clic = ENTRER dans la composition/groupe (le renommage passe par le clic droit).
-        if (layer.type === "group") editor.enterGroup(layer.id);
-        else if (layer.type === "precomp") editor.enterComp(layer.compId);
+        // double-clic = ENTRER dans la composition (le renommage passe par le clic droit).
+        if (layer.type === "precomp") editor.enterComp(layer.compId);
       }}
     >
       <span class="layer__glyph">{glyph()}</span>
@@ -304,8 +300,10 @@ export function createOutlinerPanel(editor: Editor): Panel {
       const add = document.createElement("button");
       add.type = "button";
       add.className = "compositor__add";
+      add.title = "Ajouter (⇧A)";
       add.appendChild(createIcon("plus", { size: 12 }));
-      add.addEventListener("click", () => editor.addGroup());
+      // ouvre la palette d'ajout (⇧A), montée par AppShell — découplé via événement fenêtre.
+      add.addEventListener("click", () => window.dispatchEvent(new CustomEvent("led:open-add-palette")));
       header.append(spacer, count, add);
     },
     body: () => <LayerTree editor={editor} />,

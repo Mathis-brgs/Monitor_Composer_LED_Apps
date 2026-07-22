@@ -64,8 +64,6 @@ interface LayerBase {
   locked?: boolean;
   /** Couleur de label (hex) pour le tri visuel. Absent = pas de label. */
   label?: string;
-  /** Parent (transform hérité) : le transform monde = transform monde du parent ∘ transform local. */
-  parentId?: string;
   /** Groupe temporel (montage) : hérite la fenêtre active du clip média parent. */
   mediaGroupId?: string;
   /** Bindings audio-reactifs : pilotent un canal depuis une feature d'un calque audio. */
@@ -295,19 +293,6 @@ export function applyMap(map: MapRange, v: number): number {
   if (map.inMax === map.inMin) return map.outMin;
   const t = Math.max(0, Math.min(1, (v - map.inMin) / (map.inMax - map.inMin)));
   return map.outMin + t * (map.outMax - map.outMin);
-}
-
-/** Parenter `id` à `parentId` créerait-il un cycle ? (parentId a-t-il `id` comme ancêtre, ou chaîne déjà cyclique) */
-export function wouldCycle(root: GroupLayer, id: string, parentId: string): boolean {
-  let cur: string | null | undefined = parentId;
-  const seen = new Set<string>();
-  while (cur) {
-    if (cur === id) return true;
-    if (seen.has(cur)) return true;
-    seen.add(cur);
-    cur = findLayer(root, cur)?.parentId;
-  }
-  return false;
 }
 
 /** Document = arbre (racine) + groupe où l'on se trouve + sélection + bibliothèque de matériaux.

@@ -48,6 +48,8 @@ export class AppShell {
     this._tabBar = new TabBar(this._activeSpace, opts.clock, opts.live, (id) => this._selectSpace(id));
     this.menuBar = new MenuBar(config);
     this._addPalette = new AddPalette(opts.editor);
+    // Bouton « + » de l'Outliner (et autres) → ouvre la palette d'ajout, sans couplage direct.
+    window.addEventListener("led:open-add-palette", () => this._addPalette.open());
 
     this.element = document.createElement("div");
     this.element.className = "shell";
@@ -75,11 +77,6 @@ export class AppShell {
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "c" || e.key === "C")) {
         e.preventDefault();
         opts.editor.precomposeSelection();
-        return;
-      }
-      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "g" || e.key === "G")) {
-        e.preventDefault();
-        opts.editor.groupSelection();
         return;
       }
       // ⇧A : palette d'ajout (primitives / fixtures / comps) — n'importe où dans la vue.

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   findLayer, findGroup, findParent, groupChildren,
   makeGroup, makeShape, makeShaderLayer, makeAudio, type Document,
-  layerActiveAt, moveClip, trimIn, trimOut, wouldCycle,
+  layerActiveAt, moveClip, trimIn, trimOut,
   mediaClipLength, mediaClipTimelineOut, mediaClipActiveAt, mediaSourceFrameAt,
   moveMediaClip, trimMediaIn, trimMediaOut, splitMediaClip, mediaFadeGain, applyMap,
   mediaGroupActiveAt, collectSubtreeIds, makePrecomp, precompActiveAt, precompChildFrame,
@@ -209,18 +209,4 @@ test("applyMap : remappage linéaire clampé", () => {
   assert.equal(applyMap(m, 2), 255); // clamp haut
   assert.equal(applyMap(m, -1), 0); // clamp bas
   assert.equal(applyMap({ inMin: 5, inMax: 5, outMin: 3, outMax: 9 }, 5), 3); // dégénéré → outMin
-});
-
-test("wouldCycle détecte les cycles de parentage", () => {
-  const root = makeGroup("root", "R");
-  const a = makeShape("a", "box", "A");
-  const b = makeShape("b", "box", "B");
-  const c = makeShape("c", "box", "C");
-  root.children.push(a, b, c);
-  b.parentId = "a"; // b enfant de a
-  c.parentId = "b"; // c enfant de b (a → b → c)
-  assert.equal(wouldCycle(root, "a", "c"), true);  // parenter a à c fermerait la boucle
-  assert.equal(wouldCycle(root, "a", "b"), true);  // idem
-  assert.equal(wouldCycle(root, "c", "a"), false); // c déjà descendant de a, mais pas de cycle
-  assert.equal(wouldCycle(root, "a", "a"), true);  // soi-même
 });

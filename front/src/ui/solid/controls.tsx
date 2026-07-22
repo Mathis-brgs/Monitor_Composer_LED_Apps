@@ -54,6 +54,10 @@ export function Slider(props: SliderProps): JSX.Element {
   const format = props.format ?? ((v: number) => v.toFixed(2));
   const [v, setV] = createSignal(props.value);
   let track!: HTMLDivElement;
+  let dragging = false;
+
+  // resync externe (undo, autre panneau, animation) tant qu'on ne glisse pas ce slider
+  createEffect(() => { const next = props.value; if (!dragging) setV(next); });
 
   const set = (clientX: number): void => {
     const rect = track.getBoundingClientRect();
@@ -64,10 +68,12 @@ export function Slider(props: SliderProps): JSX.Element {
 
   const onPointerDown = (e: PointerEvent): void => {
     if (!props.onInput) return;
+    dragging = true;
     track.setPointerCapture(e.pointerId);
     set(e.clientX);
     const move = (ev: PointerEvent): void => set(ev.clientX);
     const up = (ev: PointerEvent): void => {
+      dragging = false;
       track.releasePointerCapture(ev.pointerId);
       track.removeEventListener("pointermove", move);
       track.removeEventListener("pointerup", up);
@@ -98,6 +104,7 @@ export function Segmented(props: {
   onChange?: (index: number) => void;
 }): JSX.Element {
   const [active, setActive] = createSignal(props.active);
+  createEffect(() => setActive(props.active)); // resync externe (autre panneau, undo)
   return (
     <div class="segmented insp-control">
       <For each={props.options}>
@@ -219,6 +226,7 @@ export function NumberField(props: NumberFieldProps): JSX.Element {
 /** Case à cocher (pastille accent quand active). */
 export function Checkbox(props: { checked: boolean; onChange?: (v: boolean) => void }): JSX.Element {
   const [on, setOn] = createSignal(props.checked);
+  createEffect(() => setOn(props.checked)); // resync externe
   return (
     <div
       class="insp-check insp-control"
@@ -228,14 +236,21 @@ export function Checkbox(props: { checked: boolean; onChange?: (v: boolean) => v
   );
 }
 
-/** Champ texte éditable (rename) — commit sur blur/Enter. */
+/** Champ texte éditable (rename) — commit sur blur/Enter. Se resynchronise sur `props.value`
+ *  tant que le champ n'a pas le focus (reflète un changement fait ailleurs, ex : renommage Outliner). */
 export function TextField(props: { value: string; onInput?: (v: string) => void }): JSX.Element {
+  const [v, setV] = createSignal(props.value);
+  let focused = false;
+  createEffect(() => { const next = props.value; if (!focused) setV(next); });
   return (
     <input
       class="insp-text insp-control"
       type="text"
-      value={props.value}
-      onChange={(e) => props.onInput?.((e.currentTarget as HTMLInputElement).value)}
+      value={v()}
+      onFocus={() => { focused = true; }}
+      onInput={(e) => setV((e.currentTarget as HTMLInputElement).value)}
+      onBlur={(e) => { focused = false; props.onInput?.((e.currentTarget as HTMLInputElement).value); }}
+      onKeyDown={(e) => { if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur(); }}
     />
   );
 }
@@ -287,6 +302,7 @@ export interface ColorFieldProps {
 export function ColorField(props: ColorFieldProps): JSX.Element {
   let input!: HTMLInputElement;
   const [hex, setHex] = createSignal(rgbToHex(props.value));
+  createEffect(() => setHex(rgbToHex(props.value))); // resync externe (autre panneau, undo, animation)
   return (
     <div class="insp-color insp-control" onClick={() => input.click()}>
       <div class="insp-color__swatch" style={{ background: hex() }} />
