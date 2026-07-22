@@ -1,20 +1,31 @@
 import { Mesh, MeshBasicNodeMaterial, NearestFilter, OrthographicCamera, PlaneGeometry, RenderTarget, Scene, type WebGPURenderer } from "three/webgpu";
-import { float, mul, uv, wgslFn } from "three/tsl";
+import * as TSL from "three/tsl";
 import type { MaterialMode } from "@domain/Layer.ts";
 
 /** Résolution du bake : alignée sur `VIDEO_SAMPLE_SIZE` (Editor.ts) et la RT du moteur (Scene3D). */
 const SIZE = 128;
 
+// Tout l'espace de noms TSL (uv, vec3, mul, sin, mix, mx_noise_float, …) exposé tel quel au
+// fragment utilisateur : même API que Plasma.layer.ts/Sweep.layer.ts, pas un sous-ensemble
+// choisi à la main — donc du "vrai" TSL, pas du WGSL brut.
+const TSL_NAMES = Object.keys(TSL);
+const TSL_VALUES = Object.values(TSL);
+
 /**
- * Bake hors-écran d'un matériau personnalisé (fragment WGSL, via `wgslFn` de TSL) en bitmap
- * RGBA — réutilise le renderer WebGPU PARTAGÉ de l'app (voir `core/device.ts`, un seul device
- * pour tout le logiciel) : rend un quad plein cadre dans une render target dédiée puis relit
- * les pixels, exactement comme `CompositePass`/`EhubOutput` le font déjà pour la sortie mur.
- * Le bitmap résultant est ensuite consommé comme un fill `bitmap` classique (même chemin
- * qu'image/vidéo) — voir `Editor._resolveFill`.
+ * Bake hors-écran d'un matériau personnalisé (fragment en TSL — même langage que les autres
+ * calques du moteur, PAS du WGSL brut) en bitmap RGBA — réutilise le renderer WebGPU PARTAGÉ de
+ * l'app (voir `core/device.ts`, un seul device pour tout le logiciel) : rend un quad plein cadre
+ * dans une render target dédiée puis relit les pixels, exactement comme
+ * `CompositePass`/`EhubOutput` le font déjà pour la sortie mur. Le bitmap résultant est ensuite
+ * consommé comme un fill `bitmap` classique (même chemin qu'image/vidéo) — voir
+ * `Editor._resolveFill`.
  *
- * Contrat du fragment attendu par l'utilisateur (une seule fonction WGSL, nom libre) :
- * `fn monMateriau(uv: vec2<f32>, time: f32) -> vec3<f32> { ... }`
+ * Contrat du fragment attendu par l'utilisateur : un corps de fonction JS qui utilise les
+ * fonctions TSL en scope (`uv()`, `vec3()`, `.mul()`, `sin()`, etc. — voir `Plasma.layer.ts`
+ * pour le style) et se termine par `return` d'un node couleur (vec3/vec4). `time` (uniform TSL)
+ * est aussi en scope. Exécuté via `new Function` (JS, pas eval) — mêmes implications de
+ * confiance que le système de scripts envisagé plus tôt dans le projet, mais un fragment ne
+ * fait QUE construire un graphe de nodes TSL, il n'a accès ni au DOM ni à l'Editor.
  *
  * Deux précautions de concurrence, car `Editor` peut demander plusieurs bakes (shapes/presets
  * différents) dans le même tick :
@@ -53,16 +64,23 @@ export class MaterialBaker {
     return run;
   }
 
-  /** Compile + rend + relit une frame avec un matériau JETABLE. `null` si le WGSL utilisateur
-   *  échoue à compiler/rendre (l'appelant garde alors le dernier bitmap valide en cache). */
+  /** Exécute le corps JS/TSL de l'utilisateur (voir contrat en tête de fichier) et renvoie le
+   *  node résultant. Lève en cas d'erreur de syntaxe/exécution — laissé à l'appelant. */
+  private _evalFragment(code: string, time: number): unknown {
+    // eslint-disable-next-line no-new-func -- exécution volontaire du TSL saisi par l'utilisateur
+    const fn = new Function(...TSL_NAMES, "time", code);
+    return fn(...TSL_VALUES, TSL.float(time));
+  }
+
+  /** Compile + rend + relit une frame avec un matériau JETABLE. `null` si le TSL utilisateur
+   *  échoue à s'exécuter/compiler/rendre (l'appelant garde alors le dernier bitmap valide en cache). */
   private async _doBake(renderer: WebGPURenderer, fragment: string, mode: MaterialMode, time: number): Promise<Uint8ClampedArray | null> {
     const material = new MeshBasicNodeMaterial();
     const mesh = new Mesh(this._geometry, material);
     this._scene.add(mesh);
     try {
-      const fn = wgslFn(fragment);
-      const color = fn({ uv: uv(), time: float(time) });
-      material.colorNode = mode === "emission" ? mul(color, 1.6) : color;
+      const color = this._evalFragment(fragment, time) as Parameters<typeof TSL.mul>[0];
+      material.colorNode = (mode === "emission" ? TSL.mul(color, 1.6) : color) as never;
 
       // Le pipeline du colorNode doit être compilé avant le rendu : sans ça, la 1re lecture
       // après un changement de fragment peut tomber sur la render target encore vide (noire).
@@ -75,7 +93,7 @@ export class MaterialBaker {
       const rgba = (await renderer.readRenderTargetPixelsAsync(this._target, 0, 0, SIZE, SIZE)) as Uint8Array;
       return new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
     } catch (err) {
-      console.error("MaterialBaker: échec de compilation/rendu du fragment WGSL", err);
+      console.error("MaterialBaker: échec du fragment TSL utilisateur", err);
       return null;
     } finally {
       this._scene.remove(mesh);
