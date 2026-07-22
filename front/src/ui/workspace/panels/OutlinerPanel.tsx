@@ -1,4 +1,5 @@
 import { createEffect, createMemo, For, Show, createSignal, type Accessor, type JSX } from "solid-js";
+import { Portal } from "solid-js/web";
 import type { Editor } from "@core/Editor.ts";
 import type { Layer } from "@domain/Layer.ts";
 import { createIcon } from "@ui/icons/Icon.ts";
@@ -20,6 +21,8 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
   // primaire" pour l'Inspecteur/gizmo 3D ; ce set n'ajoute qu'une couche de sélection groupée
   // pour les actions en masse (supprimer).
   const [multiSelected, setMultiSelected] = createSignal<Set<string>>(new Set());
+  const [ctxMenu, setCtxMenu] = createSignal<{ layer: Layer; x: number; y: number } | null>(null);
+  const [editingLayerId, setEditingLayerId] = createSignal<string | null>(null);
   let anchorIndex = -1;
   let root!: HTMLDivElement;
 
@@ -71,25 +74,150 @@ function LayerTree(props: { editor: Editor }): JSX.Element {
       </div>
       <For each={layers()}>
         {(layer, i) => (
-          <LayerRow editor={editor} layer={layer} changed={changed} multiSelected={multiSelected} onRowClick={(e) => onRowClick(e, layer, i())} />
+          <LayerRow
+            editor={editor}
+            layer={layer}
+            multiSelected={multiSelected}
+            isEditingName={editingLayerId() === layer.id}
+            onRenameComplete={(newName) => {
+              if (newName && newName.trim() !== "") {
+                editor.setName(layer.id, newName.trim());
+              }
+              setEditingLayerId(null);
+            }}
+            onRowClick={(e) => onRowClick(e, layer, i())}
+            onRowContextMenu={(e) => setCtxMenu({ layer, x: e.clientX, y: e.clientY })}
+          />
         )}
       </For>
+
+      <Show when={ctxMenu()}>
+        {(m) => (
+          <Portal>
+            <div
+              class="seq__kf-editor-backdrop"
+              onPointerDown={() => setCtxMenu(null)}
+              onContextMenu={(e) => { e.preventDefault(); setCtxMenu(null); }}
+            >
+              <div class="seq__ctx-menu" style={{ left: `${m().x}px`, top: `${m().y}px` }} onPointerDown={(e) => e.stopPropagation()}>
+                <div class="seq__ctx-title">{m().layer.name}</div>
+                
+                <button
+                  type="button"
+                  class="seq__ctx-item"
+                  onClick={() => {
+                    const id = m().layer.id;
+                    setCtxMenu(null);
+                    setEditingLayerId(id);
+                  }}
+                >
+                  Renommer
+                </button>
+
+                <button
+                  type="button"
+                  class="seq__ctx-item"
+                  onClick={() => {
+                    const id = m().layer.id;
+                    setCtxMenu(null);
+                    editor.duplicateLayer(id);
+                  }}
+                >
+                  Dupliquer
+                </button>
+
+                <button
+                  type="button"
+                  class="seq__ctx-item"
+                  onClick={() => {
+                    const id = m().layer.id;
+                    const visible = m().layer.visible;
+                    setCtxMenu(null);
+                    editor.setVisible(id, !visible);
+                  }}
+                >
+                  {m().layer.visible ? "Masquer" : "Afficher"}
+                </button>
+
+                <button
+                  type="button"
+                  class="seq__ctx-item"
+                  onClick={() => {
+                    const id = m().layer.id;
+                    const locked = m().layer.locked;
+                    setCtxMenu(null);
+                    editor.setLocked(id, !locked);
+                  }}
+                >
+                  {m().layer.locked ? "Déverrouiller" : "Verrouiller"}
+                </button>
+
+                <button
+                  type="button"
+                  class="seq__ctx-item"
+                  onClick={() => {
+                    const id = m().layer.id;
+                    const solo = m().layer.solo;
+                    setCtxMenu(null);
+                    editor.setSolo(id, !solo);
+                  }}
+                >
+                  {m().layer.solo ? "Désactiver le Solo" : "Activer le Solo"}
+                </button>
+
+                <button
+                  type="button"
+                  class="seq__ctx-item"
+                  onClick={() => {
+                    const id = m().layer.id;
+                    const blend = m().layer.blend;
+                    setCtxMenu(null);
+                    editor.setBlend(id, blend === "add" ? "normal" : "add");
+                  }}
+                >
+                  {m().layer.blend === "add" ? "Mode Normal" : "Mode Additif"}
+                </button>
+
+                <div style={{ height: "1px", background: "var(--line)", margin: "4px 0" }} />
+
+                <button
+                  type="button"
+                  class="seq__ctx-item"
+                  style={{ color: "var(--acc)" }}
+                  onClick={() => {
+                    const id = m().layer.id;
+                    setCtxMenu(null);
+                    editor.deleteLayer(id);
+                  }}
+                >
+                  Supprimer
+                </button>
+              </div>
+            </div>
+          </Portal>
+        )}
+      </Show>
     </div>
   );
 }
 
 function LayerRow(props: {
-  editor: Editor; layer: Layer; changed: Accessor<unknown>;
+  editor: Editor; layer: Layer;
   multiSelected: Accessor<Set<string>>; onRowClick: (e: MouseEvent) => void;
+  onRowContextMenu: (e: MouseEvent) => void;
+  isEditingName: boolean;
+  onRenameComplete: (newName: string) => void;
 }): JSX.Element {
-  const { editor, layer, changed } = props;
-  const selected = createMemo(() => { changed(); return editor.selectedId === layer.id || props.multiSelected().has(layer.id); });
-  const visible = createMemo(() => { changed(); return layer.visible; });
-  const additive = createMemo(() => { changed(); return layer.blend === "add"; });
-  const opacity = createMemo(() => { changed(); return `${Math.round(layer.opacity * 100)}%`; });
-  const thumb = createMemo(() => { changed(); return thumbBg(layer); });
-  const sub = createMemo(() => { changed(); return subtitle(layer); });
-  const name = createMemo(() => { changed(); return layer.name; });
+  const { editor, layer } = props;
+  const selected = fromStore(editor, () => editor.selectedId === layer.id || props.multiSelected().has(layer.id));
+  const visible = fromStore(editor, () => layer.visible);
+  const additive = fromStore(editor, () => layer.blend === "add");
+  const opacity = fromStore(editor, () => `${Math.round(layer.opacity * 100)}%`);
+  const thumb = fromStore(editor, () => thumbBg(layer));
+  const sub = fromStore(editor, () => subtitle(layer));
+  const name = fromStore(editor, () => layer.name);
+  const locked = fromStore(editor, () => !!layer.locked);
+  const solo = fromStore(editor, () => !!layer.solo);
 
   const [isDragging, setIsDragging] = createSignal(false);
   const [dragOverPos, setDragOverPos] = createSignal<"above" | "below" | null>(null);
@@ -150,6 +278,8 @@ function LayerRow(props: {
       classList={{
         "layer--selected": selected(),
         "layer--hidden": !visible(),
+        "layer--locked": locked(),
+        "layer--solo": solo(),
         "layer--dragging": isDragging(),
         "layer--drag-over-above": dragOverPos() === "above",
         "layer--drag-over-below": dragOverPos() === "below",
@@ -162,6 +292,11 @@ function LayerRow(props: {
       onDrop={handleDrop}
       onClick={(e) => props.onRowClick(e)}
       onDblClick={() => { if (layer.type === "group") editor.enterGroup(layer.id); }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        props.onRowContextMenu(e);
+      }}
     >
       <button
         type="button"
@@ -175,10 +310,47 @@ function LayerRow(props: {
       </button>
       <div class="layer__thumb" style={{ background: thumb() }} />
       <div class="layer__info">
-        <div class="layer__name">{name()}</div>
+        <Show
+          when={props.isEditingName}
+          fallback={<div class="layer__name">{name()}</div>}
+        >
+          <input
+            type="text"
+            class="layer__name-input"
+            value={name()}
+            ref={(el) => {
+              setTimeout(() => {
+                el.focus();
+                el.select();
+              }, 0);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                props.onRenameComplete(e.currentTarget.value);
+              } else if (e.key === "Escape") {
+                props.onRenameComplete(name());
+              }
+            }}
+            onBlur={(e) => {
+              props.onRenameComplete(e.currentTarget.value);
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+          />
+        </Show>
         <div class="layer__type">{sub()}</div>
       </div>
       <div class="layer__meta">
+        <Show when={solo()}>
+          <div class="layer__solo-badge" data-tooltip="Solo actif">
+            S
+          </div>
+        </Show>
+        <Show when={locked()}>
+          <div class="layer__lock-badge" data-tooltip="Calque verrouillé">
+            {createIcon("lock", { size: 11 })}
+          </div>
+        </Show>
         <div class="layer__blend" classList={{ "layer__blend--accent": additive() }}>
           {additive() ? "Additif" : "Normal"}
         </div>

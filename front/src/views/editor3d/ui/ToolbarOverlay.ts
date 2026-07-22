@@ -27,14 +27,29 @@ export class ToolbarOverlay {
   private readonly _unsub: () => void;
   private readonly _onKey: (e: KeyboardEvent) => void;
   private _visible = true;
+  private _collapsed = false;
+  private _sync!: () => void;
 
   constructor(host: HTMLElement, editor: Editor) {
     this._root = document.createElement("div");
     this._root.className = "viewport-toolbar";
 
+    this._collapsed = localStorage.getItem("editor-toolbar-collapsed") === "true";
+    if (this._collapsed) {
+      this._root.classList.add("viewport-toolbar--collapsed");
+    }
+
     const toolButtons = TOOLS.map((t) => {
       const btn = toolButton(t.icon, t.title);
-      btn.addEventListener("click", () => editor.setTool(t.tool));
+      btn.addEventListener("click", () => {
+        if (this._collapsed) {
+          this._setCollapsed(false);
+        } else if (editor.tool === t.tool) {
+          this._setCollapsed(true);
+        } else {
+          editor.setTool(t.tool);
+        }
+      });
       this._root.appendChild(btn);
       return { btn, tool: t.tool };
     });
@@ -57,13 +72,34 @@ export class ToolbarOverlay {
     lyreBtn.addEventListener("click", () => editor.addLyre());
     this._root.appendChild(lyreBtn);
 
+    this._root.appendChild(divider());
+
+    const toggleBtn = toolButton("chevron-down", "Rétracter la barre d'outils");
+    toggleBtn.classList.add("viewport-toolbar__toggle");
+    toggleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this._setCollapsed(true);
+    });
+    this._root.appendChild(toggleBtn);
+
     host.appendChild(this._root);
 
     const sync = (): void => {
-      for (const { btn, tool } of toolButtons) btn.classList.toggle("rail__tool--active", editor.tool === tool);
+      for (const { btn, tool } of toolButtons) {
+        const active = editor.tool === tool;
+        btn.classList.toggle("rail__tool--active", active);
+        if (active) {
+          btn.dataset.tooltip = this._collapsed
+            ? `${TOOLS.find((t) => t.tool === tool)?.title} (Cliquer pour étendre)`
+            : TOOLS.find((t) => t.tool === tool)?.title;
+        } else {
+          btn.dataset.tooltip = TOOLS.find((t) => t.tool === tool)?.title;
+        }
+      }
     };
     sync();
     this._unsub = editor.subscribe(sync);
+    this._sync = sync;
 
     // T = masquer / révéler la barre d'outils (ignore la saisie dans un champ).
     this._onKey = (e: KeyboardEvent): void => {
@@ -82,6 +118,13 @@ export class ToolbarOverlay {
   private _toggle(): void {
     this._visible = !this._visible;
     this._root.classList.toggle("viewport-toolbar--hidden", !this._visible);
+  }
+
+  private _setCollapsed(collapsed: boolean): void {
+    this._collapsed = collapsed;
+    this._root.classList.toggle("viewport-toolbar--collapsed", collapsed);
+    localStorage.setItem("editor-toolbar-collapsed", String(collapsed));
+    this._sync();
   }
 }
 
