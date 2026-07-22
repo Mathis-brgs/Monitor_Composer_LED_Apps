@@ -13,6 +13,7 @@ import { NumberField } from "@ui/solid/controls.tsx";
 import { fromStore } from "@ui/solid/store.ts";
 import { solidPanel } from "@ui/solid/mount.ts";
 import { animatableProps } from "./timeline-properties.ts";
+import { insertTunnel } from "@core/precomps/tunnel.ts";
 import type { Panel } from "../Panel.ts";
 
 const AXIS_SHORT: Record<string, string> = { x: "X", y: "Y", z: "Z", r: "R", g: "G", b: "B" };
@@ -245,6 +246,14 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
       probe.src = url;
     };
     input.click();
+  };
+
+  /** Précomposition "tunnel" : anneaux imbriqués (carrés ou triangles par côté) qui apparaissent
+   *  un par un du plus grand au plus petit (tempo = 1 temps/BPM par défaut), puis zooment vers le
+   *  centre en boucle une fois construits. */
+  const addTunnel = (kind: "square" | "triangle"): void => {
+    const fpb = clock.framesPerBeat;
+    insertTunnel(editor, { kind, stepFrames: fpb > 0 ? Math.round(fpb) : 10 });
   };
 
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
@@ -1255,6 +1264,23 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
         </button>
         <button type="button" class="seq__tool" data-tooltip="Importer une vidéo (diffusée sur le mur)" onClick={importVideo}>
           {createIcon("film", { size: 16 })}
+        </button>
+        <div class="seq__tools-sep" />
+        <button
+          type="button"
+          class="seq__tool"
+          data-tooltip="Précomposition : tunnel carrés imbriqués (se construit au tempo puis zoome en boucle)"
+          onClick={() => addTunnel("square")}
+        >
+          {createIcon("box", { size: 16 })}
+        </button>
+        <button
+          type="button"
+          class="seq__tool"
+          data-tooltip="Précomposition : tunnel triangles (côtés + coins par anneau, clignotent en opposition)"
+          onClick={() => addTunnel("triangle")}
+        >
+          {createIcon("triangle", { size: 16 })}
         </button>
       </div>
       <div class="seq__main">

@@ -1,7 +1,7 @@
 export interface RGB { r: number; g: number; b: number; }
 export type BlendMode = "normal" | "add";
 export type ShaderId = "solid" | "plasma" | "sweep";
-export type ShapeKind = "sphere" | "box" | "cylinder" | "cone" | "plane" | "torus";
+export type ShapeKind = "sphere" | "box" | "cylinder" | "cone" | "plane" | "torus" | "triangle";
 
 export interface Vec3 { x: number; y: number; z: number; }
 /** Transform façon Blender : position, rotation (Euler XYZ en radians), échelle — par axe. */

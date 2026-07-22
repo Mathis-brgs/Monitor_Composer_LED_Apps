@@ -57,7 +57,7 @@ export type EditorListener = () => void;
 
 /** Libellé par défaut d'une primitive créée depuis le rail. */
 const SHAPE_LABEL: Record<ShapeKind, string> = {
-  sphere: "Sphère", box: "Cube", cylinder: "Cylindre", cone: "Cône", plane: "Plan", torus: "Tore",
+  sphere: "Sphère", box: "Cube", cylinder: "Cylindre", cone: "Cône", plane: "Plan", torus: "Tore", triangle: "Triangle",
 };
 
 /** Document seed : reprend les 3 calques shader + 2 objets 3D de l'état d'origine. */
@@ -291,6 +291,20 @@ export class Editor {
     this._animator.putKey(id, channel, frame, value, interp, cp);
     const layer = findLayer(this._doc.root, id);
     if (layer?.type === "shape") this._recomputeScene();
+    this._emit();
+  }
+
+  /** Pose un grand nombre de clés d'un coup (génération procédurale, ex. précompositions) sans
+   *  recalculer la scène ni notifier à chaque clé — `putKeyframe` fait les deux à CHAQUE appel,
+   *  ce qui gèle l'app au-delà de quelques centaines d'appels (rastérisation 3D + re-render UI
+   *  par clé — déjà rencontré avec un générateur précédent). */
+  putKeyframesBulk(entries: readonly { id: string; channel: string; frame: number; value: number; interp: Interp }[]): void {
+    let touchedShape = false;
+    for (const e of entries) {
+      this._animator.putKey(e.id, e.channel, e.frame, e.value, e.interp);
+      if (!touchedShape && findLayer(this._doc.root, e.id)?.type === "shape") touchedShape = true;
+    }
+    if (touchedShape) this._recomputeScene();
     this._emit();
   }
 

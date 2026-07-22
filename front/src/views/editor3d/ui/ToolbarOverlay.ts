@@ -16,6 +16,7 @@ const SHAPES: ReadonlyArray<{ icon: string; kind: ShapeKind; title: string }> = 
   { icon: "cone", kind: "cone", title: "Cône" },
   { icon: "plane", kind: "plane", title: "Plan" },
   { icon: "torus", kind: "torus", title: "Tore" },
+  { icon: "triangle", kind: "triangle", title: "Triangle" },
 ];
 
 /**
