@@ -42,11 +42,10 @@ const FALLBACK_FILL: ShapeFill = { kind: "solid", color: { r: 0, g: 0, b: 0 } };
 /** Taille d'échantillonnage d'une frame vidéo : alignée sur la résolution max du mur (128×128),
  *  sinon le rendu est visiblement pixelisé dès qu'une forme couvre une bonne partie du mur. */
 const VIDEO_SAMPLE_SIZE = 128;
-/** Fragment WGSL par défaut d'un nouveau preset de matériau (dégradé UV simple, sert d'exemple). */
-const DEFAULT_MATERIAL_FRAGMENT = `fn materialColor(uv: vec2<f32>, time: f32) -> vec3<f32> {
-  return vec3<f32>(uv.x, uv.y, 0.5 + 0.5 * sin(time));
-}`;
-/** Bitmap magenta plein cadre : signale un échec de bake de matériau (WGSL invalide) de façon
+/** Fragment TSL par défaut d'un nouveau preset de matériau (dégradé UV simple, sert d'exemple). */
+const DEFAULT_MATERIAL_FRAGMENT = `const u = uv();
+return vec3(u.x, u.y, sin(time).mul(0.5).add(0.5));`;
+/** Bitmap magenta plein cadre : signale un échec de bake de matériau (TSL invalide) de façon
  *  visible, plutôt qu'un noir indiscernable d'un chargement normal. */
 function magentaBitmap(size: number): Uint8ClampedArray {
   const data = new Uint8ClampedArray(size * size * 4);
@@ -1037,9 +1036,9 @@ export class Editor {
   }
 
   /** Bake (async, best-effort) le preset d'une shape en bitmap CPU, mis en cache par id de shape.
-   *  Un échec de bake (WGSL invalide) affiche du magenta plutôt que du noir : sinon un matériau
+   *  Un échec de bake (TSL invalide) affiche du magenta plutôt que du noir : sinon un matériau
    *  cassé est indiscernable d'un matériau qui charge encore — voir la console pour le détail
-   *  de l'erreur (`MaterialBaker: échec de compilation/rendu du fragment WGSL`). */
+   *  de l'erreur (`MaterialBaker: échec du fragment TSL utilisateur`). */
   private async _bakeMaterialFor(shapeId: string, presetId: string): Promise<void> {
     const preset = (this._doc.materials ?? []).find((p) => p.id === presetId);
     if (!preset || !this._engine || this._materialBaking.has(shapeId)) return;
