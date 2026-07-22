@@ -340,17 +340,22 @@ export class Editor {
     return this._keyframe(id, channel, frame)?.interp;
   }
 
+  /** Point de contrôle d'une clé Bézier (canal, frame) — undefined si absente. */
+  keyframeCP(id: string, channel: string, frame: number): readonly [number, number, number, number] | undefined {
+    return this._keyframe(id, channel, frame)?.cp;
+  }
+
   /** Change l'interpolation d'une clé (linéaire / hold / bézier). */
-  setKeyframeInterp(id: string, channel: string, frame: number, interp: Interp): void {
-    this._animator.setInterp(id, channel, frame, interp);
+  setKeyframeInterp(id: string, channel: string, frame: number, interp: Interp, cp?: readonly [number, number, number, number]): void {
+    this._animator.setInterp(id, channel, frame, interp, cp);
     const layer = findLayer(this._doc.root, id);
     if (layer?.type === "shape") this._recomputeScene();
     this._emit();
   }
 
   /** Pose une clé complète (valeur + interp) sur un canal, créant la track au besoin (pour le coller). */
-  putKeyframe(id: string, channel: string, frame: number, value: number, interp: Interp): void {
-    this._animator.putKey(id, channel, frame, value, interp);
+  putKeyframe(id: string, channel: string, frame: number, value: number, interp: Interp, cp?: readonly [number, number, number, number]): void {
+    this._animator.putKey(id, channel, frame, value, interp, cp);
     const layer = findLayer(this._doc.root, id);
     if (layer?.type === "shape") this._recomputeScene();
     this._emit();
@@ -520,6 +525,27 @@ export class Editor {
     reassign(copy);
     copy.name = layer.name + " copie";
     return copy;
+  }
+
+  duplicateLayer(id: string): string | null {
+    const layer = findLayer(this._doc.root, id);
+    const parent = findParent(this._doc.root, id);
+    if (!layer || !parent) return null;
+
+    const clone = structuredClone(layer) as typeof layer;
+    this._counter++;
+    clone.id = `${layer.type}-copy-${this._counter}`;
+    clone.name = `${layer.name} (copie)`;
+
+    const idx = parent.children.findIndex((c) => c.id === id);
+    if (idx !== -1) {
+      parent.children.splice(idx + 1, 0, clone);
+      this._animator.cloneLayer(id, clone.id);
+      this._push();
+      this._emit();
+      return clone.id;
+    }
+    return null;
   }
 
   /**

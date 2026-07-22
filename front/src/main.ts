@@ -68,6 +68,14 @@ window.addEventListener("keydown", (e) => {
   editor.redo();
 });
 
+if (window.led) {
+  window.led.onUndo(() => editor.undo());
+  window.led.onRedo(() => editor.redo());
+  window.led.onLoadProject(() => shell.menuBar.triggerLoadProject());
+  window.led.onSaveProject(() => shell.menuBar.triggerSaveProject());
+}
+
+
 // Shell (DOM pur) monté ; le moteur WebGPU rend dans le canvas du viewport (non bloquant).
 const dismissLoader = shell.showViewportLoader();
 App.create(shell.viewportCanvas, project, clock, editor, live, audio)

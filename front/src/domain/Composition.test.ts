@@ -48,6 +48,24 @@ test("sampleKeyframes : bézier = smoothstep (ease aux extrémités, milieu inch
   assert.ok(sampleKeyframes(kfs, 2.5) < 2.5);          // ease-in : sous la droite linéaire
 });
 
+test("sampleKeyframes : bézier avec cp personnalisés", () => {
+  // Courbe très prononcée (presque hold)
+  const kfs: Keyframe[] = [{ frame: 0, value: 0, interp: "bezier", cp: [0.9, 0.1, 0.9, 0.1] }, kf(10, 10)];
+  // À t=0.5, la valeur doit être très proche de 0 (le changement se produit tard)
+  const v5 = sampleKeyframes(kfs, 5);
+  assert.ok(v5 < 1.0, `valeur à t=0.5: ${v5}`);
+});
+
+test("sampleKeyframes : ease-in et ease-out quad", () => {
+  const kfsIn: Keyframe[] = [{ frame: 0, value: 0, interp: "ease-in" }, kf(10, 10)];
+  assert.equal(sampleKeyframes(kfsIn, 5), 2.5); // 10 * 0.5^2 = 2.5
+
+  const kfsOut: Keyframe[] = [{ frame: 0, value: 0, interp: "ease-out" }, kf(10, 10)];
+  assert.equal(sampleKeyframes(kfsOut, 5), 7.5); // 10 * 0.5 * (2 - 0.5) = 7.5
+});
+
+
+
 test("upsertKeyframe : insère trié, remplace au même frame", () => {
   let kfs: Keyframe[] = [];
   kfs = upsertKeyframe(kfs, kf(20, 1));
