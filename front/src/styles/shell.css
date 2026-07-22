@@ -2637,6 +2637,103 @@ body {
   margin: var(--space-4) 0;
 }
 
+/* ————————————————————————— Palette d'ajout (⇧A) ————————————————————————— */
+.add-palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 12500;
+  background: rgba(10, 9, 8, 0.4);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 16vh;
+  animation: fadeIn 0.1s ease-out;
+}
+
+.add-palette {
+  width: 420px;
+  max-width: 92vw;
+  background: var(--panel-2);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-window);
+  padding: var(--space-8);
+  -webkit-app-region: no-drag;
+}
+
+.add-palette__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-6);
+}
+
+.add-palette__title {
+  color: var(--dim);
+  font-size: var(--fs-3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.add-palette__hint {
+  color: var(--faint);
+  font-size: var(--fs-3);
+}
+
+.add-palette__filter {
+  width: 100%;
+  background: var(--panel);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--txt);
+  font: inherit;
+  font-size: var(--fs-2);
+  padding: var(--space-6) var(--space-8);
+  margin-bottom: var(--space-8);
+  outline: none;
+}
+
+.add-palette__filter:focus {
+  border-color: var(--acc);
+}
+
+.add-palette__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+.add-palette__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--txt);
+  font: inherit;
+  font-size: var(--fs-2);
+  text-align: left;
+  padding: var(--space-6) var(--space-8);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.add-palette__item--active {
+  background: var(--acc-fill);
+  color: var(--acc);
+}
+
+.add-palette__glyph {
+  color: var(--dim);
+  width: 1.2em;
+  text-align: center;
+}
+
+.add-palette__item--active .add-palette__glyph {
+  color: var(--acc);
+}
+
 /* —————————————————————————————— Modal Dialogs —————————————————————————————— */
 .modal-overlay {
   position: fixed;

@@ -5,6 +5,7 @@ import type { AudioEngine } from "@core/AudioEngine.ts";
 import type { LiveState } from "@core/LiveState.ts";
 import type { App } from "@core/app.ts";
 import { MenuBar } from "./frame/MenuBar.ts";
+import { AddPalette } from "./frame/AddPalette.ts";
 import { TabBar } from "./frame/TabBar.ts";
 import { StatusBar } from "./frame/StatusBar.ts";
 import { Workspace } from "./workspace/Workspace.ts";
@@ -32,6 +33,7 @@ export class AppShell {
 
   private readonly _tabBar: TabBar;
   private readonly _workspace: Workspace;
+  private readonly _addPalette: AddPalette;
   private _activeSpace: SpaceId = DEFAULT_SPACE;
 
   constructor(opts: AppShellOptions) {
@@ -45,6 +47,7 @@ export class AppShell {
 
     this._tabBar = new TabBar(this._activeSpace, opts.clock, opts.live, (id) => this._selectSpace(id));
     this.menuBar = new MenuBar(config);
+    this._addPalette = new AddPalette(opts.editor);
 
     this.element = document.createElement("div");
     this.element.className = "shell";
@@ -77,6 +80,12 @@ export class AppShell {
       if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "g" || e.key === "G")) {
         e.preventDefault();
         opts.editor.groupSelection();
+        return;
+      }
+      // ⇧A : palette d'ajout (primitives / fixtures / comps) — n'importe où dans la vue.
+      if (e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        this._addPalette.open();
       }
     });
   }
