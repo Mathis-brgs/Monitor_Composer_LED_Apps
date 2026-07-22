@@ -18,6 +18,25 @@ export class MenuBar {
       spacer("menu-bar__spacer"),
       this._project(config.name)
     );
+
+    window.addEventListener("keydown", (e) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      const el = document.activeElement;
+      if (el && (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || (el instanceof HTMLElement && el.isContentEditable))) {
+        return;
+      }
+      const key = e.key.toLowerCase();
+      if (key === "s") {
+        e.preventDefault();
+        this._app?.saveProject();
+      } else if (key === "o") {
+        e.preventDefault();
+        this._app?.loadProject();
+      } else if (key === "h" || key === "e") {
+        e.preventDefault();
+        this._openEhubModal();
+      }
+    });
   }
 
   setApp(app: App): void {
@@ -28,6 +47,14 @@ export class MenuBar {
     if (this._projectNameEl) {
       this._projectNameEl.textContent = name;
     }
+  }
+
+  triggerLoadProject(): void {
+    this._app?.loadProject();
+  }
+
+  triggerSaveProject(): void {
+    this._app?.saveProject();
   }
 
   private _wordmark(): HTMLElement {
@@ -117,14 +144,14 @@ export class MenuBar {
 
     const loadItem = document.createElement("div");
     loadItem.className = "menu-dropdown__item";
-    loadItem.textContent = "Charger Projet...";
+    loadItem.innerHTML = '<span>Charger Projet...</span><span class="menu-dropdown__shortcut">Ctrl+O</span>';
     loadItem.addEventListener("click", () => {
       this._app?.loadProject();
     });
 
     const saveItem = document.createElement("div");
     saveItem.className = "menu-dropdown__item";
-    saveItem.textContent = "Sauvegarder Projet";
+    saveItem.innerHTML = '<span>Sauvegarder Projet</span><span class="menu-dropdown__shortcut">Ctrl+S</span>';
     saveItem.addEventListener("click", () => {
       this._app?.saveProject();
     });
@@ -137,14 +164,31 @@ export class MenuBar {
     const dropdown = document.createElement("div");
     dropdown.className = "menu-item__dropdown";
 
+    const undoItem = document.createElement("div");
+    undoItem.className = "menu-dropdown__item";
+    undoItem.innerHTML = '<span>Annuler</span><span class="menu-dropdown__shortcut">Ctrl+Z</span>';
+    undoItem.addEventListener("click", () => {
+      this._app?.context.editor.undo();
+    });
+
+    const redoItem = document.createElement("div");
+    redoItem.className = "menu-dropdown__item";
+    redoItem.innerHTML = '<span>Rétablir</span><span class="menu-dropdown__shortcut">Ctrl+Y</span>';
+    redoItem.addEventListener("click", () => {
+      this._app?.context.editor.redo();
+    });
+
+    const separator = document.createElement("div");
+    separator.className = "menu-dropdown__separator";
+
     const ehubItem = document.createElement("div");
     ehubItem.className = "menu-dropdown__item";
-    ehubItem.textContent = "Réseau eHuB...";
+    ehubItem.innerHTML = '<span>Réseau eHuB...</span><span class="menu-dropdown__shortcut">Ctrl+H</span>';
     ehubItem.addEventListener("click", () => {
       this._openEhubModal();
     });
 
-    dropdown.append(ehubItem);
+    dropdown.append(undoItem, redoItem, separator, ehubItem);
     return dropdown;
   }
 

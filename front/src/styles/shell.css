@@ -22,6 +22,28 @@ body {
   overflow: hidden;
 }
 
+/* — Custom Scrollbars — */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--faint);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s ease;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dim);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 #app {
   height: 100vh;
 }
@@ -1019,6 +1041,7 @@ body {
   border: var(--stroke-hairline) solid var(--app);
   transform: translate(-50%, -50%) rotate(45deg);
   cursor: grab;
+  transition: background 0.15s, border-radius 0.15s, transform 0.15s;
 }
 
 .seq__kf--selected {
@@ -1027,9 +1050,11 @@ body {
   z-index: 1;
 }
 
-/* forme d'icône selon l'interpolation (façon After Effects) : losange = linéaire (défaut) */
-.seq__kf--hold { transform: translate(-50%, -50%); border-radius: 1px; } /* carré = hold */
-.seq__kf--bezier { transform: translate(-50%, -50%); border-radius: 50%; } /* rond = bézier (ease) */
+/* forme et couleur d'icône selon l'interpolation (façon After Effects) : losange = linéaire (défaut) */
+.seq__kf--hold { transform: translate(-50%, -50%); border-radius: 1px; background: #ff6b6b; } /* carré = hold */
+.seq__kf--bezier { transform: translate(-50%, -50%); border-radius: 50%; background: #ffd24a; } /* rond = bézier (ease) */
+.seq__kf--ease-in { transform: translate(-50%, -50%) rotate(45deg); border-radius: 12px 0 0 12px; background: #c98bff; } /* demi-losange gauche */
+.seq__kf--ease-out { transform: translate(-50%, -50%) rotate(45deg); border-radius: 0 12px 12px 0; background: #7fd88a; } /* demi-losange droit */
 
 /* diamants « résumé » sur la barre de calque repliée : lecture seule */
 .seq__kf--summary {
@@ -1282,34 +1307,133 @@ body {
   pointer-events: none;
 }
 
-/* — Éditeur de valeur d'une clé (double-clic sur un diamant) — */
-.seq__kf-editor-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-}
-
-.seq__kf-editor {
-  position: fixed;
-  transform: translate(-50%, calc(-100% - var(--space-10)));
-  display: flex;
-  gap: var(--space-6);
-  padding: var(--space-6) var(--space-8);
-  background: var(--panel-2);
-  border: var(--stroke-hairline) solid var(--line);
-  border-radius: var(--radius-md);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
-}
-
-.seq__kf-editor-field {
+/* — Bouton pour déplier l'éditeur de courbes — */
+.seq__curves-toggle-btn {
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.seq__curves-toggle-btn:hover {
+  background: var(--panel-1);
+  color: var(--acc);
+}
+
+.seq__curves-toggle-btn--on {
+  color: var(--acc);
+  background: var(--panel-1);
+}
+
+/* — Ligne de courbes (Header à gauche) — */
+.seq__name--curves {
+  height: 120px;
+  background: var(--panel-2);
+  border-bottom: var(--stroke-hairline) solid var(--line);
+  padding: var(--space-4) var(--space-8);
+  display: flex;
+  flex-direction: column;
+}
+
+.seq__curves-header {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  justify-content: space-between;
+}
+
+.seq__curves-header-controls {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-4);
 }
 
-.seq__kf-editor-field > span {
-  font-size: var(--fs-2);
+.seq__curves-ctrl-group {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.seq__curves-ctrl-btn {
+  flex: 1;
+  padding: var(--space-2) var(--space-4);
+  background: var(--panel-1);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-sm);
   color: var(--dim);
+  font-size: var(--fs-1);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.seq__curves-ctrl-btn::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--axis-color, var(--dim));
+}
+
+.seq__curves-ctrl-btn:hover {
+  background: var(--panel-2);
+  color: var(--acc);
+}
+
+.seq__curves-ctrl-btn--active {
+  background: var(--panel-2);
+  border-color: var(--axis-color, var(--acc));
+  color: var(--acc);
+}
+
+.seq__curves-presets {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.seq__preset-mini-btn {
+  padding: 2px var(--space-4);
+  background: var(--panel-1);
+  border: var(--stroke-hairline) solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--dim);
+  font-size: var(--fs-1);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.seq__preset-mini-btn:hover {
+  background: var(--panel-2);
+  color: var(--acc);
+}
+
+/* — Ligne de courbes (SVG à droite) — */
+.seq__lane--curves {
+  height: 120px;
+  background: var(--panel-2);
+  border-bottom: var(--stroke-hairline) solid var(--line);
+  position: relative;
+  overflow: hidden;
+}
+
+.seq__curves-svg {
+  display: block;
+  height: 100%;
+  pointer-events: auto;
+}
+
+.seq__curves-svg circle {
+  pointer-events: auto;
 }
 
 /* — Menu contextuel d'interpolation (clic-droit sur une clé) — */
@@ -1705,8 +1829,37 @@ body {
   opacity: 0.5;
 }
 
+.layer--locked {
+  opacity: 0.55;
+}
+
+.layer--solo {
+  border-left-color: var(--axis-y);
+}
+
 .layer--dragging {
   opacity: 0.4;
+}
+
+.layer__lock-badge {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--dim);
+}
+
+.layer__solo-badge {
+  display: grid;
+  place-items: center;
+  width: 13px;
+  height: 13px;
+  color: var(--app);
+  background: var(--axis-y);
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: bold;
 }
 
 .layer--drag-over-above::before {
@@ -1767,6 +1920,22 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.layer__name-input {
+  font-family: inherit;
+  font-size: var(--fs-2);
+  font-weight: 500;
+  color: var(--txt);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  background: var(--row-hi);
+  border: var(--stroke-hairline) solid var(--acc-border);
+  border-radius: var(--radius-xs, 2px);
+  padding: 0 var(--space-4, 4px);
+  width: 100%;
+  outline: none;
+  height: 18px;
 }
 
 .layer__type {
@@ -2402,8 +2571,7 @@ body {
 .viewport-toolbar {
   position: absolute;
   left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
+  top: 72px;
   z-index: 4;
   display: flex;
   flex-direction: column;
@@ -2415,8 +2583,19 @@ body {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-window);
   backdrop-filter: blur(7px);
+  transition: padding 0.15s ease;
 }
 .viewport-toolbar--hidden { display: none; }
+.viewport-toolbar--collapsed {
+  padding: var(--space-5);
+}
+.viewport-toolbar--collapsed > *:not(.rail__tool--active) {
+  display: none !important;
+}
+.viewport-toolbar__toggle .icon {
+  transform: rotate(90deg);
+  transition: transform 0.2s ease;
+}
 
 /* ———————————————————————— Loader d'init du viewport ———————————————————————— */
 
@@ -2509,6 +2688,12 @@ body {
   cursor: default;
   user-select: none;
   transition: background 0.1s, color 0.1s;
+}
+
+.menu-dropdown__shortcut {
+  color: var(--faint);
+  font-size: var(--fs-3);
+  margin-left: var(--space-16);
 }
 
 .menu-dropdown__item:hover {
