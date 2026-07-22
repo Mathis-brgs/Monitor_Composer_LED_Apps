@@ -49,6 +49,14 @@ export class MenuBar {
     }
   }
 
+  triggerLoadProject(): void {
+    this._app?.loadProject();
+  }
+
+  triggerSaveProject(): void {
+    this._app?.saveProject();
+  }
+
   private _wordmark(): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "wordmark";
@@ -156,6 +164,23 @@ export class MenuBar {
     const dropdown = document.createElement("div");
     dropdown.className = "menu-item__dropdown";
 
+    const undoItem = document.createElement("div");
+    undoItem.className = "menu-dropdown__item";
+    undoItem.innerHTML = '<span>Annuler</span><span class="menu-dropdown__shortcut">Ctrl+Z</span>';
+    undoItem.addEventListener("click", () => {
+      this._app?.context.editor.undo();
+    });
+
+    const redoItem = document.createElement("div");
+    redoItem.className = "menu-dropdown__item";
+    redoItem.innerHTML = '<span>Rétablir</span><span class="menu-dropdown__shortcut">Ctrl+Y</span>';
+    redoItem.addEventListener("click", () => {
+      this._app?.context.editor.redo();
+    });
+
+    const separator = document.createElement("div");
+    separator.className = "menu-dropdown__separator";
+
     const ehubItem = document.createElement("div");
     ehubItem.className = "menu-dropdown__item";
     ehubItem.innerHTML = '<span>Réseau eHuB...</span><span class="menu-dropdown__shortcut">Ctrl+H</span>';
@@ -163,7 +188,7 @@ export class MenuBar {
       this._openEhubModal();
     });
 
-    dropdown.append(ehubItem);
+    dropdown.append(undoItem, redoItem, separator, ehubItem);
     return dropdown;
   }
 
