@@ -941,6 +941,11 @@ export class Editor {
     const layer = findLayer(this._doc.root, id);
     if (!layer) return;
     layer.name = name;
+    // Instance de précomp/prérendu ↔ sa composition (1:1) : nom unifié (fil d'Ariane, sérialisation).
+    if (layer.type === "precomp") {
+      const comp = this._compositions[layer.compId];
+      if (comp) comp.name = name;
+    }
     this._emit();
   }
 
