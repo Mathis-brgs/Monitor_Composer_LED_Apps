@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, Show, type Accessor, type JSX } from "solid-js";
 import type { Editor } from "@core/Editor.ts";
-import type { Fill, GroupLayer, Layer, LyreLayer, MaterialMode, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
+import type { Fill, GroupLayer, Layer, LyreLayer, MaterialMode, PrecompLayer, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
 import { fromStore } from "@ui/solid/store.ts";
 import { solidPanel } from "@ui/solid/mount.ts";
 import { Checkbox, ColorField, MediaField, NumberField, Row, Section, Segmented, Slider, TextField } from "@ui/solid/controls.tsx";
@@ -127,7 +127,93 @@ function NodeBody(props: { editor: Editor; node: Layer | null; changed: Accessor
       <Show when={node.type === "lyre"}>
         <LyreBody editor={editor} node={node as LyreLayer} changed={changed} />
       </Show>
+      <Show when={node.type === "precomp"}>
+        <PrecompBody editor={editor} node={node as PrecompLayer} changed={changed} />
+      </Show>
     </>
+  );
+}
+
+/**
+ * Instance de précomp / prérendu : mapping temporel (décalage + vitesse vers sa timeline interne),
+ * fusion/opacité. Si la comp référencée est un prérendu, on greffe les réglages caméra (édite la
+ * scène de la COMPOSITION, pas l'instance — d'où `compId`).
+ */
+function PrecompBody(props: { editor: Editor; node: PrecompLayer; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
+  const id = node.id;
+  const comp = createMemo(() => { changed(); return editor.getCompositions()[node.compId]; });
+  const isPrerender = createMemo(() => comp()?.kind === "prerender");
+  const timeOffset = createMemo(() => { changed(); return node.timeOffset; });
+  const speed = createMemo(() => { changed(); return node.speed; });
+  const opacity = createMemo(() => { changed(); return node.opacity; });
+  const blend = createMemo(() => { changed(); return node.blend; });
+  return (
+    <>
+      <Section title={isPrerender() ? "Prérendu" : "Précomposition"}>
+        <Row label="Durée comp"><div class="insp-field insp-control">{`${comp()?.durationFrames ?? 0} f`}</div></Row>
+        <Row label="Décalage">
+          <NumberField value={timeOffset()} step={1} format={(v) => `${Math.round(v)} f`} onInput={(v) => editor.setPrecompTiming(id, { timeOffset: v })} />
+        </Row>
+        <Row label="Vitesse">
+          <NumberField value={speed()} step={0.05} format={(v) => `${v.toFixed(2)}×`} onInput={(v) => editor.setPrecompTiming(id, { speed: v })} />
+        </Row>
+        <Row label="Fusion">
+          <Segmented options={["Normal", "Additif"]} active={blend() === "add" ? 1 : 0} onChange={(i) => editor.setBlend(id, i === 1 ? "add" : "normal")} />
+        </Row>
+        <Row label="Opacité">
+          <Slider value={opacity()} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
+          <KeyDot editor={editor} id={id} channels={["opacity"]} />
+        </Row>
+      </Section>
+      <Show when={isPrerender()}>
+        <PrerenderCamera editor={editor} compId={node.compId} changed={changed} />
+      </Show>
+    </>
+  );
+}
+
+/** Réglages caméra + fond d'un prérendu (scène 3D → RT). `compId` : édite la composition référencée. */
+function PrerenderCamera(props: { editor: Editor; compId: string; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, compId, changed } = props;
+  const set = (patch: Parameters<Editor["setPrerenderCamera"]>[1]) => editor.setPrerenderCamera(compId, patch);
+  const cam = createMemo(() => { changed(); return editor.getCompositions()[compId]?.scene?.camera; });
+  const background = createMemo(() => { changed(); return editor.getCompositions()[compId]?.scene?.background; });
+  return (
+    <Show when={cam()}>
+      {/* cam() présent sous ce Show (garanti par le prérendu) : accès via `cam()!`. */}
+      <Section title="Caméra">
+        <Row label="Type">
+          <Segmented
+            options={["Perspective", "Ortho"]}
+            active={cam()!.kind === "orthographic" ? 1 : 0}
+            onChange={(i) => set({ kind: i === 1 ? "orthographic" : "perspective" })}
+          />
+        </Row>
+        <Show when={cam()!.kind === "perspective"}>
+          <Row label="Champ (FOV)">
+            <NumberField value={cam()!.fov ?? 50} step={1} format={(v) => `${Math.round(v)}°`} onInput={(v) => set({ fov: v })} />
+          </Row>
+        </Show>
+        <Row label="Position">
+          <Vec3Field value={cam()!.position} step={0.1} onInput={(a, v) => set({ position: axisPatch(a, v) })} />
+        </Row>
+        <Row label="Cible">
+          <Vec3Field value={cam()!.target} step={0.1} onInput={(a, v) => set({ target: axisPatch(a, v) })} />
+        </Row>
+        <Row label="Near / Far">
+          <div class="insp-fields insp-control">
+            <NumberField value={cam()!.near} step={0.1} format={(v) => v.toFixed(2)} onInput={(v) => set({ near: v })} />
+            <NumberField value={cam()!.far} step={1} format={(v) => v.toFixed(0)} onInput={(v) => set({ far: v })} />
+          </div>
+        </Row>
+      </Section>
+      <Show when={background()}>
+        <Section title="Rendu">
+          <Row label="Fond"><ColorField value={background()!} onInput={(rgb) => editor.setPrerenderBackground(compId, rgb)} /></Row>
+        </Section>
+      </Show>
+    </Show>
   );
 }
 

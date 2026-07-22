@@ -24,6 +24,8 @@ import { SolidLayer } from "./engine/layers/Solid.layer.ts";
 import { VideoWallLayer } from "./engine/layers/Video.layer.ts";
 import { NestedTextureLayer } from "./engine/layers/NestedTexture.layer.ts";
 import { LayerStack } from "./engine/LayerStack.ts";
+import { Prerender3DScene } from "./engine/Prerender3DScene.ts";
+import type { NestedSource } from "./engine/Engine.ts";
 import { countLit, type ShapeFill, type ShapeInput } from "./engine/shapes.ts";
 import { Animator } from "./Animator.ts";
 import { makeComposition, defaultPrerenderScene, partitionTracks, sampleKeyframes, type Composition, type Interp, type Track } from "@domain/Composition.ts";
@@ -70,8 +72,18 @@ const SHAPE_LABEL: Record<ShapeKind, string> = {
 /** Un niveau de la pile de navigation de comps : quelle comp, + l'état d'édition à y restaurer. */
 interface NavFrame { compId: string; groupId: string; selectedId: string | null; frame: number; }
 
-/** Compositor dédié à une comp imbriquée : son LayerStack+RT, sa DataTexture de shapes, et le calque parent qui échantillonne sa RT. */
-interface SubRenderer { stack: LayerStack; scene3d: Scene3DLayer; nested: NestedTextureLayer; sig: string; }
+/**
+ * Renderer dédié à une comp imbriquée + le calque parent qui échantillonne sa RT.
+ * Précomp (2D) : `stack` (LayerStack) + `scene3d` (raster CPU des shapes). Prérendu (3D) : `prerender`
+ * (scène caméra). Exclusifs selon `Composition.kind` ; `source()` renvoie celui qui alimente la RT.
+ */
+interface SubRenderer {
+  nested: NestedTextureLayer;
+  sig: string;
+  stack?: LayerStack;
+  scene3d?: Scene3DLayer;
+  prerender?: Prerender3DScene;
+}
 
 /**
  * Store du document (arbre unifié) + miroir moteur. L'app le modifie ; le moteur en
@@ -918,6 +930,41 @@ export class Editor {
     this._emit();
   }
 
+  /** Décalage/vitesse temporels d'une instance de précomp/prérendu (mapping vers sa timeline interne). */
+  setPrecompTiming(id: string, patch: { timeOffset?: number; speed?: number }): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "precomp") return;
+    if (patch.timeOffset !== undefined) layer.timeOffset = Math.round(patch.timeOffset);
+    if (patch.speed !== undefined) layer.speed = Math.max(0.01, patch.speed);
+    this._emit();
+  }
+
+  /** Réglages caméra d'un prérendu (édite la scène de la COMPOSITION référencée, pas l'instance). */
+  setPrerenderCamera(compId: string, patch: {
+    kind?: "perspective" | "orthographic"; fov?: number; near?: number; far?: number;
+    position?: Partial<Vec3>; target?: Partial<Vec3>;
+  }): void {
+    const comp = this._compositions[compId];
+    if (!comp || comp.kind !== "prerender") return;
+    const scene = (comp.scene ??= defaultPrerenderScene());
+    const cam = scene.camera;
+    if (patch.kind) cam.kind = patch.kind;
+    if (patch.fov !== undefined) cam.fov = patch.fov;
+    if (patch.near !== undefined) cam.near = Math.max(0.001, patch.near);
+    if (patch.far !== undefined) cam.far = Math.max(cam.near + 0.001, patch.far);
+    if (patch.position) cam.position = { ...cam.position, ...patch.position };
+    if (patch.target) cam.target = { ...cam.target, ...patch.target };
+    this._emit();
+  }
+
+  /** Couleur de fond d'un prérendu (opaque : c'est une source vidéo plein-cadre). */
+  setPrerenderBackground(compId: string, background: RGB): void {
+    const comp = this._compositions[compId];
+    if (!comp || comp.kind !== "prerender") return;
+    (comp.scene ??= defaultPrerenderScene()).background = background;
+    this._emit();
+  }
+
   setShowHelper(id: string, show: boolean): void {
     const layer = findLayer(this._doc.root, id);
     if (!layer || layer.type !== "shape") return;
@@ -1437,6 +1484,9 @@ export class Editor {
     const scene3d = this._scene3d;
     if (!engine || !scene3d) return;
 
+    // Comp active = prérendu : le mur affiche sa sortie caméra (une seule couche = sa RT), pas la grille LED.
+    if (this.activeComp().kind === "prerender") { this._pushPrerenderActive(); return; }
+
     this._syncNested(); // (re)construit les comps imbriquées et alimente leurs RT avant de composer
 
     const shapes = this._shapeInputs();
@@ -1474,6 +1524,24 @@ export class Editor {
     this._lastActiveSig = this._activeSignature();
   }
 
+  /** Pile moteur quand on édite un prérendu : le mur = la RT de sa scène 3D caméra (aucune grille LED). */
+  private _pushPrerenderActive(): void {
+    const engine = this._engine;
+    if (!engine) return;
+    const ordered: NestedSource[] = [];
+    const sub = this._updatePrerenderSub(this.activeComp(), this._frame, ordered);
+    engine.setNested(ordered);
+    if (sub) {
+      sub.nested.enabled = true;
+      sub.nested.opacity = 1;
+      sub.nested.blend = "normal";
+      engine.setLayers([sub.nested]);
+    } else {
+      engine.setLayers([]);
+    }
+    this._lastActiveSig = this._activeSignature();
+  }
+
   /** Signature du set de calques actifs (clips) au frame courant — détecte un franchissement de bord dans `tick`. */
   private _activeSignature(): string {
     let sig = "";
@@ -1487,8 +1555,18 @@ export class Editor {
   private _syncNested(): void {
     const engine = this._engine;
     if (!engine) return;
-    const ordered: LayerStack[] = [];
+    const ordered: NestedSource[] = [];
     const guard = new Set<string>();
+
+    // Comp active = prérendu : le mur affiche SA sortie caméra (pas la grille LED). Sa RT est la seule source.
+    const active = this.activeComp();
+    if (active.kind === "prerender") {
+      const sub = this._updatePrerenderSub(active, this._frame, ordered);
+      engine.setNested(ordered);
+      if (sub) { sub.nested.enabled = true; sub.nested.opacity = 1; sub.nested.blend = "normal"; }
+      return;
+    }
+
     for (const child of this._activeGroup().children) {
       if (child.type !== "precomp" || !child.visible || !this._activeAt(child) || !precompActiveAt(child, this._frame)) continue;
       const comp = this._compositions[child.compId];
@@ -1504,10 +1582,13 @@ export class Editor {
    * rasterise ses shapes, (re)construit son stack au besoin, puis la fait rendre dans sa RT. Récursif
    * (enfants d'abord). `guard` = garde de cycle (une comp déjà dans la chaîne n'est pas ré-entrée).
    */
-  private _updateSub(comp: Composition, frame: number, ordered: LayerStack[], guard: Set<string>): SubRenderer | null {
+  private _updateSub(comp: Composition, frame: number, ordered: NestedSource[], guard: Set<string>): SubRenderer | null {
     const engine = this._engine;
     if (!engine || guard.has(comp.id)) return null;
     guard.add(comp.id);
+
+    // Prérendu : chemin scène 3D → RT (pas de raster CPU / stack 2D).
+    if (comp.kind === "prerender") return this._updatePrerenderSub(comp, frame, ordered);
 
     let sub = this._subs.get(comp.id);
     if (!sub) {
@@ -1518,9 +1599,10 @@ export class Editor {
       sub = { stack, scene3d, nested, sig: "" };
       this._subs.set(comp.id, sub);
     }
+    const stack = sub.stack!, scene3d = sub.scene3d!;
 
     this._animator.evaluateAt(comp.tracks, frame);                 // animation de la comp à son frame local
-    sub.scene3d.setShapes(this._shapeInputsIn(comp.root, frame));  // shapes de la comp (raster CPU dans sa DataTexture)
+    scene3d.setShapes(this._shapeInputsIn(comp.root, frame));      // shapes de la comp (raster CPU dans sa DataTexture)
 
     const anySolo = this._anySoloIn(comp.root);
     const layers: EngineLayer[] = [];
@@ -1528,7 +1610,7 @@ export class Editor {
     for (const layer of this._renderablesIn(comp.root)) {
       if (!layer.visible || !this._activeAtIn(comp.root, layer, frame) || (anySolo && !layer.solo)) continue;
       if (layer.type === "shader") layers.push(this._ensureShader(layer));
-      else if (layer.type === "shape") { if (!sceneAdded) { layers.push(sub.scene3d); sceneAdded = true; } }
+      else if (layer.type === "shape") { if (!sceneAdded) { layers.push(scene3d); sceneAdded = true; } }
       else if (layer.type === "video") layers.push(this._ensureVideo(layer));
       else if (layer.type === "precomp") {
         const cc = this._compositions[layer.compId];
@@ -1541,9 +1623,35 @@ export class Editor {
     }
 
     const sig = this._compSigIn(comp, frame);
-    if (sig !== sub.sig) { sub.stack.setLayers([...layers].reverse()); sub.sig = sig; }
-    sub.stack.setTime(this._fps > 0 ? frame / this._fps : 0);
-    ordered.push(sub.stack);
+    if (sig !== sub.sig) { stack.setLayers([...layers].reverse()); sub.sig = sig; }
+    stack.setTime(this._fps > 0 ? frame / this._fps : 0);
+    ordered.push(stack);
+    return sub;
+  }
+
+  /**
+   * Met à jour (ou crée) le renderer 3D d'un prérendu à un frame local : évalue son animation, applique
+   * la caméra/fond de `comp.scene`, construit les meshes depuis ses shapes, et pousse sa RT dans `ordered`.
+   * Frontière de rendu : un prérendu ne compose pas de précomps imbriquées (scène 3D pure en v1).
+   */
+  private _updatePrerenderSub(comp: Composition, frame: number, ordered: NestedSource[]): SubRenderer | null {
+    const engine = this._engine;
+    if (!engine) return null;
+
+    let sub = this._subs.get(comp.id);
+    if (!sub || !sub.prerender) {
+      const res = comp.scene?.resolution;
+      const prerender = new Prerender3DScene(res?.w ?? engine.fixture.width, res?.h ?? engine.fixture.height);
+      const nested = new NestedTextureLayer(`${comp.id}:nested`);
+      nested.setTexture(prerender.target.texture);
+      sub = { prerender, nested, sig: "" };
+      this._subs.set(comp.id, sub);
+    }
+
+    this._animator.evaluateAt(comp.tracks, frame);
+    sub.prerender!.setScene(comp.scene ?? defaultPrerenderScene());
+    sub.prerender!.setShapes(this._shapeInputsIn(comp.root, frame));
+    ordered.push(sub.prerender!);
     return sub;
   }
 

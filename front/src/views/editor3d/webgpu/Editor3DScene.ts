@@ -1,5 +1,6 @@
 import {
   BoxGeometry,
+  CameraHelper,
   Color,
   ConeGeometry,
   CylinderGeometry,
@@ -13,6 +14,7 @@ import {
   Mesh,
   MeshBasicNodeMaterial,
   Object3D,
+  OrthographicCamera,
   PerspectiveCamera,
   Plane,
   PlaneGeometry,
@@ -84,6 +86,10 @@ export class Editor3DScene {
   private readonly _hit = new Vector3();
   private readonly _pickMat: MeshBasicNodeMaterial;
   private readonly _leds: InstancedMesh;
+  private _wallFrame!: LineSegments;              // cadre du mur (masqué en prérendu)
+  private _prerenderCam: PerspectiveCamera | OrthographicCamera | null = null;
+  private _camHelper: CameraHelper | null = null; // frustum de la caméra du prérendu actif
+  private _camHelperKind = "";
   private readonly _raycaster = new Raycaster();
   private readonly _ndc = new Vector2();
   private readonly _unsub: () => void;
@@ -125,11 +131,11 @@ export class Editor3DScene {
     base.dispose();
     this._scene.add(this._leds);
 
-    const frame = new LineSegments(
+    this._wallFrame = new LineSegments(
       new WireframeGeometry(new PlaneGeometry(2 * HALF, 2 * HALF)),
       lineMaterial(0x4a3f37),
     );
-    this._scene.add(frame);
+    this._scene.add(this._wallFrame);
     this._scene.add(this._objects);
 
     // Cibles de raycast : maillages pleins invisibles (une par shape), jamais rendus.
@@ -232,6 +238,7 @@ export class Editor3DScene {
     this._controls.dispose();
     this._leds.geometry.dispose();
     (this._leds.material as MeshBasicNodeMaterial).dispose();
+    if (this._camHelper) { this._scene.remove(this._camHelper); this._camHelper.dispose(); }
   }
 
   // ————————————————————————————————— Interne —————————————————————————————————
@@ -253,6 +260,7 @@ export class Editor3DScene {
     const mode = this._editor.viewportMode;
     this._clearGroup(this._objects);
     this._clearGroup(this._picks);
+    this._syncPrerenderView();
 
     for (const l of this._editor.children) {
       if (l.type !== "shape") continue;
@@ -314,6 +322,44 @@ export class Editor3DScene {
     }
     this._buildPath(selectedId);
     this._syncGizmo();
+  }
+
+  /**
+   * Comp active = prérendu : c'est une scène 3D filmée par une caméra, pas le mur LED. On masque
+   * donc la grille de LEDs + son cadre et on montre le frustum de la caméra du prérendu (repère de
+   * cadrage). Les objets restent affichés (wireframe/solide) pour les positionner. Sinon : mur visible.
+   */
+  private _syncPrerenderView(): void {
+    const comp = this._editor.activeComp();
+    const cam = comp.kind === "prerender" ? comp.scene?.camera : undefined;
+    this._leds.visible = !cam;
+    this._wallFrame.visible = !cam;
+    if (!cam) {
+      if (this._camHelper) this._camHelper.visible = false;
+      return;
+    }
+
+    if (this._camHelperKind !== cam.kind || !this._prerenderCam) {
+      if (this._camHelper) { this._scene.remove(this._camHelper); this._camHelper.dispose(); }
+      this._prerenderCam = cam.kind === "orthographic"
+        ? new OrthographicCamera(-1, 1, 1, -1, cam.near, cam.far)
+        : new PerspectiveCamera(cam.fov ?? 50, 1, cam.near, cam.far);
+      this._camHelper = new CameraHelper(this._prerenderCam);
+      this._scene.add(this._camHelper);
+      this._camHelperKind = cam.kind;
+    }
+
+    const c = this._prerenderCam;
+    if (c instanceof PerspectiveCamera) { c.fov = cam.fov ?? 50; c.aspect = 1; }
+    c.near = cam.near;
+    c.far = cam.far;
+    c.position.set(cam.position.x, cam.position.y, cam.position.z);
+    c.up.set(0, 1, 0);
+    c.lookAt(cam.target.x, cam.target.y, cam.target.z);
+    c.updateProjectionMatrix();
+    c.updateMatrixWorld(true);
+    this._camHelper!.visible = true;
+    this._camHelper!.update();
   }
 
   /** Motion path du calque sélectionné : polyline reliant ses positions keyframées + une poignée par clé. */

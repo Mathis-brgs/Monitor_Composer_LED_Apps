@@ -1,8 +1,19 @@
-import type { Texture, WebGPURenderer } from "three/webgpu";
+import type { Camera, RenderTarget, Scene, Texture, WebGPURenderer } from "three/webgpu";
 import type { Fixture } from "@domain/Fixture.ts";
 import type { MaterialMode } from "@domain/Layer.ts";
 import type { Transport } from "../transport.ts";
 import { LayerStack } from "./LayerStack.ts";
+
+/**
+ * Source rendue dans sa propre RT avant la comp active (comp imbriquée). Un `LayerStack` (compositor 2D
+ * d'une précomp) comme un `Prerender3DScene` (scène 3D caméra d'un prérendu) satisfont cette forme :
+ * le moteur les rend tous de façon uniforme (`setRenderTarget(target)` → `render(scene, camera)`).
+ */
+export interface NestedSource {
+  readonly scene: Scene;
+  readonly camera: Camera;
+  readonly target: RenderTarget;
+}
 import { CompositePass } from "./passes.ts";
 import { EhubOutput } from "./EhubOutput.ts";
 import { MaterialBaker } from "./MaterialBaker.ts";
@@ -18,7 +29,7 @@ export class Engine {
   readonly stack: LayerStack;
   private readonly _composite: CompositePass;
   private readonly _output: EhubOutput;
-  private _nested: LayerStack[] = [];
+  private _nested: NestedSource[] = [];
   private readonly _materialBaker = new MaterialBaker();
 
   constructor(
@@ -37,8 +48,8 @@ export class Engine {
     this.stack.setLayers(layers);
   }
 
-  /** Compositors des comps imbriquées (précomps/prérendus), ordonnés du plus profond au moins profond. */
-  setNested(nested: LayerStack[]): void {
+  /** Sources des comps imbriquées (précomps/prérendus), ordonnées du plus profond au moins profond. */
+  setNested(nested: NestedSource[]): void {
     this._nested = nested;
   }
 
