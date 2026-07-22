@@ -91,7 +91,8 @@ export type Fill =
 export type MaterialMode = "basic" | "emission";
 
 /**
- * Matériau personnalisé : un fragment WGSL (TSL `wgslFn`) baké hors-écran en texture, puis
+ * Matériau personnalisé : un fragment TSL (même langage que les autres calques moteur —
+ * `Plasma.layer.ts`/`Sweep.layer.ts` — pas du WGSL brut) baké hors-écran en texture, puis
  * échantillonné comme un fill bitmap classique (même chemin qu'image/vidéo) — voir
  * `Editor._resolveFill` / `MaterialBaker`. Stocké dans `Document.materials`, réutilisable par
  * plusieurs shapes via `Fill.presetId` (façon bibliothèque de presets).

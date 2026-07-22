@@ -309,7 +309,7 @@ function FillFields(props: { editor: Editor; id: string; fill: Fill }): JSX.Elem
 /**
  * Champs d'un matériau personnalisé : nom + preset (lié à un preset existant du document ou
  * nouveau), mode (Basic/Émission — jamais de "Standard"/PBR, le mur est un afficheur, pas une
- * scène éclairée) et fragment WGSL. Le fragment est rebaké (async, hors-écran) à chaque édition
+ * scène éclairée) et fragment TSL. Le fragment est rebaké (async, hors-écran) à chaque édition
  * validée — voir `Editor.updateMaterialPreset`/`MaterialBaker`.
  */
 function MaterialFields(props: { editor: Editor; presetId: string; onRelink: (presetId: string) => void }): JSX.Element {
@@ -348,7 +348,7 @@ function MaterialFields(props: { editor: Editor; presetId: string; onRelink: (pr
               onChange={(i) => editor.updateMaterialPreset(preset().id, { mode: MATERIAL_MODES[i] })}
             />
           </Row>
-          <Row label="Fragment (WGSL)">
+          <Row label="Fragment (TSL)">
             <textarea
               class="insp-code"
               value={preset().fragment}
