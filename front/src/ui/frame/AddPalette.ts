@@ -1,4 +1,5 @@
 import type { Editor } from "@core/Editor.ts";
+import { insertPlasmaBallMaterial } from "@core/precomps/plasmaBallMaterial.ts";
 
 /** Une entrée de la palette d'ajout : glyphe (même jeu que l'Outliner), libellé, action sur l'éditeur. */
 interface AddItem { glyph: string; label: string; run: (editor: Editor) => void }
@@ -15,6 +16,7 @@ const ITEMS: readonly AddItem[] = [
   { glyph: "✺", label: "Particules", run: (e) => e.addParticles() },
   { glyph: "⧉", label: "Précomp vide", run: (e) => e.addPrecomp() },
   { glyph: "◎", label: "Prérendu vide", run: (e) => e.addPrerender() },
+  { glyph: "☀", label: "Boule plasma braise", run: (e) => insertPlasmaBallMaterial(e) },
 ];
 
 const COLS = 2;

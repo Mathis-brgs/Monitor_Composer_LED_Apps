@@ -3,7 +3,7 @@ import {
   DEFAULT_DURATION_FRAMES, hasTracks, isComposition, makeComposition, type Composition,
 } from "./Composition.ts";
 import type { SceneObject } from "./SceneObject.ts";
-import { makeGroup, makeShape, makeShaderLayer, type Document, type GroupLayer, type SimPreset } from "./Layer.ts";
+import { makeGroup, makeShape, makeShaderLayer, type Document, type GroupLayer, type MaterialPreset, type SimPreset } from "./Layer.ts";
 
 /** Document projet = config + compositions (dont la principale) + objets. Chargeable/sauvable en JSON. */
 export interface Project {
@@ -15,6 +15,9 @@ export interface Project {
   /** Bibliothèque de simulations de particules (presets partagés, façon `Editor._simulations`).
    *  Optionnel : absent sur les projets antérieurs à cette fonctionnalité (l'éditeur sème alors le donut). */
   simulations?: SimPreset[];
+  /** Bibliothèque de matériaux personnalisés (presets partagés, façon `Editor._materials`).
+   *  Optionnel : absent sur les projets antérieurs à cette fonctionnalité. */
+  materials?: MaterialPreset[];
 }
 
 const MAIN_ID = "main";
@@ -73,6 +76,7 @@ export function deserializeProject(json: string): Project {
   const config = readConfig((parsed as { config?: Partial<ProjectConfig> }).config);
   const objects = (parsed as { objects?: SceneObject[] }).objects ?? [];
   const simulations = readSimulations((parsed as { simulations?: unknown }).simulations);
+  const materials = readMaterials((parsed as { materials?: unknown }).materials);
 
   // — Nouveau format : { compositions, mainCompId } —
   const rawComps = (parsed as { compositions?: Record<string, unknown> }).compositions;
@@ -86,7 +90,7 @@ export function deserializeProject(json: string): Project {
     if (!compositions[mainCompId]) {
       compositions[mainCompId] = makeComposition(mainCompId, "Composition principale", "main");
     }
-    return { config, compositions, mainCompId, objects, simulations };
+    return { config, compositions, mainCompId, objects, simulations, materials };
   }
 
   // — Ancien format : { composition: { tracks }, document?: { root, ... } } → une comp principale —
@@ -97,7 +101,7 @@ export function deserializeProject(json: string): Project {
   const main = makeComposition(MAIN_ID, "Composition principale", "main", {
     root, tracks, durationFrames: DEFAULT_DURATION_FRAMES,
   });
-  return { config, compositions: { [MAIN_ID]: main }, mainCompId: MAIN_ID, objects, simulations };
+  return { config, compositions: { [MAIN_ID]: main }, mainCompId: MAIN_ID, objects, simulations, materials };
 }
 
 /** Lit la bibliothèque de simulations (validation légère : présence de id/code/params). undefined si absente. */
@@ -108,6 +112,19 @@ function readSimulations(raw: unknown): SimPreset[] | undefined {
     if (p && typeof p === "object" && typeof (p as SimPreset).id === "string" && typeof (p as SimPreset).code === "string") {
       const params = Array.isArray((p as SimPreset).params) ? (p as SimPreset).params : [];
       out.push({ id: (p as SimPreset).id, name: (p as SimPreset).name ?? (p as SimPreset).id, code: (p as SimPreset).code, params });
+    }
+  }
+  return out;
+}
+
+/** Lit la bibliothèque de matériaux (validation légère : présence de id/fragment). undefined si absente. */
+function readMaterials(raw: unknown): MaterialPreset[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: MaterialPreset[] = [];
+  for (const p of raw) {
+    if (p && typeof p === "object" && typeof (p as MaterialPreset).id === "string" && typeof (p as MaterialPreset).fragment === "string") {
+      const m = p as MaterialPreset;
+      out.push({ id: m.id, name: m.name ?? m.id, mode: m.mode === "emission" ? "emission" : "basic", fragment: m.fragment, vertex: m.vertex ?? "" });
     }
   }
   return out;

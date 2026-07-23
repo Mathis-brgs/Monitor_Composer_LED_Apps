@@ -74,7 +74,23 @@ function containsLocal(s: ShapeInput, lx: number, ly: number, lz: number): boole
       const q = Math.hypot(lx, ly) - TORUS_R;
       return q * q + lz * lz < TORUS_T * TORUS_T;
     }
+    case "triangle": // dalle fine dans le plan XY, sommets (0,1) (-1,-1) (1,-1) — même convention que le wireframe (Editor3DScene)
+      return Math.abs(lz) < PLANE_HALF_Z && triangleContains(lx, ly);
   }
+}
+
+function edgeSign(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  return (px - bx) * (ay - by) - (ax - bx) * (py - by);
+}
+
+/** Point dans le triangle unité (sommets (0,1), (-1,-1), (1,-1)) — test par signe des 3 arêtes. */
+function triangleContains(lx: number, ly: number): boolean {
+  const d1 = edgeSign(lx, ly, 0, 1, -1, -1);
+  const d2 = edgeSign(lx, ly, -1, -1, 1, -1);
+  const d3 = edgeSign(lx, ly, 1, -1, 0, 1);
+  const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
+  const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
+  return !(hasNeg && hasPos);
 }
 
 function clamp01(v: number): number {

@@ -30,6 +30,7 @@ import { ParticleScene } from "./engine/ParticleScene.ts";
 import type { ResolvedSim } from "./engine/ParticleSystem.ts";
 import type { NestedSource } from "./engine/Engine.ts";
 import { countLit, type ShapeFill, type ShapeInput } from "./engine/shapes.ts";
+import { computePrerenderedFrames } from "./precomps/prerenderRegistry.ts";
 import { Animator } from "./Animator.ts";
 import { makeComposition, defaultPrerenderScene, partitionTracks, sampleKeyframes, type Composition, type Interp, type Track } from "@domain/Composition.ts";
 import type { Clock } from "./Clock.ts";
@@ -68,7 +69,7 @@ export type EditorListener = () => void;
 
 /** Libellé par défaut d'une primitive créée depuis le rail. */
 const SHAPE_LABEL: Record<ShapeKind, string> = {
-  sphere: "Sphère", box: "Cube", cylinder: "Cylindre", cone: "Cône", plane: "Plan", torus: "Tore",
+  sphere: "Sphère", box: "Cube", cylinder: "Cylindre", cone: "Cône", plane: "Plan", torus: "Tore", triangle: "Triangle",
 };
 
 /** Un niveau de la pile de navigation de comps : quelle comp, + l'état d'édition à y restaurer. */
@@ -145,9 +146,22 @@ export class Editor {
   // shapes en fill matériau actuellement en cours de bake — évite les bakes qui se chevauchent
   // (best-effort : on saute le tick si le précédent n'est pas fini, comme `EhubOutput._busy`)
   private readonly _materialBaking = new Set<string>();
-  // Bibliothèque de simulations de particules : STABLE (hors `_doc`, contrairement aux matériaux — évite
-  // que la nav entre comps ne la réinitialise), partagée par toutes les comps, sérialisée dans le projet.
+  // fill "prerender" : séquence de bitmaps calculée une fois à l'avance (par id de shape) —
+  // voir `setPrerenderedFrames`/`core/precomps/tunnelPrerendered.ts`
+  private readonly _prerenderedFrames = new Map<string, Uint8ClampedArray[]>();
+  // frame (index dans `_prerenderedFrames`) où la boucle démarre : les frames avant ne jouent
+  // qu'une fois (intro/construction), celles à partir de là bouclent indéfiniment.
+  private readonly _prerenderedLoopStart = new Map<string, number>();
+
+  // Bibliothèque de simulations de particules : STABLE (hors `_doc`), partagée par toutes les
+  // comps, sérialisée dans le projet.
   private _simulations: SimPreset[] = [defaultSimPreset()];
+
+  // Bibliothèque de matériaux personnalisés : STABLE (hors `_doc`, même raison que `_simulations`
+  // ci-dessus — vivait sur `_doc.materials` avant, réinitialisé à chaque nav entre comps ET jamais
+  // sérialisé dans le projet, donc perdu au rechargement). Voir `Editor.loadMaterialPresets`/
+  // `app.ts` (injection avant sauvegarde, même pattern que `listSimPresets`).
+  private _materials: MaterialPreset[] = [];
 
   // ————————————————————————————————— Lecture —————————————————————————————————
 
@@ -191,7 +205,27 @@ export class Editor {
     const main = compositions[mainCompId] ?? makeComposition(mainCompId || "main", "Composition", "main");
     if (!compositions[mainCompId]) compositions[mainCompId] = main;
     this._nav = [{ compId: mainCompId, groupId: main.root.id, selectedId: null, frame: 0 }];
+    this._rehydratePrerenderedFills(compositions);
     this._enterContext(main, main.root.id, null, 0);
+  }
+
+  /**
+   * Les frames d'un fill "prerender" ne sont PAS sérialisées (binaire, potentiellement
+   * volumineux) — seuls `generator`/`options` le sont (voir `Fill` dans `domain/Layer.ts`). Sans
+   * ce recalcul, une shape "prerender" rechargée depuis un projet resterait noire pour toujours
+   * (`_prerenderedFrames` vide, jamais repeuplé). Parcourt TOUTES les comps (pas juste l'active),
+   * un fill pré-rendu peut vivre dans n'importe laquelle.
+   */
+  private _rehydratePrerenderedFills(compositions: Record<string, Composition>): void {
+    for (const comp of Object.values(compositions)) {
+      for (const shape of this._collect((l): l is ShapeLayer => l.type === "shape" && l.fill.type === "prerender", comp.root)) {
+        if (shape.fill.type !== "prerender" || !shape.fill.generator) continue;
+        const result = computePrerenderedFrames(shape.fill.generator, shape.fill.options ?? {});
+        if (!result) continue;
+        this._prerenderedFrames.set(shape.id, result.frames);
+        this._prerenderedLoopStart.set(shape.id, result.loopStart);
+      }
+    }
   }
 
   /** Comp courante (haut de la pile de navigation). */
@@ -369,6 +403,20 @@ export class Editor {
     this._emit();
   }
 
+  /** Pose un grand nombre de clés d'un coup (génération procédurale, ex. précompositions) sans
+   *  recalculer la scène ni notifier à chaque clé — `putKeyframe` fait les deux à CHAQUE appel,
+   *  ce qui gèle l'app au-delà de quelques centaines d'appels (rastérisation 3D + re-render UI
+   *  par clé — déjà rencontré avec un générateur précédent). */
+  putKeyframesBulk(entries: readonly { id: string; channel: string; frame: number; value: number; interp: Interp }[]): void {
+    let touchedShape = false;
+    for (const e of entries) {
+      this._animator.putKey(e.id, e.channel, e.frame, e.value, e.interp);
+      if (!touchedShape && findLayer(this._doc.root, e.id)?.type === "shape") touchedShape = true;
+    }
+    if (touchedShape) this._recomputeScene();
+    this._emit();
+  }
+
   private _keyframe(id: string, channel: string, frame: number) {
     const t = this._animator.composition.tracks.find((t) => t.layerId === id && t.channel === channel);
     return t?.keyframes.find((k) => k.frame === frame);
@@ -456,6 +504,8 @@ export class Editor {
       // Libérer le calque shader du cache en RAM
       this._shaderLive.delete(id);
       this._animator.dropLayer(id);
+      this._prerenderedFrames.delete(id); // séquence pré-rendue potentiellement volumineuse (N frames × 128×128×4)
+      this._prerenderedLoopStart.delete(id);
       
       // Si la couche supprimée était sélectionnée, on réinitialise la sélection
       if (this._doc.selectedId === id) {
@@ -508,6 +558,12 @@ export class Editor {
       idMap.set(l.id, nid); // l.id = ancien id (préservé par le clone) → nouveau
       l.id = nid;
       if (l.type === "group") for (const c of l.children) reassign(c);
+      // Un spot/lyre cloné garde le baseChannel de l'original tel quel sinon : les deux
+      // finissent sur les mêmes canaux DMX et se marchent dessus silencieusement (voir
+      // `setFixtureBaseChannel`) — on lui réassigne le prochain bloc libre.
+      if (l.type === "spot" || l.type === "lyre") {
+        l.baseChannel = this._nextFreeChannel(l.type === "spot" ? SPOT_CHANNEL_COUNT : LYRE_CHANNEL_COUNT, l.baseChannel);
+      }
     };
     reassign(copy);
     copy.name = layer.name + " copie";
@@ -523,6 +579,11 @@ export class Editor {
     this._counter++;
     clone.id = `${layer.type}-copy-${this._counter}`;
     clone.name = `${layer.name} (copie)`;
+    // Même garde anti-collision que `_cloneLayer` : un spot/lyre dupliqué ne doit pas
+    // hériter du baseChannel de l'original (sinon les deux se marchent dessus en sortie DMX).
+    if (clone.type === "spot" || clone.type === "lyre") {
+      clone.baseChannel = this._nextFreeChannel(clone.type === "spot" ? SPOT_CHANNEL_COUNT : LYRE_CHANNEL_COUNT, clone.baseChannel);
+    }
 
     const idx = parent.children.findIndex((c) => c.id === id);
     if (idx !== -1) {
@@ -915,11 +976,19 @@ export class Editor {
     return lyre.id;
   }
 
-  /** Reconfigure le canal DMX de base d'un spot/lyre (si le patch réel change de câblage/adressage). */
+  /**
+   * Reconfigure le canal DMX de base d'un spot/lyre (si le patch réel change de câblage/adressage).
+   * Si la valeur demandée chevauche un autre spot/lyre déjà posé, elle est décalée au bloc libre
+   * suivant (même garde qu'à la création, voir `_nextFreeChannel`) : sans ça deux fixtures qui se
+   * recouvrent finissent par se marcher dessus silencieusement dans `_fixtureChannels` (dernier
+   * calque itéré gagne sur les canaux communs) — ex. la couleur d'une lyre qui pilote le projecteur.
+   */
   setFixtureBaseChannel(id: string, baseChannel: number): void {
     const layer = findLayer(this._doc.root, id);
     if (!layer || (layer.type !== "spot" && layer.type !== "lyre")) return;
-    layer.baseChannel = Math.max(1, Math.round(baseChannel));
+    const size = layer.type === "spot" ? SPOT_CHANNEL_COUNT : LYRE_CHANNEL_COUNT;
+    const requested = Math.max(1, Math.round(baseChannel));
+    layer.baseChannel = this._nextFreeChannel(size, requested, id);
     this._pushFixtures();
     this._emit();
   }
@@ -1161,6 +1230,8 @@ export class Editor {
     if (fill.type === "material") void this._bakeMaterialFor(id, fill.presetId);
     else this._materialPixels.delete(id);
 
+    if (fill.type !== "prerender") { this._prerenderedFrames.delete(id); this._prerenderedLoopStart.delete(id); }
+
     if (fill.type === "solid") {
       this._animator.autoKey(id, "color.r", this._frame, fill.color.r);
       this._animator.autoKey(id, "color.g", this._frame, fill.color.g);
@@ -1204,7 +1275,7 @@ export class Editor {
     if (this._activeSignature() !== this._lastActiveSig) {
       this._push(); // franchissement de bord de clip → reconstruit la pile (+ `_syncNested`)
     } else {
-      if (this._sceneDirty || this._videoEls.size > 0) this._recomputeScene();
+      if (this._sceneDirty || this._videoEls.size > 0 || this._prerenderedFrames.size > 0) this._recomputeScene();
       if (this._fixturesDirty) this._pushFixtures();
       this._syncNested(); // maj des comps imbriquées (animation/temps) même sans rebuild de la pile active
     }
@@ -1405,33 +1476,57 @@ export class Editor {
         const bmp = this._materialPixels.get(s.id);
         return bmp ? { kind: "bitmap", ...bmp } : FALLBACK_FILL;
       }
+      case "prerender": {
+        const frames = this._prerenderedFrames.get(s.id);
+        if (!frames || frames.length === 0) return FALLBACK_FILL;
+        const loopStart = Math.min(frames.length - 1, this._prerenderedLoopStart.get(s.id) ?? 0);
+        const idx = this._frame < loopStart
+          ? Math.max(0, this._frame)
+          : loopStart + (((this._frame - loopStart) % (frames.length - loopStart)) + (frames.length - loopStart)) % (frames.length - loopStart);
+        return { kind: "bitmap", data: frames[idx], width: this.materialBakeSize, height: this.materialBakeSize };
+      }
     }
+  }
+
+  /** Fournit la séquence pré-calculée d'un fill "prerender" (voir `tunnelPrerendered.ts`).
+   *  `loopStart` (index dans `frames`) sépare une intro jouée UNE FOIS (avant) d'une boucle
+   *  infinie (à partir de là) — 0 = tout boucle dès le début. Aucun calcul par frame ensuite. */
+  setPrerenderedFrames(shapeId: string, frames: Uint8ClampedArray[], loopStart = 0): void {
+    this._prerenderedFrames.set(shapeId, frames);
+    this._prerenderedLoopStart.set(shapeId, Math.max(0, loopStart));
+    this._recomputeScene();
+    this._emit();
   }
 
   // ————————————————————————————————— Matériaux ─────————————————————————————————
 
-  /** Bibliothèque de matériaux du document (presets réutilisables entre shapes). */
+  /** Bibliothèque de matériaux (presets réutilisables entre shapes, toutes comps confondues). */
   listMaterialPresets(): readonly MaterialPreset[] {
-    return this._doc.materials ?? [];
+    return this._materials;
   }
 
-  /** Crée un nouveau preset (fichier de matériau) dans le document. Renvoie son id. */
+  /** Charge la bibliothèque (depuis un projet) — voir `loadSimPresets`, même pattern. */
+  loadMaterialPresets(presets: readonly MaterialPreset[] | undefined): void {
+    this._materials = (presets ?? []).map((p) => ({ ...p }));
+    this._emit();
+  }
+
+  /** Crée un nouveau preset (fichier de matériau). Renvoie son id. */
   addMaterialPreset(name: string, mode: MaterialMode = "basic", fragment = DEFAULT_MATERIAL_FRAGMENT, vertex = ""): string {
     this._counter += 1;
     const id = `material-${this._counter}`;
     const preset: MaterialPreset = { id, name, mode, fragment, vertex };
-    this._doc.materials = [...(this._doc.materials ?? []), preset];
+    this._materials = [...this._materials, preset];
     this._emit();
     return id;
   }
 
   /** Édite un preset existant (nom/mode/fragment/vertex) et re-bake toutes les shapes qui l'utilisent. */
   updateMaterialPreset(id: string, patch: Partial<Omit<MaterialPreset, "id">>): void {
-    const list = this._doc.materials ?? [];
-    const idx = list.findIndex((p) => p.id === id);
+    const idx = this._materials.findIndex((p) => p.id === id);
     if (idx === -1) return;
-    const updated = { ...list[idx], ...patch };
-    this._doc.materials = list.map((p, i) => (i === idx ? updated : p));
+    const updated = { ...this._materials[idx], ...patch };
+    this._materials = this._materials.map((p, i) => (i === idx ? updated : p));
     this._emit();
     for (const shape of this._collect((l): l is ShapeLayer => l.type === "shape" && l.fill.type === "material" && l.fill.presetId === id)) {
       void this._bakeMaterialFor(shape.id, id);
@@ -1443,18 +1538,23 @@ export class Editor {
    *  cassé est indiscernable d'un matériau qui charge encore — voir la console pour le détail
    *  de l'erreur (`MaterialBaker: échec du fragment TSL utilisateur`). */
   private async _bakeMaterialFor(shapeId: string, presetId: string): Promise<void> {
-    const preset = (this._doc.materials ?? []).find((p) => p.id === presetId);
+    const preset = this._materials.find((p) => p.id === presetId);
     if (!preset || !this._engine || this._materialBaking.has(shapeId)) return;
     this._materialBaking.add(shapeId);
     try {
-      const rgba = (await this._engine.bakeMaterial(preset.fragment, preset.mode, this._frame / 24))
+      const rgba = (await this._engine.bakeMaterial(preset.fragment, preset.mode, this._frame / (this._fps > 0 ? this._fps : 24)))
         ?? magentaBitmap(this.materialBakeSize);
       // la shape peut avoir changé de fill (ou été supprimée) pendant le bake async — ignore si périmé
       const layer = findLayer(this._doc.root, shapeId);
       if (!layer || layer.type !== "shape" || layer.fill.type !== "material" || layer.fill.presetId !== presetId) return;
       this._materialPixels.set(shapeId, { data: rgba, width: this.materialBakeSize, height: this.materialBakeSize });
       this._recomputeScene();
-      this._emit();
+      // PAS de `_emit()` ici : un bake ne change aucune donnée que la Timeline/Outliner/Inspecteur
+      // affichent (juste un cache de bitmap interne) — `_recomputeScene()` suffit à faire vivre le
+      // rendu (mur + viewport 3D, via la boucle de rendu continue). Un matériau animé se rebake à
+      // CHAQUE tick (voir `_rebakeMaterials`) ; `_emit()` ferait tourner tous les panneaux réactifs
+      // (Timeline notamment, coûteuse) des dizaines de fois par seconde pour rien — c'est ce qui
+      // faisait "bugger"/ramer la timeline dès qu'un matériau animé était ajouté.
     } finally {
       this._materialBaking.delete(shapeId);
     }
@@ -1629,9 +1729,10 @@ export class Editor {
     return out;
   }
 
-  /** trouve un bloc de `size` canaux libres (pas de recouvrement avec un spot/lyre existant, tout le document), en partant de `suggestion`. */
-  private _nextFreeChannel(size: number, suggestion: number): number {
+  /** trouve un bloc de `size` canaux libres (pas de recouvrement avec un spot/lyre existant, tout le document), en partant de `suggestion`. `excludeId` : ignore ce calque lui-même (déplacement d'un fixture déjà posé). */
+  private _nextFreeChannel(size: number, suggestion: number, excludeId?: string): number {
     const ranges = this._collect<SpotLayer | LyreLayer>((l): l is SpotLayer | LyreLayer => l.type === "spot" || l.type === "lyre")
+      .filter((l) => l.id !== excludeId)
       .map((l) => ({ start: l.baseChannel, end: l.baseChannel + fixtureDmxChannels(l).length - 1 }));
     let candidate = suggestion;
     for (;;) {

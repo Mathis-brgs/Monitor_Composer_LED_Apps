@@ -1,5 +1,6 @@
 import {
   BoxGeometry,
+  BufferAttribute,
   CameraHelper,
   Color,
   ConeGeometry,
@@ -61,7 +62,17 @@ function unitGeometry(kind: ShapeKind): BufferGeometry {
     case "cone": return new ConeGeometry(1, 2, 28);
     case "plane": return new PlaneGeometry(2, 2);
     case "torus": return new TorusGeometry(0.7, 0.3, 12, 32);
+    case "triangle": return triangleGeometry();
   }
+}
+
+/** Triangle plat (plan XY), sommets (0,1) (-1,-1) (1,-1) — même convention que le collider CPU (`engine/shapes.ts`). */
+function triangleGeometry(): BufferGeometry {
+  const geo = new BufferGeometry();
+  geo.setAttribute("position", new BufferAttribute(new Float32Array([0, 1, 0, -1, -1, 0, 1, -1, 0]), 3));
+  geo.setIndex([0, 1, 2]);
+  geo.computeVertexNormals();
+  return geo;
 }
 
 /**

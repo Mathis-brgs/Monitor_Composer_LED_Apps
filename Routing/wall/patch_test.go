@@ -134,6 +134,83 @@ func TestFrameSetEntityUnifiesLEDsAndFixtures(t *testing.T) {
 	}
 }
 
+// TestResolveEntityPatchFixtureRow verifie qu'une ligne de patch couvrant une
+// fixture (entite < EntityBase, ex: import CSV "Lyre 1,10,23,...") est bien
+// resolue en canal DMX brut (1 octet, offset ABSOLU entityID-1), pas en LED
+// (stride ChannelsPerLED()) — sinon une lyre voit son canal Pan ecraser Pan
+// fine/Tilt (bug corrige).
+func TestResolveEntityPatchFixtureRow(t *testing.T) {
+	cfg := DefaultConfig() // EntityBase = 100
+	cfg.Patch = []PatchRow{
+		{Name: "Lyre 1", EntityStart: 10, EntityEnd: 23, IP: "192.168.1.48", Universe: 33},
+	}
+
+	ip, universe, ch, isFixture, ok := cfg.ResolveEntity(12)
+	if !ok || ip != "192.168.1.48" || universe != 33 {
+		t.Fatalf("attendu (192.168.1.48, univers 33), recu (%s, %d, ok=%v)", ip, universe, ok)
+	}
+	if !isFixture {
+		t.Error("une ligne de patch sous EntityBase doit etre un canal fixture brut")
+	}
+	if ch != 11 { // 12 - 1 (offset absolu, pas relatif a row.EntityStart)
+		t.Errorf("offset canal : recu %d, attendu 11", ch)
+	}
+
+	f := NewFrame(cfg)
+	if !f.SetEntity(12, 200, 0, 0, 0) {
+		t.Fatal("SetEntity(12,...) attendu ok=true")
+	}
+	channels, ok := f.ChannelsFor("192.168.1.48", 33)
+	if !ok || channels[11] != 200 {
+		t.Errorf("canal fixture inattendu : %v (ok=%v)", channels[10:13], ok)
+	}
+	// Un canal fixture n'ecrit qu'un seul octet : le canal voisin (ex: Tilt
+	// d'une lyre) ne doit pas etre touche.
+	if channels[12] != 0 {
+		t.Errorf("un canal fixture (patch) a ecrase son voisin : %v", channels[10:13])
+	}
+}
+
+// TestResolveEntityPatchMultipleFixturesShareUniverse verifie le cas reel du
+// CSV du prof : plusieurs fixtures (4 lyres + projecteur) sont patchees sur
+// le MEME univers ArtNet (33), chacune a un canal de depart different. Avec
+// un offset relatif a row.EntityStart, le 1er canal de CHAQUE ligne retombe
+// sur l'octet 0 du buffer -> toutes les fixtures s'ecrasent entre elles quel
+// que soit le canal choisi (bug reel corrige : offset absolu entityID-1).
+func TestResolveEntityPatchMultipleFixturesShareUniverse(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Patch = []PatchRow{
+		{Name: "Lyre 1", EntityStart: 10, EntityEnd: 23, IP: "192.168.1.48", Universe: 33},
+		{Name: "Lyre 2", EntityStart: 30, EntityEnd: 43, IP: "192.168.1.48", Universe: 33},
+		{Name: "Projector", EntityStart: 1, EntityEnd: 1, IP: "192.168.1.48", Universe: 33},
+	}
+	f := NewFrame(cfg)
+
+	if !f.SetEntity(1, 111, 0, 0, 0) { // Projector, canal R
+		t.Fatal("SetEntity(1,...) attendu ok=true")
+	}
+	if !f.SetEntity(10, 222, 0, 0, 0) { // Lyre 1, canal Pan
+		t.Fatal("SetEntity(10,...) attendu ok=true")
+	}
+	if !f.SetEntity(30, 233, 0, 0, 0) { // Lyre 2, canal Pan
+		t.Fatal("SetEntity(30,...) attendu ok=true")
+	}
+
+	channels, ok := f.ChannelsFor("192.168.1.48", 33)
+	if !ok {
+		t.Fatal("univers fixture introuvable")
+	}
+	if channels[0] != 111 {
+		t.Errorf("Projector (entite 1) attendu au canal 0, recu %d (buf: %v)", channels[0], channels[:35])
+	}
+	if channels[9] != 222 {
+		t.Errorf("Lyre 1 (entite 10) attendu au canal 9, recu %d (buf: %v)", channels[9], channels[:35])
+	}
+	if channels[29] != 233 {
+		t.Errorf("Lyre 2 (entite 30) attendu au canal 29, recu %d (buf: %v)", channels[29], channels[:35])
+	}
+}
+
 // TestFrameWithPatch verifie que Frame reserve ses slots depuis Config.Patch
 // quand elle est renseignee, meme si les univers ne suivent aucune formule.
 func TestFrameWithPatch(t *testing.T) {

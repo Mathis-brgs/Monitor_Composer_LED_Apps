@@ -1,7 +1,7 @@
 export interface RGB { r: number; g: number; b: number; }
 export type BlendMode = "normal" | "add";
 export type ShaderId = "solid" | "plasma" | "sweep";
-export type ShapeKind = "sphere" | "box" | "cylinder" | "cone" | "plane" | "torus";
+export type ShapeKind = "sphere" | "box" | "cylinder" | "cone" | "plane" | "torus" | "triangle";
 
 export interface Vec3 { x: number; y: number; z: number; }
 /** Transform façon Blender : position, rotation (Euler XYZ en radians), échelle — par axe. */
@@ -75,13 +75,21 @@ interface LayerBase {
 export interface ShaderLayer extends LayerBase { type: "shader"; shader: ShaderId; params: Record<string, number>; color: RGB; }
 
 /** Remplissage d'une shape : couleur unie, dégradé linéaire (angle en radians), média (data URL,
- *  embarqué dans le projet), ou matériau personnalisé (référence un `MaterialPreset` du document). */
+ *  embarqué dans le projet), matériau personnalisé (référence un `MaterialPreset` du document),
+ *  ou séquence PRÉ-RENDUE (frames calculées une fois à l'avance, hors du document — voir
+ *  `Editor.setPrerenderedFrames` — non sérialisable, ne survit pas à une sauvegarde/rechargement). */
 export type Fill =
   | { type: "solid"; color: RGB }
   | { type: "gradient"; from: RGB; to: RGB; angle: number }
   | { type: "image"; dataUrl: string }
   | { type: "video"; dataUrl: string }
-  | { type: "material"; presetId: string };
+  | { type: "material"; presetId: string }
+  /** Séquence pré-rendue (voir `Editor.setPrerenderedFrames`) : les frames elles-mêmes ne sont
+   *  PAS sérialisées (binaire, potentiellement volumineux) — `generator`/`options` le sont, pour
+   *  que `Editor._rehydratePrerenderedFills` puisse tout recalculer après un chargement de
+   *  projet (voir `core/precomps/prerenderRegistry.ts`). Sans `generator` (ancien projet /
+   *  fill posé sans registre), le fill reste noir tant qu'il n'est pas régénéré manuellement. */
+  | { type: "prerender"; generator?: string; options?: Record<string, unknown> };
 
 /** Mode de rendu d'un matériau : "basic" = couleur brute (unlit), "emission" = même couleur
  *  boostée en intensité (effet "qui brille" pour des LEDs pilotées en valeurs brutes — pas de
@@ -92,8 +100,8 @@ export type MaterialMode = "basic" | "emission";
  * Matériau personnalisé : un fragment TSL (même langage que les autres calques moteur —
  * `Plasma.layer.ts`/`Sweep.layer.ts` — pas du WGSL brut) baké hors-écran en texture, puis
  * échantillonné comme un fill bitmap classique (même chemin qu'image/vidéo) — voir
- * `Editor._resolveFill` / `MaterialBaker`. Stocké dans `Document.materials`, réutilisable par
- * plusieurs shapes via `Fill.presetId` (façon bibliothèque de presets).
+ * `Editor._resolveFill` / `MaterialBaker`. Bibliothèque stable côté `Editor._materials` (voir
+ * `Project.materials`), réutilisable par plusieurs shapes via `Fill.presetId`.
  * `vertex` est réservé : un fill est une texture plate échantillonnée sur la géométrie de la
  * shape, pas une géométrie déformable — il n'est pas encore évalué au rendu.
  */
@@ -248,7 +256,8 @@ export function fillPreviewColor(fill: Fill): RGB {
     case "gradient": return { r: (fill.from.r + fill.to.r) / 2, g: (fill.from.g + fill.to.g) / 2, b: (fill.from.b + fill.to.b) / 2 };
     case "image":
     case "video":
-    case "material": return { r: 1, g: 1, b: 1 };
+    case "material":
+    case "prerender": return { r: 1, g: 1, b: 1 };
   }
 }
 
@@ -370,9 +379,11 @@ export function applyMap(map: MapRange, v: number): number {
   return map.outMin + t * (map.outMax - map.outMin);
 }
 
-/** Document = arbre (racine) + groupe où l'on se trouve + sélection + bibliothèque de matériaux.
- *  `materials` optionnel : absent sur les documents/projets antérieurs à cette fonctionnalité. */
-export interface Document { root: GroupLayer; activeGroupId: string; selectedId: string | null; materials?: MaterialPreset[]; }
+/** Document = arbre (racine) + groupe où l'on se trouve + sélection — vue courante de l'Editor sur
+ *  une comp (reconstruite à chaque nav). La bibliothèque de matériaux N'EST PAS ici (elle vivait
+ *  ici avant, mais se faisait réinitialiser à chaque nav entre comps et jamais sérialiser dans le
+ *  projet) — voir `Editor._materials`, stable et sérialisée via `Project.materials`. */
+export interface Document { root: GroupLayer; activeGroupId: string; selectedId: string | null; }
 
 const vec3 = (x = 0, y = 0, z = 0): Vec3 => ({ x, y, z });
 const ORIGIN = (): Transform => ({ position: vec3(), rotation: vec3(), scale: vec3(0.3, 0.3, 0.3) });
