@@ -202,8 +202,13 @@ func (c Config) ResolveEntity(entityID int) (ip string, universe uint16, channel
 				if entityID < c.EntityBase {
 					// Ligne de patch couvrant une fixture (lyre/projecteur) : même
 					// convention que le chemin formule (FixtureChannel) — canal DMX
-					// brut, 1 octet, pas le stride ChannelsPerLED() d'une LED.
-					return row.IP, row.Universe, entityID - row.EntityStart, true, true
+					// brut, 1 octet, offset ABSOLU (entityID-1), PAS relatif à
+					// row.EntityStart. Plusieurs fixtures partagent souvent le même
+					// univers (ex: 4 lyres + projecteur, tous sur l'univers 33 du
+					// tableau du prof) ; un offset relatif à chaque ligne ferait
+					// retomber le 1er canal de CHAQUE fixture sur l'octet 0 du
+					// buffer, écrasement garanti entre toutes les fixtures.
+					return row.IP, row.Universe, entityID - 1, true, true
 				}
 				return row.IP, row.Universe, (entityID - row.EntityStart) * c.ChannelsPerLED(), false, true
 			}

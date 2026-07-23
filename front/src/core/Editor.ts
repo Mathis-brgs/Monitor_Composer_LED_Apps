@@ -558,6 +558,12 @@ export class Editor {
       idMap.set(l.id, nid); // l.id = ancien id (préservé par le clone) → nouveau
       l.id = nid;
       if (l.type === "group") for (const c of l.children) reassign(c);
+      // Un spot/lyre cloné garde le baseChannel de l'original tel quel sinon : les deux
+      // finissent sur les mêmes canaux DMX et se marchent dessus silencieusement (voir
+      // `setFixtureBaseChannel`) — on lui réassigne le prochain bloc libre.
+      if (l.type === "spot" || l.type === "lyre") {
+        l.baseChannel = this._nextFreeChannel(l.type === "spot" ? SPOT_CHANNEL_COUNT : LYRE_CHANNEL_COUNT, l.baseChannel);
+      }
     };
     reassign(copy);
     copy.name = layer.name + " copie";
@@ -573,6 +579,11 @@ export class Editor {
     this._counter++;
     clone.id = `${layer.type}-copy-${this._counter}`;
     clone.name = `${layer.name} (copie)`;
+    // Même garde anti-collision que `_cloneLayer` : un spot/lyre dupliqué ne doit pas
+    // hériter du baseChannel de l'original (sinon les deux se marchent dessus en sortie DMX).
+    if (clone.type === "spot" || clone.type === "lyre") {
+      clone.baseChannel = this._nextFreeChannel(clone.type === "spot" ? SPOT_CHANNEL_COUNT : LYRE_CHANNEL_COUNT, clone.baseChannel);
+    }
 
     const idx = parent.children.findIndex((c) => c.id === id);
     if (idx !== -1) {
@@ -965,11 +976,19 @@ export class Editor {
     return lyre.id;
   }
 
-  /** Reconfigure le canal DMX de base d'un spot/lyre (si le patch réel change de câblage/adressage). */
+  /**
+   * Reconfigure le canal DMX de base d'un spot/lyre (si le patch réel change de câblage/adressage).
+   * Si la valeur demandée chevauche un autre spot/lyre déjà posé, elle est décalée au bloc libre
+   * suivant (même garde qu'à la création, voir `_nextFreeChannel`) : sans ça deux fixtures qui se
+   * recouvrent finissent par se marcher dessus silencieusement dans `_fixtureChannels` (dernier
+   * calque itéré gagne sur les canaux communs) — ex. la couleur d'une lyre qui pilote le projecteur.
+   */
   setFixtureBaseChannel(id: string, baseChannel: number): void {
     const layer = findLayer(this._doc.root, id);
     if (!layer || (layer.type !== "spot" && layer.type !== "lyre")) return;
-    layer.baseChannel = Math.max(1, Math.round(baseChannel));
+    const size = layer.type === "spot" ? SPOT_CHANNEL_COUNT : LYRE_CHANNEL_COUNT;
+    const requested = Math.max(1, Math.round(baseChannel));
+    layer.baseChannel = this._nextFreeChannel(size, requested, id);
     this._pushFixtures();
     this._emit();
   }
@@ -1710,9 +1729,10 @@ export class Editor {
     return out;
   }
 
-  /** trouve un bloc de `size` canaux libres (pas de recouvrement avec un spot/lyre existant, tout le document), en partant de `suggestion`. */
-  private _nextFreeChannel(size: number, suggestion: number): number {
+  /** trouve un bloc de `size` canaux libres (pas de recouvrement avec un spot/lyre existant, tout le document), en partant de `suggestion`. `excludeId` : ignore ce calque lui-même (déplacement d'un fixture déjà posé). */
+  private _nextFreeChannel(size: number, suggestion: number, excludeId?: string): number {
     const ranges = this._collect<SpotLayer | LyreLayer>((l): l is SpotLayer | LyreLayer => l.type === "spot" || l.type === "lyre")
+      .filter((l) => l.id !== excludeId)
       .map((l) => ({ start: l.baseChannel, end: l.baseChannel + fixtureDmxChannels(l).length - 1 }));
     let candidate = suggestion;
     for (;;) {
