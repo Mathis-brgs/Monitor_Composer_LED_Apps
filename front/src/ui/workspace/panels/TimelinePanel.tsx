@@ -15,6 +15,7 @@ import { solidPanel } from "@ui/solid/mount.ts";
 import { animatableProps } from "./timeline-properties.ts";
 import { insertTunnel } from "@core/precomps/tunnel.ts";
 import { insertTunnelPrerendered, insertTunnelPrerenderedSimple } from "@core/precomps/tunnelPrerendered.ts";
+import { insertEmberPlasmaBall } from "@core/precomps/emberPlasmaBall.ts";
 import type { Panel } from "../Panel.ts";
 
 const AXIS_SHORT: Record<string, string> = { x: "X", y: "Y", z: "Z", r: "R", g: "G", b: "B" };
@@ -261,6 +262,12 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
     if (e.shiftKey && e.altKey) { insertTunnelPrerenderedSimple(editor, { kind }); return; }
     if (e.shiftKey) { insertTunnelPrerendered(editor, { kind, stepFrames }); return; }
     insertTunnel(editor, { kind, stepFrames });
+  };
+
+  /** Précomposition PRÉ-RENDUE (pas de version live) : particules plasma qui tombent puis
+   *  fondent en boule de braise (formation complète en 8s, puis boucle). */
+  const addEmberPlasmaBall = (): void => {
+    insertEmberPlasmaBall(editor, { fps: clock.fps });
   };
 
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
@@ -1288,6 +1295,14 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
           onClick={(e) => addTunnel(e, "triangle")}
         >
           {createIcon("triangle", { size: 16 })}
+        </button>
+        <button
+          type="button"
+          class="seq__tool"
+          data-tooltip="Précomposition (pré-rendu) : particules plasma qui tombent au sol puis sont attirées au centre en boule de braise (formation en 8s, puis boucle)"
+          onClick={addEmberPlasmaBall}
+        >
+          {createIcon("sparkle", { size: 16 })}
         </button>
       </div>
       <div class="seq__main">
