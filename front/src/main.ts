@@ -9,7 +9,7 @@ import { LiveState } from "@core/LiveState.ts";
 import { AppShell } from "@ui/AppShell.ts";
 import { installEdgeAwareTooltips } from "@ui/tooltip-edge.ts";
 import { DEFAULT_SPACE, type SpaceId } from "@ui/workspace/spaces.ts";
-import { createProject } from "@domain/Project.ts";
+import { createSeededProject } from "@domain/Project.ts";
 import type { View } from "@views/View.ts";
 import { Editor3DView } from "@views/editor3d/Editor3DView.ts";
 import { Preview2DView } from "@views/preview2d/Preview2DView.ts";
@@ -39,9 +39,11 @@ if (!(root instanceof HTMLElement)) {
 
 installEdgeAwareTooltips();
 
-const project = createProject();
+const project = createSeededProject();
 const clock = new Clock();
 const editor = new Editor();
+editor.setClock(clock);
+editor.loadCompositions(project.compositions, project.mainCompId);
 const audio = new AudioEngine();
 const live = new LiveState();
 const shell = new AppShell({ project, clock, editor, audio, live });

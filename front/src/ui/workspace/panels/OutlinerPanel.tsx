@@ -1,223 +1,177 @@
-import { createEffect, createMemo, For, Show, createSignal, type Accessor, type JSX } from "solid-js";
-import { Portal } from "solid-js/web";
+import { createMemo, For, Show, createSignal, onCleanup, type Accessor, type JSX } from "solid-js";
 import type { Editor } from "@core/Editor.ts";
 import type { Layer } from "@domain/Layer.ts";
 import { createIcon } from "@ui/icons/Icon.ts";
 import { fromStore } from "@ui/solid/store.ts";
 import { solidPanel } from "@ui/solid/mount.ts";
-import { subtitle, thumbBg } from "./layer-display.ts";
+import { layerGlyph } from "./layer-display.ts";
 import type { Panel } from "../Panel.ts";
+
+/** Cible d'un menu contextuel : le calque cliqué + la position écran du curseur. */
+interface CtxTarget { layer: Layer; x: number; y: number }
 
 /** Outliner : arbre du groupe actif. Panneau unique — mêmes données en 2D (compositor) et 3D (scène). */
 function LayerTree(props: { editor: Editor }): JSX.Element {
   const editor = props.editor;
   const layers = fromStore(editor, () => editor.children);
   const changed = fromStore(editor, () => editor.selectedId);
-  const atRoot = createMemo(() => { changed(); return editor.activeGroupId === editor.rootId; });
-  const count = createMemo(() => { changed(); return editor.children.length; });
+  const trail = fromStore(editor, () => editor.compTrail);
+  const multi = fromStore(editor, () => editor.multiSelectedIds);
+  const multiSet = createMemo(() => new Set(multi()));
+  // Retour possible seulement s'il y a où aller : une comp imbriquée (pas au niveau du main).
+  const canGoBack = createMemo(() => trail().length > 1);
+  const [editingId, setEditingId] = createSignal<string | null>(null);
+  const [ctx, setCtx] = createSignal<CtxTarget | null>(null);
 
-  // Sélection multiple (shift = plage, ctrl/cmd = ajout un par un) — locale à l'Outliner, comme
-  // la sélection de clés dans la Timeline. `editor.selectedId` (unique) reste la "sélection
-  // primaire" pour l'Inspecteur/gizmo 3D ; ce set n'ajoute qu'une couche de sélection groupée
-  // pour les actions en masse (supprimer).
-  const [multiSelected, setMultiSelected] = createSignal<Set<string>>(new Set());
-  const [ctxMenu, setCtxMenu] = createSignal<{ layer: Layer; x: number; y: number } | null>(null);
-  const [editingLayerId, setEditingLayerId] = createSignal<string | null>(null);
+  const goBack = () => editor.exitComp();
+
+  // Sélection multiple au niveau modèle (shift = plage, ctrl/cmd = ajout un par un). `editor.selectedId`
+  // (unique) reste la sélection primaire pour l'Inspecteur/gizmo ; `editor.multiSelectedIds` porte le set
+  // pour les actions groupées (précomposer, supprimer).
   let anchorIndex = -1;
   let root!: HTMLDivElement;
-
-  // Une sélection venue d'ailleurs (viewport 3D, clic Timeline...) qui ne fait pas déjà partie
-  // du groupe courant réinitialise le groupe sur ce seul calque — évite un surlignage périmé.
-  createEffect(() => {
-    const id = editor.selectedId;
-    changed();
-    if (id && !multiSelected().has(id)) setMultiSelected(new Set([id]));
-    else if (!id) setMultiSelected(new Set<string>());
-  });
 
   const onRowClick = (e: MouseEvent, layer: Layer, index: number): void => {
     if (e.shiftKey && anchorIndex !== -1) {
       const [a, b] = [anchorIndex, index].sort((x, y) => x - y);
-      setMultiSelected(new Set(layers().slice(a, b + 1).map((l) => l.id)));
+      editor.selectMany(layers().slice(a, b + 1).map((l) => l.id), layer.id);
     } else if (e.metaKey || e.ctrlKey) {
-      const n = new Set(multiSelected());
-      if (n.has(layer.id)) n.delete(layer.id); else n.add(layer.id);
-      setMultiSelected(n);
+      const set = new Set(editor.multiSelectedIds);
+      if (set.has(layer.id)) set.delete(layer.id); else set.add(layer.id);
+      editor.selectMany([...set], layer.id);
       anchorIndex = index;
     } else {
-      setMultiSelected(new Set([layer.id]));
+      editor.select(layer.id);
       anchorIndex = index;
     }
-    editor.select(layer.id);
     root.focus();
   };
 
   const onKeyDown = (e: KeyboardEvent): void => {
     if (e.key !== "Delete" && e.key !== "Backspace") return;
-    const ids = multiSelected();
-    if (ids.size === 0) return;
+    if (editor.multiSelectedIds.length === 0) return;
     e.preventDefault();
     e.stopPropagation(); // évite de déclencher aussi le raccourci Suppr. de la Timeline
-    for (const id of ids) editor.deleteLayer(id);
-    setMultiSelected(new Set<string>());
+    editor.deleteSelected();
+  };
+
+  // Clic droit : sélectionne la ligne (sauf si déjà dans la sélection multiple) puis ouvre le menu.
+  const onRowContext = (e: MouseEvent, layer: Layer): void => {
+    e.preventDefault();
+    if (!editor.multiSelectedIds.includes(layer.id)) editor.select(layer.id);
+    setCtx({ layer, x: e.clientX, y: e.clientY });
   };
 
   return (
     <div class="layer-tree" ref={root} tabIndex={-1} onKeyDown={onKeyDown}>
       <div class="comp-bar">
-        <Show when={!atRoot()}>
-          <button type="button" class="comp-back" onClick={() => editor.exitGroup()}>
-            {createIcon("chevron-down", { size: 12 })} Retour
-          </button>
+        <Show when={canGoBack()}>
+          <button type="button" class="comp-back" onClick={goBack}>‹ Retour</button>
+          <span class="comp-trail__sep">|</span>
         </Show>
-        <span class="compositor__count">{count()} calques</span>
+        <div class="comp-trail">
+          <For each={trail()}>
+            {(c, i) => (
+              <>
+                <Show when={i() > 0}><span class="comp-trail__sep">/</span></Show>
+                <button
+                  type="button"
+                  class="comp-trail__seg"
+                  classList={{ "comp-trail__seg--current": i() === trail().length - 1 }}
+                  disabled={i() === trail().length - 1}
+                  onClick={() => editor.exitToComp(c.id)}
+                >
+                  {c.name}
+                </button>
+              </>
+            )}
+          </For>
+        </div>
       </div>
       <For each={layers()}>
         {(layer, i) => (
-          <LayerRow
-            editor={editor}
-            layer={layer}
-            multiSelected={multiSelected}
-            isEditingName={editingLayerId() === layer.id}
-            onRenameComplete={(newName) => {
-              if (newName && newName.trim() !== "") {
-                editor.setName(layer.id, newName.trim());
-              }
-              setEditingLayerId(null);
-            }}
-            onRowClick={(e) => onRowClick(e, layer, i())}
-            onRowContextMenu={(e) => setCtxMenu({ layer, x: e.clientX, y: e.clientY })}
-          />
+          <LayerRow editor={editor} layer={layer} changed={changed}
+            editingId={editingId} setEditingId={setEditingId}
+            multiSet={multiSet} onRowClick={(e) => onRowClick(e, layer, i())}
+            onContext={(e) => onRowContext(e, layer)} />
         )}
       </For>
-
-      <Show when={ctxMenu()}>
-        {(m) => (
-          <Portal>
-            <div
-              class="seq__kf-editor-backdrop"
-              onPointerDown={() => setCtxMenu(null)}
-              onContextMenu={(e) => { e.preventDefault(); setCtxMenu(null); }}
-            >
-              <div class="seq__ctx-menu" style={{ left: `${m().x}px`, top: `${m().y}px` }} onPointerDown={(e) => e.stopPropagation()}>
-                <div class="seq__ctx-title">{m().layer.name}</div>
-                
-                <button
-                  type="button"
-                  class="seq__ctx-item"
-                  onClick={() => {
-                    const id = m().layer.id;
-                    setCtxMenu(null);
-                    setEditingLayerId(id);
-                  }}
-                >
-                  Renommer
-                </button>
-
-                <button
-                  type="button"
-                  class="seq__ctx-item"
-                  onClick={() => {
-                    const id = m().layer.id;
-                    setCtxMenu(null);
-                    editor.duplicateLayer(id);
-                  }}
-                >
-                  Dupliquer
-                </button>
-
-                <button
-                  type="button"
-                  class="seq__ctx-item"
-                  onClick={() => {
-                    const id = m().layer.id;
-                    const visible = m().layer.visible;
-                    setCtxMenu(null);
-                    editor.setVisible(id, !visible);
-                  }}
-                >
-                  {m().layer.visible ? "Masquer" : "Afficher"}
-                </button>
-
-                <button
-                  type="button"
-                  class="seq__ctx-item"
-                  onClick={() => {
-                    const id = m().layer.id;
-                    const locked = m().layer.locked;
-                    setCtxMenu(null);
-                    editor.setLocked(id, !locked);
-                  }}
-                >
-                  {m().layer.locked ? "Déverrouiller" : "Verrouiller"}
-                </button>
-
-                <button
-                  type="button"
-                  class="seq__ctx-item"
-                  onClick={() => {
-                    const id = m().layer.id;
-                    const solo = m().layer.solo;
-                    setCtxMenu(null);
-                    editor.setSolo(id, !solo);
-                  }}
-                >
-                  {m().layer.solo ? "Désactiver le Solo" : "Activer le Solo"}
-                </button>
-
-                <button
-                  type="button"
-                  class="seq__ctx-item"
-                  onClick={() => {
-                    const id = m().layer.id;
-                    const blend = m().layer.blend;
-                    setCtxMenu(null);
-                    editor.setBlend(id, blend === "add" ? "normal" : "add");
-                  }}
-                >
-                  {m().layer.blend === "add" ? "Mode Normal" : "Mode Additif"}
-                </button>
-
-                <div style={{ height: "1px", background: "var(--line)", margin: "4px 0" }} />
-
-                <button
-                  type="button"
-                  class="seq__ctx-item"
-                  style={{ color: "var(--acc)" }}
-                  onClick={() => {
-                    const id = m().layer.id;
-                    setCtxMenu(null);
-                    editor.deleteLayer(id);
-                  }}
-                >
-                  Supprimer
-                </button>
-              </div>
-            </div>
-          </Portal>
+      <Show when={ctx()}>
+        {(target) => (
+          <ContextMenu editor={editor} target={target()} close={() => setCtx(null)} startRename={(id) => setEditingId(id)} />
         )}
       </Show>
     </div>
   );
 }
 
+/** Une action du menu contextuel : libellé, raccourci affiché, handler, état grisé. */
+function MenuItem(props: { label: string; shortcut?: string; danger?: boolean; disabled?: boolean; onRun: () => void; close: () => void }): JSX.Element {
+  return (
+    <button
+      type="button"
+      class="ctx-menu__item"
+      classList={{ "ctx-menu__item--danger": props.danger, "ctx-menu__item--disabled": props.disabled }}
+      disabled={props.disabled}
+      onClick={() => { if (!props.disabled) { props.onRun(); props.close(); } }}
+    >
+      <span>{props.label}</span>
+      <Show when={props.shortcut}><span class="ctx-menu__key">{props.shortcut}</span></Show>
+    </button>
+  );
+}
+
+/**
+ * Menu contextuel de l'Outliner (clic droit) : une seule liste pour tous les types, les actions non
+ * pertinentes sont grisées. Se ferme au clic ailleurs, à Échap ou après une action.
+ */
+function ContextMenu(props: { editor: Editor; target: CtxTarget; close: () => void; startRename: (id: string) => void }): JSX.Element {
+  const { editor, target, close } = props;
+  const layer = target.layer;
+  const isPrecomp = layer.type === "precomp";
+
+  const onDocDown = (e: MouseEvent) => { if (!(e.target as HTMLElement).closest(".ctx-menu")) close(); };
+  const onEsc = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  window.addEventListener("pointerdown", onDocDown, true);
+  window.addEventListener("keydown", onEsc, true);
+  onCleanup(() => {
+    window.removeEventListener("pointerdown", onDocDown, true);
+    window.removeEventListener("keydown", onEsc, true);
+  });
+
+  return (
+    <div class="ctx-menu" style={{ left: `${target.x}px`, top: `${target.y}px` }}>
+      <MenuItem label="Renommer" close={close} onRun={() => props.startRename(layer.id)} />
+      <MenuItem label="Dupliquer" shortcut="⌘D" close={close} onRun={() => { editor.select(layer.id); editor.duplicateSelected(); }} />
+      <MenuItem label="Ouvrir la composition" disabled={!isPrecomp} close={close} onRun={() => { if (isPrecomp) editor.enterComp(layer.compId); }} />
+      <div class="ctx-menu__sep" />
+      <MenuItem label="Précomposer la sélection" shortcut="⌘⇧C" close={close} onRun={() => editor.precomposeSelection()} />
+      <div class="ctx-menu__sep" />
+      <MenuItem label="Supprimer" danger close={close} onRun={() => editor.deleteSelected()} />
+    </div>
+  );
+}
+
 function LayerRow(props: {
-  editor: Editor; layer: Layer;
-  multiSelected: Accessor<Set<string>>; onRowClick: (e: MouseEvent) => void;
-  onRowContextMenu: (e: MouseEvent) => void;
-  isEditingName: boolean;
-  onRenameComplete: (newName: string) => void;
+  editor: Editor; layer: Layer; changed: Accessor<unknown>;
+  editingId: Accessor<string | null>; setEditingId: (id: string | null) => void;
+  multiSet: Accessor<Set<string>>; onRowClick: (e: MouseEvent) => void; onContext: (e: MouseEvent) => void;
 }): JSX.Element {
-  const { editor, layer } = props;
-  const selected = fromStore(editor, () => editor.selectedId === layer.id || props.multiSelected().has(layer.id));
-  const visible = fromStore(editor, () => layer.visible);
-  const additive = fromStore(editor, () => layer.blend === "add");
-  const opacity = fromStore(editor, () => `${Math.round(layer.opacity * 100)}%`);
-  const thumb = fromStore(editor, () => thumbBg(layer));
-  const sub = fromStore(editor, () => subtitle(layer));
-  const name = fromStore(editor, () => layer.name);
-  const locked = fromStore(editor, () => !!layer.locked);
-  const solo = fromStore(editor, () => !!layer.solo);
+  const { editor, layer, changed } = props;
+  const editing = createMemo(() => props.editingId() === layer.id);
+  const selected = createMemo(() => { changed(); return editor.selectedId === layer.id || props.multiSet().has(layer.id); });
+  const visible = createMemo(() => { changed(); return layer.visible; });
+  const additive = createMemo(() => { changed(); return layer.blend === "add"; });
+  const opacity = createMemo(() => { changed(); return `${Math.round(layer.opacity * 100)}%`; });
+  const name = createMemo(() => { changed(); return layer.name; });
+  const glyph = createMemo(() => {
+    changed();
+    if (layer.type !== "precomp") return layerGlyph(layer);
+    const kind = editor.getCompositions()[layer.compId]?.kind;
+    return layerGlyph(layer, kind === "prerender" ? "prerender" : "precomp");
+  });
+  // blend + opacité : affichés seulement pour les calques visuels « feuille » (comme la maquette)
+  const showMeta = createMemo(() => ["shader", "shape", "video", "image"].includes(layer.type));
 
   const [isDragging, setIsDragging] = createSignal(false);
   const [dragOverPos, setDragOverPos] = createSignal<"above" | "below" | null>(null);
@@ -278,8 +232,6 @@ function LayerRow(props: {
       classList={{
         "layer--selected": selected(),
         "layer--hidden": !visible(),
-        "layer--locked": locked(),
-        "layer--solo": solo(),
         "layer--dragging": isDragging(),
         "layer--drag-over-above": dragOverPos() === "above",
         "layer--drag-over-below": dragOverPos() === "below",
@@ -291,71 +243,41 @@ function LayerRow(props: {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       onClick={(e) => props.onRowClick(e)}
-      onDblClick={() => { if (layer.type === "group") editor.enterGroup(layer.id); }}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        props.onRowContextMenu(e);
+      onContextMenu={(e) => props.onContext(e)}
+      onDblClick={() => {
+        // double-clic = ENTRER dans la composition (le renommage passe par le clic droit).
+        if (layer.type === "precomp") editor.enterComp(layer.compId);
       }}
     >
+      <span class="layer__glyph">{glyph()}</span>
+      <Show
+        when={editing()}
+        fallback={<div class="layer__name">{name()}</div>}
+      >
+        <input
+          class="layer__name-input"
+          value={layer.name}
+          ref={(el) => requestAnimationFrame(() => { el.focus(); el.select(); })}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") { editor.setName(layer.id, e.currentTarget.value.trim() || layer.name); props.setEditingId(null); }
+            else if (e.key === "Escape") props.setEditingId(null);
+          }}
+          onBlur={(e) => { editor.setName(layer.id, e.currentTarget.value.trim() || layer.name); props.setEditingId(null); }}
+        />
+      </Show>
+      <Show when={showMeta()}>
+        <span class="layer__blend" classList={{ "layer__blend--accent": additive() }}>{additive() ? "ADDITIF" : "NORMAL"}</span>
+        <span class="layer__opacity">{opacity()}</span>
+      </Show>
       <button
         type="button"
         class="layer__eye"
-        onClick={(e) => {
-          e.stopPropagation();
-          editor.setVisible(layer.id, !layer.visible);
-        }}
+        onClick={(e) => { e.stopPropagation(); editor.setVisible(layer.id, !layer.visible); }}
       >
         {visible() ? createIcon("eye", { size: 13 }) : createIcon("eye-off", { size: 13 })}
       </button>
-      <div class="layer__thumb" style={{ background: thumb() }} />
-      <div class="layer__info">
-        <Show
-          when={props.isEditingName}
-          fallback={<div class="layer__name">{name()}</div>}
-        >
-          <input
-            type="text"
-            class="layer__name-input"
-            value={name()}
-            ref={(el) => {
-              setTimeout(() => {
-                el.focus();
-                el.select();
-              }, 0);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                props.onRenameComplete(e.currentTarget.value);
-              } else if (e.key === "Escape") {
-                props.onRenameComplete(name());
-              }
-            }}
-            onBlur={(e) => {
-              props.onRenameComplete(e.currentTarget.value);
-            }}
-            onClick={(e) => e.stopPropagation()}
-            onPointerDown={(e) => e.stopPropagation()}
-          />
-        </Show>
-        <div class="layer__type">{sub()}</div>
-      </div>
-      <div class="layer__meta">
-        <Show when={solo()}>
-          <div class="layer__solo-badge" data-tooltip="Solo actif">
-            S
-          </div>
-        </Show>
-        <Show when={locked()}>
-          <div class="layer__lock-badge" data-tooltip="Calque verrouillé">
-            {createIcon("lock", { size: 11 })}
-          </div>
-        </Show>
-        <div class="layer__blend" classList={{ "layer__blend--accent": additive() }}>
-          {additive() ? "Additif" : "Normal"}
-        </div>
-        <div class="layer__opacity">{opacity()}</div>
-      </div>
     </div>
   );
 }
@@ -366,17 +288,23 @@ export function createOutlinerPanel(editor: Editor): Panel {
     id: "outliner",
     title: "Outliner",
     modifier: "compositor",
-    icon: "layers",
     bodyClass: "compositor",
     header: (header) => {
       const spacer = document.createElement("div");
       spacer.className = "panel__header-spacer";
+      const count = document.createElement("span");
+      count.className = "outliner__count";
+      const sync = () => { count.textContent = `${editor.children.length} calques`; };
+      sync();
+      editor.subscribe(sync);
       const add = document.createElement("button");
       add.type = "button";
       add.className = "compositor__add";
+      add.title = "Ajouter (⇧A)";
       add.appendChild(createIcon("plus", { size: 12 }));
-      add.addEventListener("click", () => editor.addGroup());
-      header.append(spacer, add);
+      // ouvre la palette d'ajout (⇧A), montée par AppShell — découplé via événement fenêtre.
+      add.addEventListener("click", () => window.dispatchEvent(new CustomEvent("led:open-add-palette")));
+      header.append(spacer, count, add);
     },
     body: () => <LayerTree editor={editor} />,
   });

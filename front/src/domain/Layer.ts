@@ -64,8 +64,6 @@ interface LayerBase {
   locked?: boolean;
   /** Couleur de label (hex) pour le tri visuel. Absent = pas de label. */
   label?: string;
-  /** Parent (transform hérité) : le transform monde = transform monde du parent ∘ transform local. */
-  parentId?: string;
   /** Groupe temporel (montage) : hérite la fenêtre active du clip média parent. */
   mediaGroupId?: string;
   /** Bindings audio-reactifs : pilotent un canal depuis une feature d'un calque audio. */
@@ -108,6 +106,81 @@ export interface MaterialPreset {
 }
 
 export interface ShapeLayer extends LayerBase { type: "shape"; shape: ShapeKind; fill: Fill; /** afficher le wireframe (helper d'édition) dans l'Editor 3D */ showHelper: boolean; }
+
+/**
+ * Corps TSL de la **simulation compute** d'un système de particules — personnalisable, exactement comme
+ * le `fragment` d'un `MaterialPreset` (voir `MaterialBaker`). Exécuté par particule à chaque frame ;
+ * doit `return` la nouvelle position (vec3). En scope : `pos` (vec3, position courante), `info` (vec3,
+ * données statiques par particule : x,y ∈ [0.5,1.5]), `time` (float, secondes), `speed` (float), `noise`
+ * (float, intensité), `idx` (float, index), `snoise(p)` (bruit vec3 → -1..1) + toutes les fonctions TSL.
+ * Défaut = anneau/donut (relaxation radiale, repris de `Creative-Post-processing/simulation.frag`).
+ */
+export const DEFAULT_PARTICLE_SIM = `// Donut : relaxation radiale (repris de simulation.frag)
+const r0 = pos.xy.length().mul(0.8);
+const cent = smoothstep(0.5, 0.51, info.x.sub(r0).abs()).oneMinus();
+const ang = atan(pos.y, pos.x).sub(info.y.mul(0.3).mul(mix(0.5, 1.0, cent)));
+const targetR = mix(info.x, float(1.5), ang.mul(2.0).add(time.mul(speed)).add(3.14159265).sin().mul(0.5).add(0.6));
+const r = r0.add(targetR.sub(r0).mul(0.1));
+const n = snoise(pos.mul(2.0).add(vec3(0.0, 0.0, time.mul(0.1)))).mul(0.003).mul(noise);
+const nx = pos.x.add(ang.cos().mul(r).mul(1.1).sub(pos.x).mul(0.1)).add(n.x);
+const ny = pos.y.add(ang.sin().mul(r).mul(1.1).sub(pos.y).mul(0.1)).add(n.y);
+return vec3(nx, ny, 0.0);`;
+
+/** Un paramètre custom déclaré par une simulation : nom (variable en scope de la sim), valeur, bornes du slider. */
+export interface SimParamDef { name: string; value: number; min: number; max: number; }
+
+/** Paramètres par défaut de la sim donut : `speed` (rotation) et `noise` (agitation), utilisés par `DEFAULT_PARTICLE_SIM`. */
+export function defaultSimParams(): SimParamDef[] {
+  return [
+    { name: "speed", value: 1, min: 0, max: 5 },
+    { name: "noise", value: 1, min: 0, max: 5 },
+  ];
+}
+
+/**
+ * Preset de simulation de particules : un corps TSL compute (`code`) + ses **paramètres custom**
+ * (`params`, deviennent des variables en scope de la sim), exactement comme un `MaterialPreset`
+ * (`fragment` + presets réutilisables) mais côté compute. Stocké dans la bibliothèque stable
+ * `Editor._simulations` (sérialisée dans `Project.simulations`), réutilisable par plusieurs calques
+ * `ParticlesLayer` via `simId`. Les valeurs courantes des params vivent sur le calque (`simValues`,
+ * keyframables), pas ici — le preset ne porte que les défauts.
+ */
+export interface SimPreset {
+  id: string;
+  name: string;
+  /** corps TSL de la simulation compute — voir `DEFAULT_PARTICLE_SIM`. */
+  code: string;
+  /** paramètres custom déclarés (variables en scope de `code` + contrôles keyframables `simParam.<name>`). */
+  params: SimParamDef[];
+}
+
+/** Id du preset donut par défaut — toujours présent dans la bibliothèque (`Editor._simulations[0]`). */
+export const DEFAULT_SIM_ID = "sim-donut";
+
+/** Preset de simulation par défaut : donut (relaxation radiale) + params `speed`/`noise`. */
+export function defaultSimPreset(): SimPreset {
+  return { id: DEFAULT_SIM_ID, name: "Donut", code: DEFAULT_PARTICLE_SIM, params: defaultSimParams() };
+}
+
+/**
+ * Système de particules GPU : référence une simulation partagée de la bibliothèque (`simId` → `SimPreset`)
+ * — sim compute TSL personnalisable + paramètres custom réutilisables. Les valeurs courantes des params
+ * (`simValues`) sont propres au calque et keyframables (canal `simParam.<name>`). Rendu en points additifs.
+ */
+export interface ParticlesLayer extends LayerBase {
+  type: "particles";
+  count: number;
+  /** taille du point (px sur la RT 128×128). */
+  size: number;
+  /** couleur au bord (rayon max). */
+  color: RGB;
+  /** couleur au centre (rayon min). */
+  colorEnd: RGB;
+  /** preset de simulation référencé (bibliothèque `Editor._simulations`). */
+  simId: string;
+  /** valeurs courantes des params du preset (keyframables, canal `simParam.<name>`). */
+  simValues: Record<string, number>;
+}
 export interface GroupLayer extends LayerBase { type: "group"; children: Layer[]; }
 export interface ImageLayer extends LayerBase { type: "image"; assetId: string; /** Montage (edit list) ; absent = source entière. */ clips?: MediaClip[]; }
 export interface VideoLayer extends LayerBase { type: "video"; assetId: string; /** Montage (edit list) ; absent = source entière. */ clips?: MediaClip[]; }
@@ -133,7 +206,22 @@ export interface SpotLayer extends LayerBase { type: "spot"; baseChannel: number
 /** Lyre (tête mobile) : `baseChannel` = 1er de ses 13 canaux — éditable si le patch DMX change. */
 export interface LyreLayer extends LayerBase { type: "lyre"; baseChannel: number; channels: LyreChannels; }
 
-export type Layer = ShaderLayer | ShapeLayer | GroupLayer | ImageLayer | VideoLayer | AudioLayer | SpotLayer | LyreLayer;
+/**
+ * Instance de composition imbriquée (précomp OU prérendu) : joue la composition `compId`
+ * et la rend comme un seul calque. Frontière opaque : son arbre vit dans SA composition,
+ * pas dans ce calque (pas de `children` ici). `timeOffset`/`speed` mappent le frame parent
+ * vers le temps local de la comp enfant.
+ */
+export interface PrecompLayer extends LayerBase {
+  type: "precomp";
+  compId: string;
+  /** Frame local de la comp au début (timelineIn) de l'instance. */
+  timeOffset: number;
+  /** Étirement temporel (1 = 1:1). */
+  speed: number;
+}
+
+export type Layer = ShaderLayer | ShapeLayer | GroupLayer | ImageLayer | VideoLayer | AudioLayer | SpotLayer | LyreLayer | PrecompLayer | ParticlesLayer;
 
 /** Suggestions de départ (doc prof), purement indicatives — `baseChannel` reste libre et modifiable ensuite. */
 export const SPOT_DEFAULT_BASE = 1;
@@ -282,19 +370,6 @@ export function applyMap(map: MapRange, v: number): number {
   return map.outMin + t * (map.outMax - map.outMin);
 }
 
-/** Parenter `id` à `parentId` créerait-il un cycle ? (parentId a-t-il `id` comme ancêtre, ou chaîne déjà cyclique) */
-export function wouldCycle(root: GroupLayer, id: string, parentId: string): boolean {
-  let cur: string | null | undefined = parentId;
-  const seen = new Set<string>();
-  while (cur) {
-    if (cur === id) return true;
-    if (seen.has(cur)) return true;
-    seen.add(cur);
-    cur = findLayer(root, cur)?.parentId;
-  }
-  return false;
-}
-
 /** Document = arbre (racine) + groupe où l'on se trouve + sélection + bibliothèque de matériaux.
  *  `materials` optionnel : absent sur les documents/projets antérieurs à cette fonctionnalité. */
 export interface Document { root: GroupLayer; activeGroupId: string; selectedId: string | null; materials?: MaterialPreset[]; }
@@ -336,6 +411,41 @@ export function makeLyre(id: string, name: string, baseChannel: number): LyreLay
     channels: { pan: 127, panFine: 0, tilt: 127, tiltFine: 0, speed: 0, dimmer: 0, strobe: 0, r: 0, g: 0, b: 0, w: 0, special: 0, reset: 0 },
   };
 }
+/** Instance jouant la composition `compId` (précomp ou prérendu) : sans décalage, à vitesse 1. */
+export function makePrecomp(id: string, name: string, compId: string): PrecompLayer {
+  return { ...base(id, name), type: "precomp", compId, timeOffset: 0, speed: 1 };
+}
+/** Système de particules : référence le preset donut par défaut. Composité en additif. */
+export function makeParticles(id: string, name: string): ParticlesLayer {
+  const values: Record<string, number> = {};
+  for (const p of defaultSimParams()) values[p.name] = p.value;
+  return {
+    ...base(id, name),
+    type: "particles",
+    blend: "add",
+    count: 2000,
+    size: 2.5,
+    color: { r: 1, g: 0.6, b: 0.2 },
+    colorEnd: { r: 0.8, g: 0.1, b: 0.3 },
+    simId: DEFAULT_SIM_ID,
+    simValues: values,
+  };
+}
+
+/** L'instance de précomp est-elle active au frame parent ? (sa fenêtre de clip ; sans clip = toujours). */
+export function precompActiveAt(inst: PrecompLayer, parentFrame: number): boolean {
+  return layerActiveAt(inst.clip, parentFrame);
+}
+
+/**
+ * Frame local de la comp enfant pour un frame parent donné : `timeOffset` + (parent − début) × vitesse,
+ * clampé à `[0, childDuration[`. `début` = bord `in` du clip de l'instance (0 sans clip).
+ */
+export function precompChildFrame(inst: PrecompLayer, parentFrame: number, childDuration: number): number {
+  const start = inst.clip?.in ?? 0;
+  const local = inst.timeOffset + (parentFrame - start) * inst.speed;
+  return Math.max(0, Math.min(Math.max(0, childDuration - 1), Math.round(local)));
+}
 
 /** Recherche en profondeur d'un nœud par id (null si absent). */
 export function findLayer(root: GroupLayer, id: string): Layer | null {
@@ -371,4 +481,11 @@ export function findParent(root: GroupLayer, id: string): GroupLayer | null {
 /** Enfants du groupe donné (dans le document). */
 export function groupChildren(doc: Document, groupId: string): readonly Layer[] {
   return findGroup(doc.root, groupId)?.children ?? [];
+}
+
+/** Ids de tout le sous-arbre d'un calque (lui + descendants ; une precomp est opaque : pas de descente). */
+export function collectSubtreeIds(layer: Layer, out: Set<string> = new Set()): Set<string> {
+  out.add(layer.id);
+  if (layer.type === "group") for (const c of layer.children) collectSubtreeIds(c, out);
+  return out;
 }

@@ -1,12 +1,13 @@
-import { Euler, Matrix4, Quaternion, Vector3 } from "three/webgpu";
+import { Euler, Matrix4, Object3D, Quaternion, Vector3 } from "three/webgpu";
 import type { Engine } from "./engine/Engine.ts";
 import {
-  makeGroup, makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, makeVideo, findLayer, findGroup, findParent, groupChildren,
-  fixtureDmxChannels, layerActiveAt, mediaClipActiveAt, mediaSourceFrameAt, mediaFadeGain, mediaGroupActiveAt,
-  wouldCycle, SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
-  type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer, type VideoLayer,
+  makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, makeVideo, makePrecomp, makeParticles, findLayer, findGroup, findParent, groupChildren, collectSubtreeIds,
+  fixtureDmxChannels, layerActiveAt, mediaClipActiveAt, mediaSourceFrameAt, mediaFadeGain, mediaGroupActiveAt, precompActiveAt, precompChildFrame,
+  defaultSimParams, defaultSimPreset, DEFAULT_PARTICLE_SIM, DEFAULT_SIM_ID,
+  SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
+  type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer, type VideoLayer, type ParticlesLayer,
   type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type MediaClip, type SpotChannels, type LyreChannels,
-  type MaterialPreset, type MaterialMode,
+  type MaterialPreset, type MaterialMode, type SimPreset, type SimParamDef,
 } from "@domain/Layer.ts";
 
 /** Patch de transform : chaque canal (position/rotation/échelle) partiellement modifiable. */
@@ -14,14 +15,24 @@ export interface TransformPatch { position?: Partial<Vec3>; rotation?: Partial<V
 
 /** Outil actif de l'éditeur 3D : curseur de sélection ou l'un des trois modes de gizmo. */
 export type EditorTool = "select" | "translate" | "rotate" | "scale";
+
+/** Mode d'affichage du viewport 3D : wireframe · solide (helper seulement sur la sélection) · aucun helper. */
+export type RenderMode = "wireframe" | "solid" | "none";
 import { createLayer } from "./engine/layers/index.ts";
 import { LAYER_ID, type Layer as EngineLayer } from "./engine/layers/Layer.ts";
 import { Scene3DLayer } from "./engine/layers/Scene3D.layer.ts";
 import { SolidLayer } from "./engine/layers/Solid.layer.ts";
 import { VideoWallLayer } from "./engine/layers/Video.layer.ts";
+import { NestedTextureLayer } from "./engine/layers/NestedTexture.layer.ts";
+import { LayerStack } from "./engine/LayerStack.ts";
+import { Prerender3DScene } from "./engine/Prerender3DScene.ts";
+import { ParticleScene } from "./engine/ParticleScene.ts";
+import type { ResolvedSim } from "./engine/ParticleSystem.ts";
+import type { NestedSource } from "./engine/Engine.ts";
 import { countLit, type ShapeFill, type ShapeInput } from "./engine/shapes.ts";
 import { Animator } from "./Animator.ts";
-import { sampleKeyframes, type Composition, type Interp, type Track } from "@domain/Composition.ts";
+import { makeComposition, defaultPrerenderScene, partitionTracks, sampleKeyframes, type Composition, type Interp, type Track } from "@domain/Composition.ts";
+import type { Clock } from "./Clock.ts";
 
 /** Un point du chemin d'animation (motion path) : position monde du calque à un frame keyframé. */
 export interface MotionPoint { frame: number; x: number; y: number; z: number; }
@@ -30,7 +41,7 @@ export interface MotionPoint { frame: number; x: number; y: number; z: number; }
 interface DecodedBitmap { data: Uint8ClampedArray; width: number; height: number; }
 
 /** Snapshot d'historique (undo/redo) : tout ce qui définit l'état éditable. */
-interface HistorySnapshot { document: Document; composition: Composition }
+interface HistorySnapshot { compositions: Record<string, Composition>; nav: NavFrame[] }
 /** Rafales groupées en un seul pas d'historique si elles se suivent à moins de 400ms. */
 const HISTORY_DEBOUNCE_MS = 400;
 /** Profondeur max de l'historique — borne la mémoire (snapshots pleins, voir `HistorySnapshot`). */
@@ -60,30 +71,21 @@ const SHAPE_LABEL: Record<ShapeKind, string> = {
   sphere: "Sphère", box: "Cube", cylinder: "Cylindre", cone: "Cône", plane: "Plan", torus: "Tore",
 };
 
-/** Document seed : reprend les 3 calques shader + 2 objets 3D de l'état d'origine. */
-function seedDocument(): Document {
-  const root = makeGroup("root", "Composition");
+/** Un niveau de la pile de navigation de comps : quelle comp, + l'état d'édition à y restaurer. */
+interface NavFrame { compId: string; groupId: string; selectedId: string | null; frame: number; }
 
-  const sweep = makeShaderLayer("sweep-1", "sweep", "Balayage");
-  sweep.blend = "add";
-  sweep.opacity = 0.8;
-
-  const plasma = makeShaderLayer("plasma-1", "plasma", "Plasma");
-  plasma.params = { speed: 0.42, detail: 0.7, contrast: 0.55, hue: 0.57 };
-
-  const solid = makeShaderLayer("solid-1", "solid", "Couleur unie");
-  solid.color = { r: 0.11, g: 0.055, b: 0.024 }; // #1c0e06
-
-  const sphere = makeShape("sphere-1", "sphere", "Sphère 01");
-  sphere.transform = { position: { x: -0.28, y: 0.12, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 0.34, y: 0.34, z: 0.34 } };
-  sphere.fill = { type: "solid", color: { r: 1, g: 0.541, b: 0.239 } };
-
-  const box = makeShape("box-1", "box", "Cube 01");
-  box.transform = { position: { x: 0.42, y: -0.14, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 0.26, y: 0.26, z: 0.26 } };
-  box.fill = { type: "solid", color: { r: 1, g: 0.541, b: 0.239 } };
-
-  root.children.push(sweep, plasma, solid, sphere, box);
-  return { root, activeGroupId: "root", selectedId: "plasma-1" };
+/**
+ * Renderer dédié à une comp imbriquée + le calque parent qui échantillonne sa RT.
+ * Précomp (2D) : `stack` (LayerStack) + `scene3d` (raster CPU des shapes). Prérendu (3D) : `prerender`
+ * (scène caméra). Exclusifs selon `Composition.kind` ; `source()` renvoie celui qui alimente la RT.
+ */
+interface SubRenderer {
+  nested: NestedTextureLayer;
+  sig: string;
+  stack?: LayerStack;
+  scene3d?: Scene3DLayer;
+  prerender?: Prerender3DScene;
+  particles?: ParticleScene;
 }
 
 /**
@@ -92,31 +94,47 @@ function seedDocument(): Document {
  * de l'UI ; convention subscribe/notify (compatible pont Solid `fromStore`).
  */
 export class Editor {
-  private _doc = seedDocument();
   private readonly _listeners = new Set<EditorListener>();
   private readonly _shaderLive = new Map<string, EngineLayer>();
   private readonly _videoLive = new Map<string, EngineLayer>();
   private _scene3d: Scene3DLayer | null = null;
   private _engine: Engine | null = null;
+  private _clock: Clock | null = null;   // horloge injectée : la durée suit la comp active
   private _counter = 0;
   private _tool: EditorTool = "select";
+  private _viewportMode: RenderMode = "wireframe"; // mode d'affichage de l'éditeur 3D
   private _frame = 0;              // dernier frame évalué (instant courant pour l'auto-key)
+  private _fps = 24;              // fps courant (mapping temporel des comps imbriquées)
   private _sceneDirty = false;     // un canal de shape a changé → 1 seul recompute par frame
   private _fixturesDirty = false;  // un canal fx (spot/lyre) a changé → 1 seul push par frame
   private _lastActiveSig = "";     // signature du set de calques actifs (clips) au dernier _push
+  // compositors des comps imbriquées (précomps/prérendus), par id de comp (créés à la demande).
+  private readonly _subs = new Map<string, SubRenderer>();
   private readonly _animator = new Animator((id, channel, value) => this._applyChannel(id, channel, value));
 
-  // Historique (undo/redo) : snapshots pleins de document+composition (pas de command-pattern —
-  // trop de méthodes mutantes à instrumenter une par une vu le délai). Regroupées par rafale
-  // (debounce) pour qu'un drag continu (gizmo, scrub de clé) s'annule en un seul Ctrl+Z, pas un
-  // par micro-changement. Coût connu : un document avec de gros médias (vidéo/image en data URL
-  // embarquée) rend chaque snapshot plus lourd — acceptable pour ce projet, mais à garder en tête.
+  // Compositions du projet (partagées par référence avec project.compositions).
+  private _compositions: Record<string, Composition> = { main: makeComposition("main", "Composition", "main") };
+  // Pile de navigation de comps (haut = contexte courant) ; snapshot d'édition à restaurer en sortie.
+  private _nav: NavFrame[] = [{ compId: "main", groupId: this._compositions.main.root.id, selectedId: null, frame: 0 }];
+  // Vue d'édition active : `_doc.root === activeComp().root` — tout le code d'arbre reste inchangé.
+  private _doc: Document = { root: this._compositions.main.root, activeGroupId: this._compositions.main.root.id, selectedId: null };
+  // Sélection multiple au niveau modèle : `_doc.selectedId` reste la sélection PRIMAIRE (Inspecteur/gizmo) ;
+  // `_multi` est le set complet pour les actions groupées (précomposer, grouper, supprimer). Toujours cohérents :
+  // une sélection simple = `{ selectedId }`, un `_multi` d'un seul élément.
+  private _multi = new Set<string>();
+
+  // Historique (undo/redo) : snapshots pleins de l'état éditable (compositions + navigation),
+  // regroupés par rafale (debounce) — un drag continu s'annule en un seul Ctrl+Z.
   private _undoStack: HistorySnapshot[] = [];
   private _redoStack: HistorySnapshot[] = [];
   private _lastSnapshot: HistorySnapshot = this._snapshot();
   private _historyBurstOpen = false;
   private _historyTimer: ReturnType<typeof setTimeout> | null = null;
   private _restoringHistory = false; // suspend l'enregistrement pendant qu'on restaure un snapshot
+
+  constructor() {
+    this._animator.load(this._compositions.main);
+  }
 
   // fills image/vidéo : décodage async + lecture, mis en cache hors du document (par id de shape)
   private readonly _imagePixels = new Map<string, DecodedBitmap>();
@@ -127,13 +145,19 @@ export class Editor {
   // shapes en fill matériau actuellement en cours de bake — évite les bakes qui se chevauchent
   // (best-effort : on saute le tick si le précédent n'est pas fini, comme `EhubOutput._busy`)
   private readonly _materialBaking = new Set<string>();
+  // Bibliothèque de simulations de particules : STABLE (hors `_doc`, contrairement aux matériaux — évite
+  // que la nav entre comps ne la réinitialise), partagée par toutes les comps, sérialisée dans le projet.
+  private _simulations: SimPreset[] = [defaultSimPreset()];
 
   // ————————————————————————————————— Lecture —————————————————————————————————
 
   get rootId(): string { return this._doc.root.id; }
   get activeGroupId(): string { return this._doc.activeGroupId; }
   get selectedId(): string | null { return this._doc.selectedId; }
+  /** Ids de la sélection multiple (inclut la primaire). Vide si rien de sélectionné. */
+  get multiSelectedIds(): readonly string[] { return [...this._multi]; }
   get tool(): EditorTool { return this._tool; }
+  get viewportMode(): RenderMode { return this._viewportMode; }
 
   /** enfants du groupe actif (ce qu'affichent Compositor/Scène/Editor 3D). */
   get children(): readonly Layer[] { return groupChildren(this._doc, this._doc.activeGroupId); }
@@ -147,19 +171,45 @@ export class Editor {
     return this._doc;
   }
 
-  loadDocument(doc: Document): void {
-    this._doc = doc;
-    this._push();
-    this._emit();
-  }
-
-  loadComposition(comp: Composition): void {
-    this._animator.load(comp);
-  }
-
   getComposition(): Composition {
     return this._animator.composition;
   }
+
+  /** Toutes les compositions du projet (partagées par référence avec project.compositions). */
+  getCompositions(): Record<string, Composition> {
+    return this._compositions;
+  }
+
+  /** Injecte l'horloge : sa durée suit la comp active (reconfigurée à chaque enter/exit). */
+  setClock(clock: Clock): void {
+    this._clock = clock;
+  }
+
+  /** Charge tout le jeu de compositions (partagé avec le projet) et entre dans la comp principale. */
+  loadCompositions(compositions: Record<string, Composition>, mainCompId: string): void {
+    this._compositions = compositions;
+    const main = compositions[mainCompId] ?? makeComposition(mainCompId || "main", "Composition", "main");
+    if (!compositions[mainCompId]) compositions[mainCompId] = main;
+    this._nav = [{ compId: mainCompId, groupId: main.root.id, selectedId: null, frame: 0 }];
+    this._enterContext(main, main.root.id, null, 0);
+  }
+
+  /** Comp courante (haut de la pile de navigation). */
+  activeComp(): Composition {
+    return this._compositions[this._top.compId] ?? this._compositions[Object.keys(this._compositions)[0]];
+  }
+
+  get activeCompId(): string { return this._top.compId; }
+
+  /** Durée (frames) de la comp active — source de vérité de la règle de la timeline. */
+  get activeCompDuration(): number { return this.activeComp().durationFrames; }
+
+  /** Fil d'Ariane des comps (racine → comp courante), pour l'Outliner / la timeline. */
+  get compTrail(): { id: string; name: string }[] {
+    return this._nav.map((f) => ({ id: f.compId, name: this._compositions[f.compId]?.name ?? f.compId }));
+  }
+
+  private get _top(): NavFrame { return this._nav[this._nav.length - 1]; }
 
   // ————————————————————————————————— Moteur ——————————————————————————————————
 
@@ -174,8 +224,18 @@ export class Editor {
 
   select(id: string | null): void {
     if (id && findLayer(this._doc.root, id)?.locked) return; // calque verrouillé → pas de sélection
-    if (id === this._doc.selectedId) return;
+    const multiCollapses = this._multi.size !== (id ? 1 : 0) || (id ? !this._multi.has(id) : false);
+    if (id === this._doc.selectedId && !multiCollapses) return;
     this._doc.selectedId = id;
+    this._multi = id ? new Set([id]) : new Set(); // une sélection simple réduit le multi à ce seul calque
+    this._emit();
+  }
+
+  /** Sélection multiple (Outliner) : `ids` = set sélectionné, `primary` = sélection primaire (Inspecteur/gizmo). */
+  selectMany(ids: readonly string[], primary: string | null): void {
+    const usable = ids.filter((id) => !findLayer(this._doc.root, id)?.locked);
+    this._multi = new Set(usable);
+    this._doc.selectedId = primary && this._multi.has(primary) ? primary : (usable.length ? usable[usable.length - 1] : null);
     this._emit();
   }
 
@@ -184,6 +244,19 @@ export class Editor {
     if (tool === this._tool) return;
     this._tool = tool;
     this._emit();
+  }
+
+  /** Mode d'affichage du viewport 3D (wireframe / solide / aucun helper). */
+  setViewportMode(mode: RenderMode): void {
+    if (mode === this._viewportMode) return;
+    this._viewportMode = mode;
+    this._emit();
+  }
+
+  /** Fait défiler les modes d'affichage du viewport 3D. */
+  cycleViewportMode(): void {
+    const order: RenderMode[] = ["wireframe", "solid", "none"];
+    this.setViewportMode(order[(order.indexOf(this._viewportMode) + 1) % order.length]);
   }
 
   /** Une propriété (canal) est-elle animée ? (état du diamant inspecteur) */
@@ -254,6 +327,8 @@ export class Editor {
       this.setTransform(id, { [group]: { [key]: value } } as TransformPatch);
     } else if (group === "param") {
       this.setParam(id, key, value);
+    } else if (group === "simParam") {
+      this.setParticleSimParam(id, key, value);
     } else if (group === "color") {
       if (layer.type === "shader") this.setColor(id, { ...layer.color, [key]: value } as RGB);
       else if (layer.type === "shape" && layer.fill.type === "solid") this.setFill(id, { type: "solid", color: { ...layer.fill.color, [key]: value } as RGB });
@@ -314,30 +389,58 @@ export class Editor {
     for (const t of [tx, ty, tz]) if (t) for (const k of t.keyframes) frames.add(k.frame);
     const layer = findLayer(this._doc.root, id);
     const base = layer?.transform.position ?? { x: 0, y: 0, z: 0 };
-    // parenté : le chemin (positions locales keyframées) est exprimé dans l'espace du parent
-    const parentM = layer?.parentId ? this._worldMatrix(layer.parentId) : null;
     const at = (t: Track | undefined, fallback: number, frame: number): number =>
       t && t.keyframes.length ? sampleKeyframes(t.keyframes, frame) : fallback;
-    return [...frames].sort((a, b) => a - b).map((frame) => {
-      const local = new Vector3(at(tx, base.x, frame), at(ty, base.y, frame), at(tz, base.z, frame));
-      if (parentM) local.applyMatrix4(parentM);
-      return { frame, x: local.x, y: local.y, z: local.z };
-    });
+    return [...frames].sort((a, b) => a - b).map((frame) => ({
+      frame, x: at(tx, base.x, frame), y: at(ty, base.y, frame), z: at(tz, base.z, frame),
+    }));
   }
 
-  enterGroup(id: string): void {
-    if (!findGroup(this._doc.root, id)) return;
-    this._doc.activeGroupId = id;
-    this._doc.selectedId = null;
-    this._push();
-    this._emit();
+  /** Entre dans une comp imbriquée (précomp/prérendu) : bascule vue + animation + horloge. */
+  enterComp(compId: string): void {
+    const comp = this._compositions[compId];
+    if (!comp || compId === this._top.compId) return;
+    if (this._nav.some((f) => f.compId === compId)) return; // anti-cycle : déjà dans la pile
+    this._snapshotTop();
+    this._nav.push({ compId, groupId: comp.root.id, selectedId: null, frame: 0 });
+    this._enterContext(comp, comp.root.id, null, 0);
   }
 
-  exitGroup(): void {
-    const parent = findParent(this._doc.root, this._doc.activeGroupId);
-    if (!parent) return;
-    this._doc.activeGroupId = parent.id;
-    this._doc.selectedId = null;
+  /** Remonte d'un niveau de comp (restaure l'état d'édition du parent). No-op à la racine. */
+  exitComp(): void {
+    if (this._nav.length <= 1) return;
+    this._nav.pop();
+    const t = this._top;
+    this._enterContext(this._compositions[t.compId], t.groupId, t.selectedId, t.frame);
+  }
+
+  /** Entre dans la comp référencée par un calque precomp (no-op si le calque n'en est pas un). */
+  enterCompOf(layerId: string): void {
+    const l = findLayer(this._doc.root, layerId);
+    if (l?.type === "precomp") this.enterComp(l.compId);
+  }
+
+  /** Remonte jusqu'à une comp donnée du fil d'Ariane (clic sur un ancêtre). */
+  exitToComp(compId: string): void {
+    if (compId === this._top.compId || !this._nav.some((f) => f.compId === compId)) return;
+    while (this._nav.length > 1 && this._top.compId !== compId) this._nav.pop();
+    const t = this._top;
+    this._enterContext(this._compositions[t.compId], t.groupId, t.selectedId, t.frame);
+  }
+
+  private _snapshotTop(): void {
+    const t = this._top;
+    t.groupId = this._doc.activeGroupId;
+    t.selectedId = this._doc.selectedId;
+    if (this._clock) t.frame = this._clock.frame;
+  }
+
+  /** Bascule la vue active vers une comp : arbre + animation + durée d'horloge + playhead. */
+  private _enterContext(comp: Composition, groupId: string, selectedId: string | null, frame: number): void {
+    this._doc = { root: comp.root, activeGroupId: findGroup(comp.root, groupId) ? groupId : comp.root.id, selectedId };
+    this._animator.load(comp);
+    this._clock?.configure({ durationFrames: comp.durationFrames });
+    this._clock?.seekFrame(frame);
     this._push();
     this._emit();
   }
@@ -365,9 +468,50 @@ export class Editor {
   }
 
   deleteSelected(): void {
-    if (this._doc.selectedId) {
-      this.deleteLayer(this._doc.selectedId);
-    }
+    const ids = this._multi.size ? [...this._multi] : (this._doc.selectedId ? [this._doc.selectedId] : []);
+    for (const id of ids) this.deleteLayer(id);
+    this._multi = new Set();
+  }
+
+  /** Duplique le calque sélectionné (sous-arbre + ses tracks), inséré après l'original, puis le sélectionne. */
+  duplicateSelected(): string | null {
+    const sel = this.selected;
+    if (!sel) return null;
+    const parent = findParent(this._doc.root, sel.id);
+    if (!parent) return null;
+    const idx = parent.children.findIndex((c) => c.id === sel.id);
+    if (idx === -1) return null;
+
+    const idMap = new Map<string, string>();
+    const copy = this._cloneLayer(sel, idMap);
+
+    // dupliquer les tracks du sous-arbre, ré-adressées vers les nouveaux ids
+    const active = this.activeComp();
+    const extra: Track[] = active.tracks
+      .filter((t) => idMap.has(t.layerId))
+      .map((t) => ({ layerId: idMap.get(t.layerId)!, channel: t.channel, keyframes: t.keyframes.map((k) => ({ ...k })) }));
+    active.tracks = [...active.tracks, ...extra];
+
+    parent.children.splice(idx + 1, 0, copy);
+    this._doc.selectedId = copy.id;
+    this._push();
+    this._emit();
+    return copy.id;
+  }
+
+  /** Clone profond d'un calque avec de nouveaux ids (récursif pour les groupes) ; remplit `idMap` (ancien→nouveau). */
+  private _cloneLayer(layer: Layer, idMap: Map<string, string>): Layer {
+    const copy = structuredClone(layer) as Layer;
+    const reassign = (l: Layer): void => {
+      this._counter += 1;
+      const nid = `${l.type}-${this._counter}`;
+      idMap.set(l.id, nid); // l.id = ancien id (préservé par le clone) → nouveau
+      l.id = nid;
+      if (l.type === "group") for (const c of l.children) reassign(c);
+    };
+    reassign(copy);
+    copy.name = layer.name + " copie";
+    return copy;
   }
 
   duplicateLayer(id: string): string | null {
@@ -461,15 +605,224 @@ export class Editor {
     return id;
   }
 
-  addGroup(): string {
+  /**
+   * Calques cibles d'une précomposition : les frères sélectionnés du parent de la sélection primaire,
+   * en ordre d'arbre. Gère la sélection multiple (`_multi`) et la simple. Une sélection éparse sur
+   * plusieurs parents est réduite au parent de la primaire (comme After Effects).
+   */
+  private _siblingTargets(): { parent: GroupLayer; ordered: Layer[]; idx: number } | null {
+    const ids = this._multi.size ? [...this._multi] : (this._doc.selectedId ? [this._doc.selectedId] : []);
+    const primary = this.selected ?? (ids[0] ? findLayer(this._doc.root, ids[0]) : null);
+    if (!primary) return null;
+    const parent = findParent(this._doc.root, primary.id);
+    if (!parent) return null; // la racine ne se précompose/groupe pas
+    const set = new Set(ids);
+    const ordered = parent.children.filter((c) => set.has(c.id));
+    if (ordered.length === 0) return null;
+    const idx = parent.children.findIndex((c) => c.id === ordered[0].id);
+    return { parent, ordered, idx };
+  }
+
+  /**
+   * Précompose la sélection (un ou plusieurs calques frères) : les déplace avec leurs sous-arbres + tracks
+   * dans une nouvelle composition, remplacés à leur place par une seule instance de précomp. Renvoie l'id.
+   */
+  precomposeSelection(): string | null {
+    const t = this._siblingTargets();
+    if (!t) return null;
+    const { parent, ordered, idx } = t;
+
     this._counter += 1;
-    const id = `group-${this._counter}`;
-    const group = makeGroup(id, `Groupe ${String(this._counter).padStart(2, "0")}`);
-    this._activeGroup().children.unshift(group);
-    this._doc.selectedId = id;
+    const compId = `precomp-${this._counter}`;
+    const name = `Précomp ${String(this._counter).padStart(2, "0")}`;
+    const comp = makeComposition(compId, name, "precomp", { durationFrames: this.activeComp().durationFrames });
+
+    // déplacer les calques (sous-arbres inclus, ordre préservé) dans la nouvelle comp
+    for (const l of ordered) parent.children.splice(parent.children.findIndex((c) => c.id === l.id), 1);
+    comp.root.children.push(...ordered);
+
+    // repartitionner les tracks : union des sous-arbres de tous les calques déplacés
+    const movedIds = new Set<string>();
+    for (const l of ordered) for (const id of collectSubtreeIds(l)) movedIds.add(id);
+    const active = this.activeComp();
+    const { inside, outside } = partitionTracks(active.tracks, movedIds);
+    comp.tracks = inside;
+    active.tracks = outside;
+
+    this._compositions[compId] = comp;
+
+    // une seule instance à la place des calques, sélectionnée
+    const inst = makePrecomp(`${compId}-inst`, name, compId);
+    parent.children.splice(Math.min(idx, parent.children.length), 0, inst);
+    this.select(inst.id);
+
     this._push();
     this._emit();
+    return compId;
+  }
+
+  /** Ajoute une précomposition vide + son instance dans le groupe actif. */
+  addPrecomp(): string {
+    this._counter += 1;
+    const compId = `precomp-${this._counter}`;
+    const name = `Précomp ${String(this._counter).padStart(2, "0")}`;
+    this._compositions[compId] = makeComposition(compId, name, "precomp", { durationFrames: this.activeComp().durationFrames });
+    const inst = makePrecomp(`${compId}-inst`, name, compId);
+    this._activeGroup().children.unshift(inst);
+    this._doc.selectedId = inst.id;
+    this._push();
+    this._emit();
+    return inst.id;
+  }
+
+  /** Ajoute un prérendu (composition kind "prerender" + scène 3D par défaut) + son instance. */
+  addPrerender(): string {
+    this._counter += 1;
+    const compId = `prerender-${this._counter}`;
+    const name = `Prérendu ${String(this._counter).padStart(2, "0")}`;
+    this._compositions[compId] = makeComposition(compId, name, "prerender", {
+      durationFrames: this.activeComp().durationFrames,
+      scene: defaultPrerenderScene(),
+    });
+    const inst = makePrecomp(`${compId}-inst`, name, compId);
+    this._activeGroup().children.unshift(inst);
+    this._doc.selectedId = inst.id;
+    this._push();
+    this._emit();
+    return inst.id;
+  }
+
+  /** Ajoute un système de particules (simulé sur GPU, composité en additif) dans le groupe actif. */
+  addParticles(): string {
+    this._counter += 1;
+    const n = String(this._counter).padStart(2, "0");
+    const layer = makeParticles(`particles-${this._counter}`, `Particules ${n}`);
+    this._activeGroup().children.unshift(layer);
+    this._doc.selectedId = layer.id;
+    this._push();
+    this._emit();
+    return layer.id;
+  }
+
+  /** Modifie le nombre ou la taille d'un système de particules. */
+  setParticleParam(id: string, key: "count" | "size", value: number): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "particles") return;
+    layer[key] = key === "count" ? Math.max(1, Math.round(value)) : value;
+    this._push();
+    this._emit();
+  }
+
+  /** Change une couleur (bord / centre) d'un système de particules. */
+  setParticleColor(id: string, which: "color" | "colorEnd", rgb: RGB): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "particles") return;
+    layer[which] = rgb;
+    this._push();
+    this._emit();
+  }
+
+  /** Relie un calque à un preset de simulation : réinitialise ses `simValues` aux défauts du preset. */
+  setParticleSimId(id: string, simId: string): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "particles") return;
+    const preset = this._simulations.find((p) => p.id === simId) ?? this._simulations[0];
+    layer.simId = preset.id;
+    const values: Record<string, number> = {};
+    for (const p of preset.params) values[p.name] = p.value;
+    layer.simValues = values;
+    this._push();
+    this._emit();
+  }
+
+  /** Valeur courante d'un paramètre du preset sur ce calque (en direct + auto-key `simParam.<name>` si animé). */
+  setParticleSimParam(id: string, name: string, value: number): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "particles") return;
+    layer.simValues = { ...layer.simValues, [name]: value };
+    this._push();
+    if (this._animator.autoKey(id, "simParam." + name, this._frame, value)) { /* clé posée */ }
+    this._emit();
+  }
+
+  // ————————————————————————————————— Simulations (bibliothèque) —————————————————————————————————
+
+  /** Bibliothèque de simulations de particules (presets réutilisables entre calques, toutes comps confondues). */
+  listSimPresets(): readonly SimPreset[] {
+    return this._simulations;
+  }
+
+  /** Charge la bibliothèque (depuis un projet) ; garantit toujours la présence du preset donut par défaut. */
+  loadSimPresets(presets: readonly SimPreset[] | undefined): void {
+    const list = (presets ?? []).map((p) => ({ ...p, params: p.params.map((q) => ({ ...q })) }));
+    if (!list.some((p) => p.id === DEFAULT_SIM_ID)) list.unshift(defaultSimPreset());
+    this._simulations = list;
+    this._emit();
+  }
+
+  /** Crée un nouveau preset de simulation (fichier réutilisable). Renvoie son id. */
+  addSimPreset(name: string, code = DEFAULT_PARTICLE_SIM, params: SimParamDef[] = defaultSimParams()): string {
+    this._counter += 1;
+    const id = `sim-${this._counter}`;
+    this._simulations = [...this._simulations, { id, name, code, params: params.map((p) => ({ ...p })) }];
+    this._emit();
     return id;
+  }
+
+  /** Importe un preset depuis du code TSL (fichier) — sans params (l'utilisateur les déclare ensuite). */
+  importSimPreset(name: string, code: string): string {
+    return this.addSimPreset(name, code, []);
+  }
+
+  /** Édite un preset (nom/code/params). Les calques qui le référencent recompilent au prochain tick ;
+   *  un changement de params réconcilie leurs `simValues` (défaut pour les nouveaux, purge des retirés). */
+  updateSimPreset(id: string, patch: Partial<Omit<SimPreset, "id">>): void {
+    const idx = this._simulations.findIndex((p) => p.id === id);
+    if (idx === -1) return;
+    const updated: SimPreset = { ...this._simulations[idx], ...patch };
+    this._simulations = this._simulations.map((p, i) => (i === idx ? updated : p));
+    if (patch.params) this._reconcileSimValues(updated);
+    this._push();
+    this._emit();
+  }
+
+  /** Déclare un nouveau paramètre custom (nom unique) sur un preset — recompile ; sème sa valeur sur les calques. */
+  addSimParam(presetId: string, name: string, value = 1, min = 0, max = 5): void {
+    const preset = this._simulations.find((p) => p.id === presetId);
+    if (!preset || !name || preset.params.some((p) => p.name === name)) return;
+    this.updateSimPreset(presetId, { params: [...preset.params, { name, value, min, max }] });
+  }
+
+  /** Modifie les bornes/valeur par défaut d'un paramètre déclaré d'un preset. */
+  updateSimParam(presetId: string, name: string, patch: Partial<{ min: number; max: number; value: number }>): void {
+    const preset = this._simulations.find((p) => p.id === presetId);
+    if (!preset) return;
+    this.updateSimPreset(presetId, { params: preset.params.map((p) => (p.name === name ? { ...p, ...patch } : p)) });
+  }
+
+  /** Supprime un paramètre déclaré d'un preset — recompile ; retire sa valeur des calques. */
+  removeSimParam(presetId: string, name: string): void {
+    const preset = this._simulations.find((p) => p.id === presetId);
+    if (!preset) return;
+    this.updateSimPreset(presetId, { params: preset.params.filter((p) => p.name !== name) });
+  }
+
+  /** Résout le preset référencé par un calque (retombe sur le donut par défaut si l'id est inconnu). */
+  private _resolveSim(layer: ParticlesLayer): ResolvedSim {
+    const preset = this._simulations.find((p) => p.id === layer.simId) ?? this._simulations[0];
+    return { code: preset.code, params: preset.params };
+  }
+
+  /** Aligne les `simValues` de tous les calques (toutes comps) référençant ce preset sur ses params :
+   *  conserve les valeurs existantes, sème le défaut des nouveaux, purge les params retirés. */
+  private _reconcileSimValues(preset: SimPreset): void {
+    for (const comp of Object.values(this._compositions)) {
+      for (const layer of this._collect((l): l is ParticlesLayer => l.type === "particles" && l.simId === preset.id, comp.root)) {
+        const values: Record<string, number> = {};
+        for (const p of preset.params) values[p.name] = layer.simValues[p.name] ?? p.value;
+        layer.simValues = values;
+      }
+    }
   }
 
   /** Ajoute une piste audio (asset déjà décodé). `sourceFrames` = longueur de la source →
@@ -677,17 +1030,7 @@ export class Editor {
     this._emit();
   }
 
-  /** Parente un calque (transform hérité), ou le détache (null). Refuse un cycle. */
-  setParent(id: string, parentId: string | null): void {
-    const layer = findLayer(this._doc.root, id);
-    if (!layer || id === parentId) return;
-    if (parentId && wouldCycle(this._doc.root, id, parentId)) return;
-    layer.parentId = parentId || undefined;
-    this._recomputeScene();
-    this._emit();
-  }
-
-  /** Transform monde d'un calque (compose la chaîne de parents). */
+  /** Transform monde d'un calque. Sans parenting = transform local (normalisé via quaternion). */
   worldTransform(id: string): Transform {
     const p = new Vector3(), q = new Quaternion(), s = new Vector3();
     this._worldMatrix(id).decompose(p, q, s);
@@ -695,14 +1038,12 @@ export class Editor {
     return { position: { x: p.x, y: p.y, z: p.z }, rotation: { x: e.x, y: e.y, z: e.z }, scale: { x: s.x, y: s.y, z: s.z } };
   }
 
-  /** Écrit un transform exprimé en monde → stocke le local (monde ÷ parent). Pour le gizmo d'un calque parenté. */
+  /** Écrit un transform exprimé en monde (= local sans parenting). Pour le gizmo. */
   setWorldTransform(id: string, world: Transform): void {
     const layer = findLayer(this._doc.root, id);
     if (!layer) return;
-    let local = this._matrixOf(world);
-    if (layer.parentId) local = this._worldMatrix(layer.parentId).invert().multiply(local);
     const p = new Vector3(), q = new Quaternion(), s = new Vector3();
-    local.decompose(p, q, s);
+    this._matrixOf(world).decompose(p, q, s);
     const e = new Euler().setFromQuaternion(q, "XYZ");
     this.setTransform(id, { position: { x: p.x, y: p.y, z: p.z }, rotation: { x: e.x, y: e.y, z: e.z }, scale: { x: s.x, y: s.y, z: s.z } });
   }
@@ -742,6 +1083,46 @@ export class Editor {
     const layer = findLayer(this._doc.root, id);
     if (!layer) return;
     layer.name = name;
+    // Instance de précomp/prérendu ↔ sa composition (1:1) : nom unifié (fil d'Ariane, sérialisation).
+    if (layer.type === "precomp") {
+      const comp = this._compositions[layer.compId];
+      if (comp) comp.name = name;
+    }
+    this._emit();
+  }
+
+  /** Décalage/vitesse temporels d'une instance de précomp/prérendu (mapping vers sa timeline interne). */
+  setPrecompTiming(id: string, patch: { timeOffset?: number; speed?: number }): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "precomp") return;
+    if (patch.timeOffset !== undefined) layer.timeOffset = Math.round(patch.timeOffset);
+    if (patch.speed !== undefined) layer.speed = Math.max(0.01, patch.speed);
+    this._emit();
+  }
+
+  /** Réglages caméra d'un prérendu (édite la scène de la COMPOSITION référencée, pas l'instance). */
+  setPrerenderCamera(compId: string, patch: {
+    kind?: "perspective" | "orthographic"; fov?: number; near?: number; far?: number;
+    position?: Partial<Vec3>; target?: Partial<Vec3>;
+  }): void {
+    const comp = this._compositions[compId];
+    if (!comp || comp.kind !== "prerender") return;
+    const scene = (comp.scene ??= defaultPrerenderScene());
+    const cam = scene.camera;
+    if (patch.kind) cam.kind = patch.kind;
+    if (patch.fov !== undefined) cam.fov = patch.fov;
+    if (patch.near !== undefined) cam.near = Math.max(0.001, patch.near);
+    if (patch.far !== undefined) cam.far = Math.max(cam.near + 0.001, patch.far);
+    if (patch.position) cam.position = { ...cam.position, ...patch.position };
+    if (patch.target) cam.target = { ...cam.target, ...patch.target };
+    this._emit();
+  }
+
+  /** Couleur de fond d'un prérendu (opaque : c'est une source vidéo plein-cadre). */
+  setPrerenderBackground(compId: string, background: RGB): void {
+    const comp = this._compositions[compId];
+    if (!comp || comp.kind !== "prerender") return;
+    (comp.scene ??= defaultPrerenderScene()).background = background;
     this._emit();
   }
 
@@ -816,14 +1197,16 @@ export class Editor {
   /** appelé chaque frame moteur : évalue les keyframes puis (au besoin) re-rasterise/repousse. */
   tick(frame: number, playing = false, fps = 24): void {
     this._frame = frame;
+    this._fps = fps;
     this._sceneDirty = false;
     this._fixturesDirty = false;
     this._animator.evaluate(frame);
     if (this._activeSignature() !== this._lastActiveSig) {
-      this._push(); // un calque a franchi un bord de clip → reconstruit la pile (re-rasterise aussi les shapes)
+      this._push(); // franchissement de bord de clip → reconstruit la pile (+ `_syncNested`)
     } else {
       if (this._sceneDirty || this._videoEls.size > 0) this._recomputeScene();
       if (this._fixturesDirty) this._pushFixtures();
+      this._syncNested(); // maj des comps imbriquées (animation/temps) même sans rebuild de la pile active
     }
     this._syncVideos(frame, playing, fps);
     this._rebakeMaterials();
@@ -885,12 +1268,13 @@ export class Editor {
 
   /** Écrit la valeur d'un canal scalaire dans le modèle + le moteur (appelé par l'Animator). */
   private _applyChannel(id: string, channel: string, value: number): void {
-    const layer = findLayer(this._doc.root, id);
+    const layer = this._findAnywhere(id); // cross-comp : les tracks des comps imbriquées ciblent leurs propres calques
     if (!layer) return;
     if (channel === "opacity") {
       layer.opacity = value;
       const live = this._shaderLive.get(id);
       if (live) live.opacity = value;
+      if (layer.type === "precomp") { const s = this._subs.get(layer.compId); if (s) s.nested.opacity = value; }
       if (layer.type === "shape") this._sceneDirty = true;
       return;
     }
@@ -910,6 +1294,8 @@ export class Editor {
     } else if (group === "param" && layer.type === "shader") {
       layer.params[key] = value;
       this._shaderLive.get(id)?.setParam(key, value);
+    } else if (group === "simParam" && layer.type === "particles") {
+      layer.simValues = { ...layer.simValues, [key]: value }; // appliqué à l'uniform au prochain setConfig (chaque frame)
     } else if (group === "color") {
       const c = key as keyof RGB;
       if (layer.type === "shader") {
@@ -934,7 +1320,7 @@ export class Editor {
 
   /** Lit la valeur courante d'un canal (pour la 1re clé). undefined si non applicable. */
   private _readChannel(id: string, channel: string): number | undefined {
-    const layer = findLayer(this._doc.root, id);
+    const layer = this._findAnywhere(id);
     if (!layer) return undefined;
     if (channel === "opacity") return layer.opacity;
     if (channel === "gain") return layer.type === "audio" ? layer.gain : undefined;
@@ -945,6 +1331,7 @@ export class Editor {
       return layer.transform[group][key as keyof Vec3];
     }
     if (group === "param" && layer.type === "shader") return layer.params[key];
+    if (group === "simParam" && layer.type === "particles") return layer.simValues[key];
     if (group === "color") {
       const c = key as keyof RGB;
       if (layer.type === "shader") return layer.color[c];
@@ -969,19 +1356,35 @@ export class Editor {
     );
   }
 
-  /** Matrice monde d'un calque (parentWorld * local), en remontant la chaîne (garde anti-cycle). */
-  private _worldMatrix(id: string, guard: Set<string> = new Set()): Matrix4 {
-    const layer = findLayer(this._doc.root, id);
+  /** Matrice monde d'un calque (= matrice locale, sans parenting). */
+  private _worldMatrix(id: string): Matrix4 {
+    return this._worldMatrixIn(this._doc.root, id);
+  }
+
+  /** Matrice locale d'un calque dans un arbre donné (pour rendre une comp imbriquée). */
+  private _worldMatrixIn(root: GroupLayer, id: string): Matrix4 {
+    const layer = findLayer(root, id);
     if (!layer) return new Matrix4();
-    const local = this._matrixOf(layer.transform);
-    if (!layer.parentId || guard.has(id)) return local;
-    guard.add(id);
-    return this._worldMatrix(layer.parentId, guard).multiply(local);
+    return this._matrixOf(layer.transform);
   }
 
   private _toInput(s: ShapeLayer): ShapeInput {
-    const w = this.worldTransform(s.id); // transform monde (parenté inclus) pour le rendu sur le mur
-    return { kind: s.shape, position: w.position, rotation: w.rotation, scale: w.scale, fill: this._resolveFill(s), opacity: s.opacity };
+    return this._toInputIn(this._doc.root, s);
+  }
+
+  /** ShapeInput d'une shape dans un arbre donné (transform monde calculé dans cet arbre). */
+  private _toInputIn(root: GroupLayer, s: ShapeLayer): ShapeInput {
+    const p = new Vector3(), q = new Quaternion(), sc = new Vector3();
+    this._worldMatrixIn(root, s.id).decompose(p, q, sc);
+    const e = new Euler().setFromQuaternion(q, "XYZ");
+    return {
+      kind: s.shape,
+      position: { x: p.x, y: p.y, z: p.z },
+      rotation: { x: e.x, y: e.y, z: e.z },
+      scale: { x: sc.x, y: sc.y, z: sc.z },
+      fill: this._resolveFill(s),
+      opacity: s.opacity,
+    };
   }
 
   /** Résout le `Fill` (modèle, sérialisable) en `ShapeFill` (pixels prêts pour le rasterizeur). */
@@ -1126,7 +1529,69 @@ export class Editor {
 
   /** Un calque est-il actif au frame courant : sa propre fenêtre de clip ET son groupe média. */
   private _activeAt(layer: Layer): boolean {
-    return layerActiveAt(layer.clip, this._frame) && mediaGroupActiveAt(this._doc.root, layer, this._frame);
+    return this._activeAtIn(this._doc.root, layer, this._frame);
+  }
+
+  private _activeAtIn(root: GroupLayer, layer: Layer, frame: number): boolean {
+    return layerActiveAt(layer.clip, frame) && mediaGroupActiveAt(root, layer, frame);
+  }
+
+  /** Cherche un calque dans TOUTES les comps (les tracks d'une comp imbriquée ciblent ses propres calques). */
+  private _findAnywhere(id: string): Layer | null {
+    const active = findLayer(this._doc.root, id);
+    if (active) return active;
+    for (const c of Object.values(this._compositions)) {
+      if (c.root === this._doc.root) continue;
+      const l = findLayer(c.root, id);
+      if (l) return l;
+    }
+    return null;
+  }
+
+  /**
+   * Jumeaux 3D des systèmes de particules de la comp active — à afficher dans l'éditeur 3D (les particules
+   * vivent en espace [-1,1], comme le mur `HALF=1`). Prérendu : les systèmes de sa scène ; sinon : les
+   * calques `particles` visibles de la comp (via leurs `ParticleScene`).
+   */
+  activeParticleViewers(): Object3D[] {
+    const comp = this.activeComp();
+    if (comp.kind === "prerender") {
+      return this._subs.get(comp.id)?.prerender?.particleViewers() ?? [];
+    }
+    const out: Object3D[] = [];
+    for (const layer of this._renderablesIn(comp.root)) {
+      if (layer.type !== "particles" || !layer.visible) continue;
+      const sub = this._subs.get(layer.id);
+      if (sub?.particles) out.push(sub.particles.viewer);
+    }
+    return out;
+  }
+
+  /** Calques rendus (shader/shape/video/precomp) d'un arbre, groupes traversés, en ordre de composition. */
+  private _renderablesIn(group: GroupLayer, out: Layer[] = []): Layer[] {
+    for (const c of group.children) {
+      if (c.type === "group") this._renderablesIn(c, out);
+      else out.push(c);
+    }
+    return out;
+  }
+
+  private _anySoloIn(root: GroupLayer): boolean {
+    return this._renderablesIn(root).some((c) => c.solo && c.type !== "audio");
+  }
+
+  private _shapeInputsIn(root: GroupLayer, frame: number): ShapeInput[] {
+    const anySolo = this._anySoloIn(root);
+    return this._renderablesIn(root)
+      .filter((l): l is ShapeLayer => l.type === "shape" && l.visible && this._activeAtIn(root, l, frame) && (!anySolo || !!l.solo))
+      .map((s) => this._toInputIn(root, s));
+  }
+
+  /** Signature du set de calques actifs d'une comp à un frame (rebuild de son stack si ça change). */
+  private _compSigIn(comp: Composition, frame: number): string {
+    let sig = "";
+    for (const l of this._renderablesIn(comp.root)) if (this._activeAtIn(comp.root, l, frame)) sig += l.id + ",";
+    return sig;
   }
 
   /** Un calque VISUEL du groupe actif est-il en solo ? (si oui, seuls les solos visuels rendent).
@@ -1199,6 +1664,11 @@ export class Editor {
     const scene3d = this._scene3d;
     if (!engine || !scene3d) return;
 
+    // Comp active = prérendu : le mur affiche sa sortie caméra (une seule couche = sa RT), pas la grille LED.
+    if (this.activeComp().kind === "prerender") { this._pushPrerenderActive(); return; }
+
+    this._syncNested(); // (re)construit les comps imbriquées et alimente leurs RT avant de composer
+
     const shapes = this._shapeInputs();
     scene3d.setShapes(shapes);
     this._pushFixtures();
@@ -1215,11 +1685,51 @@ export class Editor {
       } else if (child.type === "video") {
         const active = child.clips ? child.clips.some((c) => mediaClipActiveAt(c, this._frame)) : this._activeAt(child);
         if (child.visible && active && (!anySolo || child.solo)) stack.push(this._ensureVideo(child));
+      } else if (child.type === "precomp") {
+        // instance de précomp/prérendu : composite la RT de sa comp enfant (rendue par `_syncNested`)
+        if (child.visible && this._activeAt(child) && precompActiveAt(child, this._frame) && (!anySolo || child.solo)) {
+          const sub = this._subs.get(child.compId);
+          if (sub) {
+            sub.nested.enabled = true;
+            sub.nested.opacity = child.opacity;
+            sub.nested.blend = child.blend;
+            stack.push(sub.nested);
+          }
+        }
+      } else if (child.type === "particles") {
+        // système de particules : composite la RT de sa scène GPU (rendue/simulée par `_syncNested`)
+        if (child.visible && this._activeAt(child) && (!anySolo || child.solo)) {
+          const sub = this._subs.get(child.id);
+          if (sub) {
+            sub.nested.enabled = true;
+            sub.nested.opacity = child.opacity;
+            sub.nested.blend = child.blend;
+            stack.push(sub.nested);
+          }
+        }
       }
       // group/image/spot/lyre : non rendus sur le mur (navigables / repère visuel seulement)
     }
     // ordre d'affichage (haut = avant) → ordre moteur inversé (le haut rend en dernier)
     engine.setLayers([...stack].reverse());
+    this._lastActiveSig = this._activeSignature();
+  }
+
+  /** Pile moteur quand on édite un prérendu : le mur = la RT de sa scène 3D caméra (aucune grille LED). */
+  private _pushPrerenderActive(): void {
+    const engine = this._engine;
+    if (!engine) return;
+    const ordered: NestedSource[] = [];
+    const sub = this._updatePrerenderSub(this.activeComp(), this._frame, ordered);
+    engine.setNested(ordered);
+    if (sub) {
+      sub.nested.enabled = true;
+      sub.nested.opacity = 1;
+      sub.nested.blend = "normal";
+      engine.setLayers([sub.nested]);
+    } else {
+      engine.setLayers([]);
+    }
     this._lastActiveSig = this._activeSignature();
   }
 
@@ -1230,6 +1740,144 @@ export class Editor {
       if (this._activeAt(child)) sig += child.id + ",";
     }
     return sig;
+  }
+
+  /** (Re)construit le graphe des comps imbriquées atteignables depuis le groupe actif et alimente leurs RT. */
+  private _syncNested(): void {
+    const engine = this._engine;
+    if (!engine) return;
+    const ordered: NestedSource[] = [];
+    const guard = new Set<string>();
+
+    // Comp active = prérendu : le mur affiche SA sortie caméra (pas la grille LED). Sa RT est la seule source.
+    const active = this.activeComp();
+    if (active.kind === "prerender") {
+      const sub = this._updatePrerenderSub(active, this._frame, ordered);
+      engine.setNested(ordered);
+      if (sub) { sub.nested.enabled = true; sub.nested.opacity = 1; sub.nested.blend = "normal"; }
+      return;
+    }
+
+    for (const child of this._activeGroup().children) {
+      if (child.type === "particles") {
+        if (child.visible && this._activeAt(child)) this._updateParticleSub(child, ordered);
+        continue;
+      }
+      if (child.type !== "precomp" || !child.visible || !this._activeAt(child) || !precompActiveAt(child, this._frame)) continue;
+      const comp = this._compositions[child.compId];
+      if (!comp) continue;
+      const frame = precompChildFrame(child, this._frame, comp.durationFrames);
+      this._updateSub(comp, frame, ordered, guard);
+    }
+    engine.setNested(ordered); // ordonnées plus profond d'abord (les enfants se poussent avant leur parent)
+  }
+
+  /**
+   * Met à jour (ou crée) le compositor d'une comp imbriquée à un frame local : évalue son animation,
+   * rasterise ses shapes, (re)construit son stack au besoin, puis la fait rendre dans sa RT. Récursif
+   * (enfants d'abord). `guard` = garde de cycle (une comp déjà dans la chaîne n'est pas ré-entrée).
+   */
+  private _updateSub(comp: Composition, frame: number, ordered: NestedSource[], guard: Set<string>): SubRenderer | null {
+    const engine = this._engine;
+    if (!engine || guard.has(comp.id)) return null;
+    guard.add(comp.id);
+
+    // Prérendu : chemin scène 3D → RT (pas de raster CPU / stack 2D).
+    if (comp.kind === "prerender") return this._updatePrerenderSub(comp, frame, ordered);
+
+    let sub = this._subs.get(comp.id);
+    if (!sub) {
+      const stack = new LayerStack(engine.fixture.width, engine.fixture.height);
+      const scene3d = new Scene3DLayer(`${comp.id}:scene3d`, engine.fixture.width, engine.fixture.height);
+      const nested = new NestedTextureLayer(`${comp.id}:nested`);
+      nested.setTexture(stack.target.texture);
+      sub = { stack, scene3d, nested, sig: "" };
+      this._subs.set(comp.id, sub);
+    }
+    const stack = sub.stack!, scene3d = sub.scene3d!;
+
+    this._animator.evaluateAt(comp.tracks, frame);                 // animation de la comp à son frame local
+    scene3d.setShapes(this._shapeInputsIn(comp.root, frame));      // shapes de la comp (raster CPU dans sa DataTexture)
+
+    const anySolo = this._anySoloIn(comp.root);
+    const layers: EngineLayer[] = [];
+    let sceneAdded = false;
+    for (const layer of this._renderablesIn(comp.root)) {
+      if (!layer.visible || !this._activeAtIn(comp.root, layer, frame) || (anySolo && !layer.solo)) continue;
+      if (layer.type === "shader") layers.push(this._ensureShader(layer));
+      else if (layer.type === "shape") { if (!sceneAdded) { layers.push(scene3d); sceneAdded = true; } }
+      else if (layer.type === "video") layers.push(this._ensureVideo(layer));
+      else if (layer.type === "precomp") {
+        const cc = this._compositions[layer.compId];
+        if (cc && precompActiveAt(layer, frame)) {
+          const cf = precompChildFrame(layer, frame, cc.durationFrames);
+          const cs = this._updateSub(cc, cf, ordered, guard);
+          if (cs) { cs.nested.enabled = true; cs.nested.opacity = layer.opacity; cs.nested.blend = layer.blend; layers.push(cs.nested); }
+        }
+      }
+      else if (layer.type === "particles") {
+        const ps = this._updateParticleSub(layer, ordered);
+        ps.nested.enabled = true; ps.nested.opacity = layer.opacity; ps.nested.blend = layer.blend; layers.push(ps.nested);
+      }
+    }
+
+    const sig = this._compSigIn(comp, frame);
+    if (sig !== sub.sig) { stack.setLayers([...layers].reverse()); sub.sig = sig; }
+    stack.setTime(this._fps > 0 ? frame / this._fps : 0);
+    ordered.push(stack);
+    return sub;
+  }
+
+  /**
+   * Met à jour (ou crée) le renderer 3D d'un prérendu à un frame local : évalue son animation, applique
+   * la caméra/fond de `comp.scene`, construit les meshes depuis ses shapes, et pousse sa RT dans `ordered`.
+   * Frontière de rendu : un prérendu ne compose pas de précomps imbriquées (scène 3D pure en v1).
+   */
+  private _updatePrerenderSub(comp: Composition, frame: number, ordered: NestedSource[]): SubRenderer | null {
+    const engine = this._engine;
+    if (!engine) return null;
+
+    let sub = this._subs.get(comp.id);
+    if (!sub || !sub.prerender) {
+      const res = comp.scene?.resolution;
+      const prerender = new Prerender3DScene(res?.w ?? engine.fixture.width, res?.h ?? engine.fixture.height);
+      const nested = new NestedTextureLayer(`${comp.id}:nested`);
+      nested.setTexture(prerender.target.texture);
+      nested.setFlipV(false); // scène 3D : pas d'inversion V du compositor 2D → sinon prérendu à l'envers
+      sub = { prerender, nested, sig: "" };
+      this._subs.set(comp.id, sub);
+    }
+
+    this._animator.evaluateAt(comp.tracks, frame);
+    sub.prerender!.setScene(comp.scene ?? defaultPrerenderScene());
+    sub.prerender!.setShapes(this._shapeInputsIn(comp.root, frame));
+    // particules émises DANS la scène 3D du prérendu (vues par sa caméra, avec les meshes)
+    const particleLayers = this._renderablesIn(comp.root).filter(
+      (l): l is ParticlesLayer => l.type === "particles" && l.visible && this._activeAtIn(comp.root, l, frame),
+    );
+    sub.prerender!.setParticles(particleLayers, (l) => this._resolveSim(l));
+    ordered.push(sub.prerender!);
+    return sub;
+  }
+
+  /**
+   * Met à jour (ou crée) la scène de particules d'un calque `particles` : applique sa config (reconstruit
+   * la sim au changement de nombre, sinon uniforms) et pousse sa scène dans `ordered` (simulée + rendue
+   * par `Engine.update`). Sub keyé par id de calque (pas de composition dédiée : effet feuille).
+   */
+  private _updateParticleSub(layer: ParticlesLayer, ordered: NestedSource[]): SubRenderer {
+    const engine = this._engine!;
+    let sub = this._subs.get(layer.id);
+    if (!sub || !sub.particles) {
+      const particles = new ParticleScene(engine.fixture.width, engine.fixture.height);
+      const nested = new NestedTextureLayer(`${layer.id}:nested`);
+      nested.setTexture(particles.target.texture);
+      sub = { particles, nested, sig: "" };
+      this._subs.set(layer.id, sub);
+    }
+    sub.particles!.setConfig(layer, this._resolveSim(layer));
+    ordered.push(sub.particles!);
+    return sub;
   }
 
   /** engine layer d'un calque vidéo (VideoTexture plein-cadre), créé une fois puis synchronisé. */
@@ -1268,13 +1916,17 @@ export class Editor {
   // ————————————————————————————————— Historique ————————————————————————————————
 
   private _snapshot(): HistorySnapshot {
-    return { document: structuredClone(this._doc), composition: structuredClone(this._animator.composition) };
+    return { compositions: structuredClone(this._compositions), nav: structuredClone(this._nav) };
   }
 
   private _restore(snap: HistorySnapshot): void {
     this._restoringHistory = true;
-    this._doc = structuredClone(snap.document);
-    this._animator.load(structuredClone(snap.composition));
+    this._compositions = structuredClone(snap.compositions);
+    this._nav = structuredClone(snap.nav);
+    const top = this._nav[this._nav.length - 1];
+    const comp = this._compositions[top.compId] ?? this._compositions[Object.keys(this._compositions)[0]];
+    this._doc = { root: comp.root, activeGroupId: findGroup(comp.root, top.groupId) ? top.groupId : comp.root.id, selectedId: top.selectedId };
+    this._animator.load(comp);
     this._push();
     this._emit();
     this._restoringHistory = false;

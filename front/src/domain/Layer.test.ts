@@ -3,12 +3,46 @@ import assert from "node:assert/strict";
 import {
   findLayer, findGroup, findParent, groupChildren,
   makeGroup, makeShape, makeShaderLayer, makeAudio, type Document,
-  layerActiveAt, moveClip, trimIn, trimOut, wouldCycle,
+  layerActiveAt, moveClip, trimIn, trimOut,
   mediaClipLength, mediaClipTimelineOut, mediaClipActiveAt, mediaSourceFrameAt,
   moveMediaClip, trimMediaIn, trimMediaOut, splitMediaClip, mediaFadeGain, applyMap,
-  mediaGroupActiveAt,
+  mediaGroupActiveAt, collectSubtreeIds, makePrecomp, precompActiveAt, precompChildFrame,
   type MediaClip,
 } from "./Layer.ts";
+
+test("precompChildFrame : offset + vitesse, clampé à [0, durée[", () => {
+  const inst = makePrecomp("p", "P", "c"); // timeOffset 0, speed 1
+  assert.equal(precompChildFrame(inst, 30, 100), 30);          // 1:1
+  assert.equal(precompChildFrame(inst, 200, 100), 99);         // clamp haut (durée 100 → 99)
+  inst.timeOffset = 10;
+  assert.equal(precompChildFrame(inst, 0, 100), 10);           // décalage
+  inst.timeOffset = 0; inst.speed = 2;
+  assert.equal(precompChildFrame(inst, 5, 100), 10);           // vitesse ×2
+  inst.speed = 1; inst.clip = { in: 20, out: 80 };
+  assert.equal(precompChildFrame(inst, 20, 100), 0);           // début local = bord in du clip
+  assert.equal(precompChildFrame(inst, 35, 100), 15);
+});
+
+test("precompActiveAt : suit la fenêtre de clip (sans clip = toujours)", () => {
+  const inst = makePrecomp("p", "P", "c");
+  assert.equal(precompActiveAt(inst, 999), true);              // pas de clip
+  inst.clip = { in: 10, out: 20 };
+  assert.equal(precompActiveAt(inst, 5), false);
+  assert.equal(precompActiveAt(inst, 15), true);
+  assert.equal(precompActiveAt(inst, 25), false);
+});
+
+test("collectSubtreeIds : calque + descendants ; s'arrête aux precomps (opaques)", () => {
+  const grp = makeGroup("g", "G");
+  grp.children.push(makeShape("s1", "sphere", "S1"), makePrecomp("pc", "PC", "comp-x"));
+  const inner = makeGroup("g2", "G2");
+  inner.children.push(makeShape("s2", "box", "S2"));
+  grp.children.push(inner);
+  const ids = collectSubtreeIds(grp);
+  assert.deepEqual([...ids].sort(), ["g", "g2", "pc", "s1", "s2"]);
+  // une precomp est une feuille opaque : pas de descente dans SA composition
+  assert.deepEqual([...collectSubtreeIds(makePrecomp("p", "P", "c"))], ["p"]);
+});
 
 const mc = (o: Partial<MediaClip> = {}): MediaClip =>
   ({ id: "c", sourceIn: 0, sourceOut: 24, timelineIn: 10, speed: 1, ...o });
@@ -175,18 +209,4 @@ test("applyMap : remappage linéaire clampé", () => {
   assert.equal(applyMap(m, 2), 255); // clamp haut
   assert.equal(applyMap(m, -1), 0); // clamp bas
   assert.equal(applyMap({ inMin: 5, inMax: 5, outMin: 3, outMax: 9 }, 5), 3); // dégénéré → outMin
-});
-
-test("wouldCycle détecte les cycles de parentage", () => {
-  const root = makeGroup("root", "R");
-  const a = makeShape("a", "box", "A");
-  const b = makeShape("b", "box", "B");
-  const c = makeShape("c", "box", "C");
-  root.children.push(a, b, c);
-  b.parentId = "a"; // b enfant de a
-  c.parentId = "b"; // c enfant de b (a → b → c)
-  assert.equal(wouldCycle(root, "a", "c"), true);  // parenter a à c fermerait la boucle
-  assert.equal(wouldCycle(root, "a", "b"), true);  // idem
-  assert.equal(wouldCycle(root, "c", "a"), false); // c déjà descendant de a, mais pas de cycle
-  assert.equal(wouldCycle(root, "a", "a"), true);  // soi-même
 });

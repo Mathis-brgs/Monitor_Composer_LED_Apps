@@ -73,6 +73,14 @@ export class ToolbarOverlay {
     this._root.appendChild(lyreBtn);
 
     this._root.appendChild(divider());
+    const modeBtn = document.createElement("button");
+    modeBtn.type = "button";
+    modeBtn.className = "rail__tool";
+    modeBtn.style.fontSize = "10px";
+    modeBtn.style.fontWeight = "600";
+    modeBtn.dataset.tooltip = "Mode d'affichage 3D : fil / solide / aucun (Z)";
+    modeBtn.addEventListener("click", () => editor.cycleViewportMode());
+    this._root.appendChild(modeBtn);
 
     const toggleBtn = toolButton("chevron-down", "Rétracter la barre d'outils");
     toggleBtn.classList.add("viewport-toolbar__toggle");
@@ -84,6 +92,7 @@ export class ToolbarOverlay {
 
     host.appendChild(this._root);
 
+    const MODE_LABEL: Record<string, string> = { wireframe: "W", solid: "S", none: "N" };
     const sync = (): void => {
       for (const { btn, tool } of toolButtons) {
         const active = editor.tool === tool;
@@ -96,6 +105,7 @@ export class ToolbarOverlay {
           btn.dataset.tooltip = TOOLS.find((t) => t.tool === tool)?.title;
         }
       }
+      modeBtn.textContent = MODE_LABEL[editor.viewportMode] ?? "?";
     };
     sync();
     this._unsub = editor.subscribe(sync);

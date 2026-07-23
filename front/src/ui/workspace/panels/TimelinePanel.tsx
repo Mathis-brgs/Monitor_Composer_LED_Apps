@@ -1315,6 +1315,7 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
                       onDragLeave={() => setDropTarget(null)}
                       onDrop={(e) => onNameDrop(e, row.layerId)}
                       onClick={() => editor.select(row.layerId)}
+                      onDblClick={() => { if (row.type === "precomp") editor.enterCompOf(row.layerId); }}
                     >
                       <button
                         type="button"
