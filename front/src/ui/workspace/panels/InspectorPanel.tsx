@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, Show, type Accessor, type JSX } from "solid-js";
 import type { Editor } from "@core/Editor.ts";
-import type { Fill, Layer, LyreLayer, MaterialMode, PrecompLayer, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
+import type { Fill, Layer, LyreLayer, MaterialMode, ParticlesLayer, PrecompLayer, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
 import { fromStore } from "@ui/solid/store.ts";
 import { solidPanel } from "@ui/solid/mount.ts";
 import { Checkbox, ColorField, MediaField, NumberField, Row, Section, Segmented, Slider, TextField } from "@ui/solid/controls.tsx";
@@ -104,6 +104,9 @@ function NodeBody(props: { editor: Editor; node: Layer | null; changed: Accessor
       </Show>
       <Show when={node.type === "precomp"}>
         <PrecompBody editor={editor} node={node as PrecompLayer} changed={changed} />
+      </Show>
+      <Show when={node.type === "particles"}>
+        <ParticlesBody editor={editor} node={node as ParticlesLayer} changed={changed} />
       </Show>
     </>
   );
@@ -426,6 +429,129 @@ function ShaderBody(props: { editor: Editor; node: ShaderLayer; changed: Accesso
         <KeyDot editor={editor} id={id} channels={["opacity"]} />
       </Row>
     </Section>
+  );
+}
+
+/** Système de particules GPU : preset de sim réutilisable (bibliothèque) + paramètres keyframables par calque. */
+function ParticlesBody(props: { editor: Editor; node: ParticlesLayer; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
+  const id = node.id;
+  const count = createMemo(() => { changed(); return node.count; });
+  const size = createMemo(() => { changed(); return node.size; });
+  const color = createMemo(() => { changed(); return node.color; });
+  const colorEnd = createMemo(() => { changed(); return node.colorEnd; });
+  const blend = createMemo(() => { changed(); return node.blend; });
+  const opacity = createMemo(() => { changed(); return node.opacity; });
+  // Preset de simulation référencé (bibliothèque partagée) : réactif à la fois au relink du calque et
+  // aux édits de preset (nom/code/params émettent depuis l'éditeur).
+  const presets = fromStore(editor, () => { changed(); return editor.listSimPresets(); });
+  const simId = createMemo(() => { changed(); return node.simId; });
+  const preset = createMemo(() => presets().find((p) => p.id === simId()) ?? presets()[0]);
+  const params = createMemo(() => preset()?.params ?? []);
+  const [newName, setNewName] = createSignal("");
+  const importFile = (e: Event): void => {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const name = file.name.replace(/\.[^.]+$/, "");
+      editor.setParticleSimId(id, editor.importSimPreset(name, reader.result as string));
+    };
+    reader.readAsText(file);
+    input.value = ""; // permet de réimporter le même fichier
+  };
+  return (
+    <>
+      <Section title="Système">
+        <Row label="Nombre">
+          <NumberField value={count()} step={25} format={(v) => v.toFixed(0)} onInput={(v) => editor.setParticleParam(id, "count", v)} />
+        </Row>
+        <Row label="Taille">
+          <NumberField value={size()} step={0.1} onInput={(v) => editor.setParticleParam(id, "size", v)} />
+        </Row>
+      </Section>
+      <Section title="Simulation">
+        <Show when={preset()}>
+          {(sim) => (
+            <>
+              <Row label="Nom">
+                <TextField value={sim().name} onInput={(name) => editor.updateSimPreset(sim().id, { name })} />
+              </Row>
+              <Row label="Preset">
+                <select
+                  class="insp-text insp-control"
+                  value={sim().id}
+                  onChange={(e) => editor.setParticleSimId(id, (e.currentTarget as HTMLSelectElement).value)}
+                >
+                  <For each={presets()}>{(p) => <option value={p.id}>{p.name}</option>}</For>
+                </select>
+              </Row>
+              <Row label="">
+                <button
+                  type="button"
+                  class="btn"
+                  onClick={() => editor.setParticleSimId(id, editor.addSimPreset(`Simulation ${presets().length + 1}`))}
+                >
+                  Nouveau preset
+                </button>
+              </Row>
+              <Row label="Fichier">
+                <input class="insp-control" type="file" accept=".glsl,.txt,.js,.ts" onChange={importFile} />
+              </Row>
+              <Row label="Code (TSL)">
+                <textarea
+                  class="insp-code"
+                  value={sim().code}
+                  spellcheck={false}
+                  onChange={(e) => editor.updateSimPreset(sim().id, { code: (e.currentTarget as HTMLTextAreaElement).value })}
+                />
+              </Row>
+            </>
+          )}
+        </Show>
+      </Section>
+      <Section title="Paramètres">
+        <For each={params()}>
+          {(p) => {
+            const val = createMemo(() => { changed(); return node.simValues[p.name] ?? p.value; });
+            const span = p.max - p.min || 1;
+            return (
+              <Row label={p.name}>
+                <Slider
+                  value={(val() - p.min) / span}
+                  format={() => val().toFixed(2)}
+                  onInput={(t) => editor.setParticleSimParam(id, p.name, p.min + t * span)}
+                />
+                <KeyDot editor={editor} id={id} channels={["simParam." + p.name]} />
+                <button type="button" class="insp-danger insp-control" title="Supprimer le paramètre (du preset)" onClick={() => { const s = preset(); if (s) editor.removeSimParam(s.id, p.name); }}>×</button>
+              </Row>
+            );
+          }}
+        </For>
+        <Row label="+ param">
+          <input
+            class="insp-text insp-control"
+            type="text"
+            placeholder="nom (ex: pulse)"
+            value={newName()}
+            onInput={(e) => setNewName((e.currentTarget as HTMLInputElement).value)}
+            onKeyDown={(e) => { const s = preset(); if (e.key === "Enter" && s && newName().trim()) { editor.addSimParam(s.id, newName().trim()); setNewName(""); } }}
+          />
+        </Row>
+      </Section>
+      <Section title="Apparence">
+        <Row label="Bord"><ColorField value={color()} onInput={(c) => editor.setParticleColor(id, "color", c)} /></Row>
+        <Row label="Centre"><ColorField value={colorEnd()} onInput={(c) => editor.setParticleColor(id, "colorEnd", c)} /></Row>
+        <Row label="Fusion">
+          <Segmented options={["Normal", "Additif"]} active={blend() === "add" ? 1 : 0} onChange={(i) => editor.setBlend(id, i === 1 ? "add" : "normal")} />
+        </Row>
+        <Row label="Opacité">
+          <Slider value={opacity()} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
+        </Row>
+      </Section>
+      <DeleteRow editor={editor} id={id} />
+    </>
   );
 }
 

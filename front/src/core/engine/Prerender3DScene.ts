@@ -5,6 +5,7 @@ import {
   ConeGeometry,
   CylinderGeometry,
   DirectionalLight,
+  Group,
   Mesh,
   MeshStandardNodeMaterial,
   NearestFilter,
@@ -16,10 +17,12 @@ import {
   SphereGeometry,
   TorusGeometry,
   type BufferGeometry,
+  type WebGPURenderer,
 } from "three/webgpu";
-import type { ShapeKind } from "@domain/Layer.ts";
+import type { ParticlesLayer, ShapeKind } from "@domain/Layer.ts";
 import type { PrerenderScene } from "@domain/Composition.ts";
 import type { ShapeFill, ShapeInput } from "./shapes.ts";
+import { ParticleSystem, type ResolvedSim } from "./ParticleSystem.ts";
 
 /** Géométrie unité d'une primitive — même convention d'axes/tailles que l'éditeur 3D et le collider CPU. */
 function unitGeometry(kind: ShapeKind): BufferGeometry {
@@ -56,6 +59,14 @@ export class Prerender3DScene {
 
   private readonly _aspect: number;
   private readonly _meshes: Mesh[] = [];
+  private readonly _particles = new Map<string, ParticleSystem>();
+  // Les particules vivent dans une scène ortho SÉPARÉE, compositée en surimpression additive dans la RT
+  // (pas dans la scène 3D : des `Points` compute-driven mélangés aux meshes/lumières/depth rendent mal —
+  // un effet plein-cadre cohérent avec le mur est de toute façon préférable ici).
+  private readonly _particleScene = new Scene();
+  // Top/bottom inversés → caméra pré-flippée en V, pour compenser le `flipV=false` du nested du prérendu
+  // (le mur & les précomps gardent le flip ; ici la scène 3D n'en a pas besoin, donc l'overlay non plus).
+  private readonly _particleCam = new OrthographicCamera(-1, 1, -1, 1, -10, 10);
   private readonly _dir = new DirectionalLight(0xffffff, 2.4);
   private readonly _amb = new AmbientLight(0xffffff, 0.5);
   private readonly _scratch = new Color();
@@ -71,6 +82,8 @@ export class Prerender3DScene {
     this._dir.position.set(2, 3, 4);
     this.scene.add(this._dir, this._amb);
     this.scene.background = new Color(0, 0, 0);
+    this._particleCam.position.set(0, 0, 5);
+    this._particleCam.lookAt(0, 0, 0);
   }
 
   /** Applique la caméra + le fond de la scène de prérendu (position/cible/fov/clipping/background). */
@@ -133,12 +146,62 @@ export class Prerender3DScene {
     });
   }
 
+  /** (Ré)concilie les systèmes de particules émis DANS la scène du prérendu (émetteur en unités monde,
+   *  vus par la caméra de la scène, avec les meshes). Crée/supprime au changement de calques, config chaque frame. */
+  setParticles(layers: readonly ParticlesLayer[], resolve: (l: ParticlesLayer) => ResolvedSim): void {
+    const seen = new Set<string>();
+    for (const layer of layers) {
+      seen.add(layer.id);
+      let sys = this._particles.get(layer.id);
+      if (!sys) {
+        sys = new ParticleSystem();
+        this._particleScene.add(sys.object);
+        this._particles.set(layer.id, sys);
+      }
+      sys.setConfig(layer, resolve(layer));
+    }
+    for (const [id, sys] of this._particles) {
+      if (seen.has(id)) continue;
+      this._particleScene.remove(sys.object);
+      sys.dispose();
+      this._particles.delete(id);
+    }
+  }
+
+  /** Dispatch du compute de tous les systèmes de particules avant le rendu — appelé par `Engine.update`. */
+  prepare(renderer: WebGPURenderer): void {
+    for (const sys of this._particles.values()) sys.compute(renderer);
+  }
+
+  /** Jumeaux des systèmes de particules à afficher dans l'éditeur 3D (espace [-1,1] de l'overlay). */
+  particleViewers(): Group[] {
+    return [...this._particles.values()].map((s) => s.getViewer());
+  }
+
+  /**
+   * Rendu custom (remplace le `setRenderTarget + render` par défaut de `Engine.update`) : la scène 3D
+   * (caméra du prérendu), puis les particules par-dessus (scène ortho séparée, plein-cadre, additif,
+   * sans reclear).
+   */
+  render(renderer: WebGPURenderer): void {
+    renderer.setRenderTarget(this.target);
+    renderer.render(this.scene, this.camera);
+    if (this._particles.size > 0) {
+      const prevAutoClear = renderer.autoClear;
+      renderer.autoClear = false;
+      renderer.render(this._particleScene, this._particleCam);
+      renderer.autoClear = prevAutoClear;
+    }
+  }
+
   dispose(): void {
     for (const m of this._meshes) {
       m.geometry.dispose();
       (m.material as MeshStandardNodeMaterial).dispose();
     }
     this._meshes.length = 0;
+    for (const sys of this._particles.values()) sys.dispose();
+    this._particles.clear();
     this.target.dispose();
   }
 }

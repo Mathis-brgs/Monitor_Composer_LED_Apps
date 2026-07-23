@@ -106,6 +106,81 @@ export interface MaterialPreset {
 }
 
 export interface ShapeLayer extends LayerBase { type: "shape"; shape: ShapeKind; fill: Fill; /** afficher le wireframe (helper d'édition) dans l'Editor 3D */ showHelper: boolean; }
+
+/**
+ * Corps TSL de la **simulation compute** d'un système de particules — personnalisable, exactement comme
+ * le `fragment` d'un `MaterialPreset` (voir `MaterialBaker`). Exécuté par particule à chaque frame ;
+ * doit `return` la nouvelle position (vec3). En scope : `pos` (vec3, position courante), `info` (vec3,
+ * données statiques par particule : x,y ∈ [0.5,1.5]), `time` (float, secondes), `speed` (float), `noise`
+ * (float, intensité), `idx` (float, index), `snoise(p)` (bruit vec3 → -1..1) + toutes les fonctions TSL.
+ * Défaut = anneau/donut (relaxation radiale, repris de `Creative-Post-processing/simulation.frag`).
+ */
+export const DEFAULT_PARTICLE_SIM = `// Donut : relaxation radiale (repris de simulation.frag)
+const r0 = pos.xy.length().mul(0.8);
+const cent = smoothstep(0.5, 0.51, info.x.sub(r0).abs()).oneMinus();
+const ang = atan(pos.y, pos.x).sub(info.y.mul(0.3).mul(mix(0.5, 1.0, cent)));
+const targetR = mix(info.x, float(1.5), ang.mul(2.0).add(time.mul(speed)).add(3.14159265).sin().mul(0.5).add(0.6));
+const r = r0.add(targetR.sub(r0).mul(0.1));
+const n = snoise(pos.mul(2.0).add(vec3(0.0, 0.0, time.mul(0.1)))).mul(0.003).mul(noise);
+const nx = pos.x.add(ang.cos().mul(r).mul(1.1).sub(pos.x).mul(0.1)).add(n.x);
+const ny = pos.y.add(ang.sin().mul(r).mul(1.1).sub(pos.y).mul(0.1)).add(n.y);
+return vec3(nx, ny, 0.0);`;
+
+/** Un paramètre custom déclaré par une simulation : nom (variable en scope de la sim), valeur, bornes du slider. */
+export interface SimParamDef { name: string; value: number; min: number; max: number; }
+
+/** Paramètres par défaut de la sim donut : `speed` (rotation) et `noise` (agitation), utilisés par `DEFAULT_PARTICLE_SIM`. */
+export function defaultSimParams(): SimParamDef[] {
+  return [
+    { name: "speed", value: 1, min: 0, max: 5 },
+    { name: "noise", value: 1, min: 0, max: 5 },
+  ];
+}
+
+/**
+ * Preset de simulation de particules : un corps TSL compute (`code`) + ses **paramètres custom**
+ * (`params`, deviennent des variables en scope de la sim), exactement comme un `MaterialPreset`
+ * (`fragment` + presets réutilisables) mais côté compute. Stocké dans la bibliothèque stable
+ * `Editor._simulations` (sérialisée dans `Project.simulations`), réutilisable par plusieurs calques
+ * `ParticlesLayer` via `simId`. Les valeurs courantes des params vivent sur le calque (`simValues`,
+ * keyframables), pas ici — le preset ne porte que les défauts.
+ */
+export interface SimPreset {
+  id: string;
+  name: string;
+  /** corps TSL de la simulation compute — voir `DEFAULT_PARTICLE_SIM`. */
+  code: string;
+  /** paramètres custom déclarés (variables en scope de `code` + contrôles keyframables `simParam.<name>`). */
+  params: SimParamDef[];
+}
+
+/** Id du preset donut par défaut — toujours présent dans la bibliothèque (`Editor._simulations[0]`). */
+export const DEFAULT_SIM_ID = "sim-donut";
+
+/** Preset de simulation par défaut : donut (relaxation radiale) + params `speed`/`noise`. */
+export function defaultSimPreset(): SimPreset {
+  return { id: DEFAULT_SIM_ID, name: "Donut", code: DEFAULT_PARTICLE_SIM, params: defaultSimParams() };
+}
+
+/**
+ * Système de particules GPU : référence une simulation partagée de la bibliothèque (`simId` → `SimPreset`)
+ * — sim compute TSL personnalisable + paramètres custom réutilisables. Les valeurs courantes des params
+ * (`simValues`) sont propres au calque et keyframables (canal `simParam.<name>`). Rendu en points additifs.
+ */
+export interface ParticlesLayer extends LayerBase {
+  type: "particles";
+  count: number;
+  /** taille du point (px sur la RT 128×128). */
+  size: number;
+  /** couleur au bord (rayon max). */
+  color: RGB;
+  /** couleur au centre (rayon min). */
+  colorEnd: RGB;
+  /** preset de simulation référencé (bibliothèque `Editor._simulations`). */
+  simId: string;
+  /** valeurs courantes des params du preset (keyframables, canal `simParam.<name>`). */
+  simValues: Record<string, number>;
+}
 export interface GroupLayer extends LayerBase { type: "group"; children: Layer[]; }
 export interface ImageLayer extends LayerBase { type: "image"; assetId: string; /** Montage (edit list) ; absent = source entière. */ clips?: MediaClip[]; }
 export interface VideoLayer extends LayerBase { type: "video"; assetId: string; /** Montage (edit list) ; absent = source entière. */ clips?: MediaClip[]; }
@@ -146,7 +221,7 @@ export interface PrecompLayer extends LayerBase {
   speed: number;
 }
 
-export type Layer = ShaderLayer | ShapeLayer | GroupLayer | ImageLayer | VideoLayer | AudioLayer | SpotLayer | LyreLayer | PrecompLayer;
+export type Layer = ShaderLayer | ShapeLayer | GroupLayer | ImageLayer | VideoLayer | AudioLayer | SpotLayer | LyreLayer | PrecompLayer | ParticlesLayer;
 
 /** Suggestions de départ (doc prof), purement indicatives — `baseChannel` reste libre et modifiable ensuite. */
 export const SPOT_DEFAULT_BASE = 1;
@@ -339,6 +414,22 @@ export function makeLyre(id: string, name: string, baseChannel: number): LyreLay
 /** Instance jouant la composition `compId` (précomp ou prérendu) : sans décalage, à vitesse 1. */
 export function makePrecomp(id: string, name: string, compId: string): PrecompLayer {
   return { ...base(id, name), type: "precomp", compId, timeOffset: 0, speed: 1 };
+}
+/** Système de particules : référence le preset donut par défaut. Composité en additif. */
+export function makeParticles(id: string, name: string): ParticlesLayer {
+  const values: Record<string, number> = {};
+  for (const p of defaultSimParams()) values[p.name] = p.value;
+  return {
+    ...base(id, name),
+    type: "particles",
+    blend: "add",
+    count: 2000,
+    size: 2.5,
+    color: { r: 1, g: 0.6, b: 0.2 },
+    colorEnd: { r: 0.8, g: 0.1, b: 0.3 },
+    simId: DEFAULT_SIM_ID,
+    simValues: values,
+  };
 }
 
 /** L'instance de précomp est-elle active au frame parent ? (sa fenêtre de clip ; sans clip = toujours). */

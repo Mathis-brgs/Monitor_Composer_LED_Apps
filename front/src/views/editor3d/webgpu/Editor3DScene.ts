@@ -5,6 +5,7 @@ import {
   ConeGeometry,
   CylinderGeometry,
   BufferGeometry,
+  Float32BufferAttribute,
   Group,
   InstancedMesh,
   Line,
@@ -87,6 +88,8 @@ export class Editor3DScene {
   private readonly _pickMat: MeshBasicNodeMaterial;
   private readonly _leds: InstancedMesh;
   private _wallFrame!: LineSegments;              // cadre du mur (masqué en prérendu)
+  private _originRef!: Group;                      // repère d'origine (grille + axes), visible en prérendu
+  private readonly _particleViewers = new Group(); // jumeaux 3D des systèmes de particules de la comp active
   private _prerenderCam: PerspectiveCamera | OrthographicCamera | null = null;
   private _camHelper: CameraHelper | null = null; // frustum de la caméra du prérendu actif
   private _camHelperKind = "";
@@ -143,6 +146,14 @@ export class Editor3DScene {
       lineMaterial(0x4a3f37),
     );
     this._scene.add(this._wallFrame);
+
+    // Repère d'origine (masqué par défaut) : rendu quand on édite un prérendu, où le mur+cadre
+    // disparaissent — sinon les objets flottent dans le noir sans centre ni orientation.
+    this._originRef = buildOriginRef();
+    this._originRef.visible = false;
+    this._scene.add(this._originRef);
+    this._scene.add(this._particleViewers);
+
     this._scene.add(this._objects);
 
     // Cibles de raycast : maillages pleins invisibles (une par shape), jamais rendus.
@@ -289,8 +300,21 @@ export class Editor3DScene {
       this._camera.updateProjectionMatrix();
     }
     this._controls.update();
+    this._syncParticleViewers();
     this._renderer.setRenderTarget(null);
     this._renderer.render(this._scene, this._camera);
+  }
+
+  /** Réconcilie les jumeaux 3D des particules de la comp active dans la scène de l'éditeur (mêmes buffers compute). */
+  private _syncParticleViewers(): void {
+    const wanted = this._editor.activeParticleViewers();
+    const set = new Set(wanted);
+    for (const child of [...this._particleViewers.children]) {
+      if (!set.has(child)) this._particleViewers.remove(child);
+    }
+    for (const v of wanted) {
+      if (v.parent !== this._particleViewers) this._particleViewers.add(v);
+    }
   }
 
   /** Caméra active (le HUD lit son orientation / fov). */
@@ -339,6 +363,9 @@ export class Editor3DScene {
     this._controls.dispose();
     this._leds.geometry.dispose();
     (this._leds.material as MeshBasicNodeMaterial).dispose();
+    this._originRef.traverse((o) => {
+      if (o instanceof LineSegments) { o.geometry.dispose(); (o.material as LineBasicNodeMaterial).dispose(); }
+    });
     if (this._camHelper) { this._scene.remove(this._camHelper); this._camHelper.dispose(); }
   }
 
@@ -435,6 +462,7 @@ export class Editor3DScene {
     const cam = comp.kind === "prerender" ? comp.scene?.camera : undefined;
     this._leds.visible = !cam;
     this._wallFrame.visible = !cam;
+    this._originRef.visible = !!cam;
     if (!cam) {
       if (this._camHelper) this._camHelper.visible = false;
       return;
@@ -673,6 +701,33 @@ function lineMaterial(hex: number): LineBasicNodeMaterial {
   const m = new LineBasicNodeMaterial();
   m.color = new Color(hex);
   return m;
+}
+
+function linesFrom(points: number[], mat: LineBasicNodeMaterial): LineSegments {
+  const geo = new BufferGeometry();
+  geo.setAttribute("position", new Float32BufferAttribute(new Float32Array(points), 3));
+  return new LineSegments(geo, mat);
+}
+
+/**
+ * Repère d'origine pour l'édition d'un prérendu (mur masqué) : grille sol XZ discrète + axes X/Y/Z
+ * colorés partant de l'origine → on situe le centre et l'orientation de la scène.
+ */
+function buildOriginRef(): Group {
+  const g = new Group();
+  const HALF_GRID = 2;
+  const STEP = 0.5;
+  const grid: number[] = [];
+  for (let i = -HALF_GRID; i <= HALF_GRID + 1e-6; i += STEP) {
+    grid.push(i, 0, -HALF_GRID, i, 0, HALF_GRID); // ligne // Z
+    grid.push(-HALF_GRID, 0, i, HALF_GRID, 0, i); // ligne // X
+  }
+  g.add(linesFrom(grid, helperMaterial(new Color(0x3a322c), 0.5)));
+  const A = 0.6; // longueur des axes
+  g.add(linesFrom([0, 0, 0, A, 0, 0], lineMaterial(0xd8624a))); // X (rouge)
+  g.add(linesFrom([0, 0, 0, 0, A, 0], lineMaterial(0x8fce6a))); // Y (vert)
+  g.add(linesFrom([0, 0, 0, 0, 0, A], lineMaterial(0x5a86c8))); // Z (bleu)
+  return g;
 }
 
 function helperMaterial(color: Color, opacity: number): LineBasicNodeMaterial {

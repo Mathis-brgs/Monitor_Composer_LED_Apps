@@ -41,6 +41,7 @@ export function layerGlyph(l: Layer, precompKind?: "precomp" | "prerender"): str
     case "audio": return "♪";
     case "spot": return "✦";
     case "lyre": return "❋";
+    case "particles": return "✺";
   }
 }
 
@@ -56,5 +57,6 @@ export function subtitle(l: Layer): string {
     case "spot": return "Projecteur statique";
     case "lyre": return `Lyre · canaux ${l.baseChannel}-${l.baseChannel + 12}`;
     case "precomp": return "Précomposition";
+    case "particles": return `Particules · ${l.count}`;
   }
 }

@@ -1,12 +1,13 @@
-import { Euler, Matrix4, Quaternion, Vector3 } from "three/webgpu";
+import { Euler, Matrix4, Object3D, Quaternion, Vector3 } from "three/webgpu";
 import type { Engine } from "./engine/Engine.ts";
 import {
-  makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, makeVideo, makePrecomp, findLayer, findGroup, findParent, groupChildren, collectSubtreeIds,
+  makeShape, makeShaderLayer, makeSpot, makeLyre, makeAudio, makeVideo, makePrecomp, makeParticles, findLayer, findGroup, findParent, groupChildren, collectSubtreeIds,
   fixtureDmxChannels, layerActiveAt, mediaClipActiveAt, mediaSourceFrameAt, mediaFadeGain, mediaGroupActiveAt, precompActiveAt, precompChildFrame,
+  defaultSimParams, defaultSimPreset, DEFAULT_PARTICLE_SIM, DEFAULT_SIM_ID,
   SPOT_DEFAULT_BASE, SPOT_CHANNEL_COUNT, LYRE_DEFAULT_BASES, LYRE_CHANNEL_COUNT,
-  type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer, type VideoLayer,
+  type Document, type Layer, type GroupLayer, type ShapeLayer, type ShaderLayer, type SpotLayer, type LyreLayer, type VideoLayer, type ParticlesLayer,
   type RGB, type Vec3, type Transform, type ShapeKind, type ShaderId, type BlendMode, type Fill, type Clip, type MediaClip, type SpotChannels, type LyreChannels,
-  type MaterialPreset, type MaterialMode,
+  type MaterialPreset, type MaterialMode, type SimPreset, type SimParamDef,
 } from "@domain/Layer.ts";
 
 /** Patch de transform : chaque canal (position/rotation/échelle) partiellement modifiable. */
@@ -25,6 +26,8 @@ import { VideoWallLayer } from "./engine/layers/Video.layer.ts";
 import { NestedTextureLayer } from "./engine/layers/NestedTexture.layer.ts";
 import { LayerStack } from "./engine/LayerStack.ts";
 import { Prerender3DScene } from "./engine/Prerender3DScene.ts";
+import { ParticleScene } from "./engine/ParticleScene.ts";
+import type { ResolvedSim } from "./engine/ParticleSystem.ts";
 import type { NestedSource } from "./engine/Engine.ts";
 import { countLit, type ShapeFill, type ShapeInput } from "./engine/shapes.ts";
 import { Animator } from "./Animator.ts";
@@ -82,6 +85,7 @@ interface SubRenderer {
   stack?: LayerStack;
   scene3d?: Scene3DLayer;
   prerender?: Prerender3DScene;
+  particles?: ParticleScene;
 }
 
 /**
@@ -141,6 +145,9 @@ export class Editor {
   // shapes en fill matériau actuellement en cours de bake — évite les bakes qui se chevauchent
   // (best-effort : on saute le tick si le précédent n'est pas fini, comme `EhubOutput._busy`)
   private readonly _materialBaking = new Set<string>();
+  // Bibliothèque de simulations de particules : STABLE (hors `_doc`, contrairement aux matériaux — évite
+  // que la nav entre comps ne la réinitialise), partagée par toutes les comps, sérialisée dans le projet.
+  private _simulations: SimPreset[] = [defaultSimPreset()];
 
   // ————————————————————————————————— Lecture —————————————————————————————————
 
@@ -320,6 +327,8 @@ export class Editor {
       this.setTransform(id, { [group]: { [key]: value } } as TransformPatch);
     } else if (group === "param") {
       this.setParam(id, key, value);
+    } else if (group === "simParam") {
+      this.setParticleSimParam(id, key, value);
     } else if (group === "color") {
       if (layer.type === "shader") this.setColor(id, { ...layer.color, [key]: value } as RGB);
       else if (layer.type === "shape" && layer.fill.type === "solid") this.setFill(id, { type: "solid", color: { ...layer.fill.color, [key]: value } as RGB });
@@ -681,6 +690,139 @@ export class Editor {
     this._push();
     this._emit();
     return inst.id;
+  }
+
+  /** Ajoute un système de particules (simulé sur GPU, composité en additif) dans le groupe actif. */
+  addParticles(): string {
+    this._counter += 1;
+    const n = String(this._counter).padStart(2, "0");
+    const layer = makeParticles(`particles-${this._counter}`, `Particules ${n}`);
+    this._activeGroup().children.unshift(layer);
+    this._doc.selectedId = layer.id;
+    this._push();
+    this._emit();
+    return layer.id;
+  }
+
+  /** Modifie le nombre ou la taille d'un système de particules. */
+  setParticleParam(id: string, key: "count" | "size", value: number): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "particles") return;
+    layer[key] = key === "count" ? Math.max(1, Math.round(value)) : value;
+    this._push();
+    this._emit();
+  }
+
+  /** Change une couleur (bord / centre) d'un système de particules. */
+  setParticleColor(id: string, which: "color" | "colorEnd", rgb: RGB): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "particles") return;
+    layer[which] = rgb;
+    this._push();
+    this._emit();
+  }
+
+  /** Relie un calque à un preset de simulation : réinitialise ses `simValues` aux défauts du preset. */
+  setParticleSimId(id: string, simId: string): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "particles") return;
+    const preset = this._simulations.find((p) => p.id === simId) ?? this._simulations[0];
+    layer.simId = preset.id;
+    const values: Record<string, number> = {};
+    for (const p of preset.params) values[p.name] = p.value;
+    layer.simValues = values;
+    this._push();
+    this._emit();
+  }
+
+  /** Valeur courante d'un paramètre du preset sur ce calque (en direct + auto-key `simParam.<name>` si animé). */
+  setParticleSimParam(id: string, name: string, value: number): void {
+    const layer = findLayer(this._doc.root, id);
+    if (!layer || layer.type !== "particles") return;
+    layer.simValues = { ...layer.simValues, [name]: value };
+    this._push();
+    if (this._animator.autoKey(id, "simParam." + name, this._frame, value)) { /* clé posée */ }
+    this._emit();
+  }
+
+  // ————————————————————————————————— Simulations (bibliothèque) —————————————————————————————————
+
+  /** Bibliothèque de simulations de particules (presets réutilisables entre calques, toutes comps confondues). */
+  listSimPresets(): readonly SimPreset[] {
+    return this._simulations;
+  }
+
+  /** Charge la bibliothèque (depuis un projet) ; garantit toujours la présence du preset donut par défaut. */
+  loadSimPresets(presets: readonly SimPreset[] | undefined): void {
+    const list = (presets ?? []).map((p) => ({ ...p, params: p.params.map((q) => ({ ...q })) }));
+    if (!list.some((p) => p.id === DEFAULT_SIM_ID)) list.unshift(defaultSimPreset());
+    this._simulations = list;
+    this._emit();
+  }
+
+  /** Crée un nouveau preset de simulation (fichier réutilisable). Renvoie son id. */
+  addSimPreset(name: string, code = DEFAULT_PARTICLE_SIM, params: SimParamDef[] = defaultSimParams()): string {
+    this._counter += 1;
+    const id = `sim-${this._counter}`;
+    this._simulations = [...this._simulations, { id, name, code, params: params.map((p) => ({ ...p })) }];
+    this._emit();
+    return id;
+  }
+
+  /** Importe un preset depuis du code TSL (fichier) — sans params (l'utilisateur les déclare ensuite). */
+  importSimPreset(name: string, code: string): string {
+    return this.addSimPreset(name, code, []);
+  }
+
+  /** Édite un preset (nom/code/params). Les calques qui le référencent recompilent au prochain tick ;
+   *  un changement de params réconcilie leurs `simValues` (défaut pour les nouveaux, purge des retirés). */
+  updateSimPreset(id: string, patch: Partial<Omit<SimPreset, "id">>): void {
+    const idx = this._simulations.findIndex((p) => p.id === id);
+    if (idx === -1) return;
+    const updated: SimPreset = { ...this._simulations[idx], ...patch };
+    this._simulations = this._simulations.map((p, i) => (i === idx ? updated : p));
+    if (patch.params) this._reconcileSimValues(updated);
+    this._push();
+    this._emit();
+  }
+
+  /** Déclare un nouveau paramètre custom (nom unique) sur un preset — recompile ; sème sa valeur sur les calques. */
+  addSimParam(presetId: string, name: string, value = 1, min = 0, max = 5): void {
+    const preset = this._simulations.find((p) => p.id === presetId);
+    if (!preset || !name || preset.params.some((p) => p.name === name)) return;
+    this.updateSimPreset(presetId, { params: [...preset.params, { name, value, min, max }] });
+  }
+
+  /** Modifie les bornes/valeur par défaut d'un paramètre déclaré d'un preset. */
+  updateSimParam(presetId: string, name: string, patch: Partial<{ min: number; max: number; value: number }>): void {
+    const preset = this._simulations.find((p) => p.id === presetId);
+    if (!preset) return;
+    this.updateSimPreset(presetId, { params: preset.params.map((p) => (p.name === name ? { ...p, ...patch } : p)) });
+  }
+
+  /** Supprime un paramètre déclaré d'un preset — recompile ; retire sa valeur des calques. */
+  removeSimParam(presetId: string, name: string): void {
+    const preset = this._simulations.find((p) => p.id === presetId);
+    if (!preset) return;
+    this.updateSimPreset(presetId, { params: preset.params.filter((p) => p.name !== name) });
+  }
+
+  /** Résout le preset référencé par un calque (retombe sur le donut par défaut si l'id est inconnu). */
+  private _resolveSim(layer: ParticlesLayer): ResolvedSim {
+    const preset = this._simulations.find((p) => p.id === layer.simId) ?? this._simulations[0];
+    return { code: preset.code, params: preset.params };
+  }
+
+  /** Aligne les `simValues` de tous les calques (toutes comps) référençant ce preset sur ses params :
+   *  conserve les valeurs existantes, sème le défaut des nouveaux, purge les params retirés. */
+  private _reconcileSimValues(preset: SimPreset): void {
+    for (const comp of Object.values(this._compositions)) {
+      for (const layer of this._collect((l): l is ParticlesLayer => l.type === "particles" && l.simId === preset.id, comp.root)) {
+        const values: Record<string, number> = {};
+        for (const p of preset.params) values[p.name] = layer.simValues[p.name] ?? p.value;
+        layer.simValues = values;
+      }
+    }
   }
 
   /** Ajoute une piste audio (asset déjà décodé). `sourceFrames` = longueur de la source →
@@ -1152,6 +1294,8 @@ export class Editor {
     } else if (group === "param" && layer.type === "shader") {
       layer.params[key] = value;
       this._shaderLive.get(id)?.setParam(key, value);
+    } else if (group === "simParam" && layer.type === "particles") {
+      layer.simValues = { ...layer.simValues, [key]: value }; // appliqué à l'uniform au prochain setConfig (chaque frame)
     } else if (group === "color") {
       const c = key as keyof RGB;
       if (layer.type === "shader") {
@@ -1187,6 +1331,7 @@ export class Editor {
       return layer.transform[group][key as keyof Vec3];
     }
     if (group === "param" && layer.type === "shader") return layer.params[key];
+    if (group === "simParam" && layer.type === "particles") return layer.simValues[key];
     if (group === "color") {
       const c = key as keyof RGB;
       if (layer.type === "shader") return layer.color[c];
@@ -1403,6 +1548,25 @@ export class Editor {
     return null;
   }
 
+  /**
+   * Jumeaux 3D des systèmes de particules de la comp active — à afficher dans l'éditeur 3D (les particules
+   * vivent en espace [-1,1], comme le mur `HALF=1`). Prérendu : les systèmes de sa scène ; sinon : les
+   * calques `particles` visibles de la comp (via leurs `ParticleScene`).
+   */
+  activeParticleViewers(): Object3D[] {
+    const comp = this.activeComp();
+    if (comp.kind === "prerender") {
+      return this._subs.get(comp.id)?.prerender?.particleViewers() ?? [];
+    }
+    const out: Object3D[] = [];
+    for (const layer of this._renderablesIn(comp.root)) {
+      if (layer.type !== "particles" || !layer.visible) continue;
+      const sub = this._subs.get(layer.id);
+      if (sub?.particles) out.push(sub.particles.viewer);
+    }
+    return out;
+  }
+
   /** Calques rendus (shader/shape/video/precomp) d'un arbre, groupes traversés, en ordre de composition. */
   private _renderablesIn(group: GroupLayer, out: Layer[] = []): Layer[] {
     for (const c of group.children) {
@@ -1532,6 +1696,17 @@ export class Editor {
             stack.push(sub.nested);
           }
         }
+      } else if (child.type === "particles") {
+        // système de particules : composite la RT de sa scène GPU (rendue/simulée par `_syncNested`)
+        if (child.visible && this._activeAt(child) && (!anySolo || child.solo)) {
+          const sub = this._subs.get(child.id);
+          if (sub) {
+            sub.nested.enabled = true;
+            sub.nested.opacity = child.opacity;
+            sub.nested.blend = child.blend;
+            stack.push(sub.nested);
+          }
+        }
       }
       // group/image/spot/lyre : non rendus sur le mur (navigables / repère visuel seulement)
     }
@@ -1584,6 +1759,10 @@ export class Editor {
     }
 
     for (const child of this._activeGroup().children) {
+      if (child.type === "particles") {
+        if (child.visible && this._activeAt(child)) this._updateParticleSub(child, ordered);
+        continue;
+      }
       if (child.type !== "precomp" || !child.visible || !this._activeAt(child) || !precompActiveAt(child, this._frame)) continue;
       const comp = this._compositions[child.compId];
       if (!comp) continue;
@@ -1636,6 +1815,10 @@ export class Editor {
           if (cs) { cs.nested.enabled = true; cs.nested.opacity = layer.opacity; cs.nested.blend = layer.blend; layers.push(cs.nested); }
         }
       }
+      else if (layer.type === "particles") {
+        const ps = this._updateParticleSub(layer, ordered);
+        ps.nested.enabled = true; ps.nested.opacity = layer.opacity; ps.nested.blend = layer.blend; layers.push(ps.nested);
+      }
     }
 
     const sig = this._compSigIn(comp, frame);
@@ -1660,6 +1843,7 @@ export class Editor {
       const prerender = new Prerender3DScene(res?.w ?? engine.fixture.width, res?.h ?? engine.fixture.height);
       const nested = new NestedTextureLayer(`${comp.id}:nested`);
       nested.setTexture(prerender.target.texture);
+      nested.setFlipV(false); // scène 3D : pas d'inversion V du compositor 2D → sinon prérendu à l'envers
       sub = { prerender, nested, sig: "" };
       this._subs.set(comp.id, sub);
     }
@@ -1667,7 +1851,32 @@ export class Editor {
     this._animator.evaluateAt(comp.tracks, frame);
     sub.prerender!.setScene(comp.scene ?? defaultPrerenderScene());
     sub.prerender!.setShapes(this._shapeInputsIn(comp.root, frame));
+    // particules émises DANS la scène 3D du prérendu (vues par sa caméra, avec les meshes)
+    const particleLayers = this._renderablesIn(comp.root).filter(
+      (l): l is ParticlesLayer => l.type === "particles" && l.visible && this._activeAtIn(comp.root, l, frame),
+    );
+    sub.prerender!.setParticles(particleLayers, (l) => this._resolveSim(l));
     ordered.push(sub.prerender!);
+    return sub;
+  }
+
+  /**
+   * Met à jour (ou crée) la scène de particules d'un calque `particles` : applique sa config (reconstruit
+   * la sim au changement de nombre, sinon uniforms) et pousse sa scène dans `ordered` (simulée + rendue
+   * par `Engine.update`). Sub keyé par id de calque (pas de composition dédiée : effet feuille).
+   */
+  private _updateParticleSub(layer: ParticlesLayer, ordered: NestedSource[]): SubRenderer {
+    const engine = this._engine!;
+    let sub = this._subs.get(layer.id);
+    if (!sub || !sub.particles) {
+      const particles = new ParticleScene(engine.fixture.width, engine.fixture.height);
+      const nested = new NestedTextureLayer(`${layer.id}:nested`);
+      nested.setTexture(particles.target.texture);
+      sub = { particles, nested, sig: "" };
+      this._subs.set(layer.id, sub);
+    }
+    sub.particles!.setConfig(layer, this._resolveSim(layer));
+    ordered.push(sub.particles!);
     return sub;
   }
 

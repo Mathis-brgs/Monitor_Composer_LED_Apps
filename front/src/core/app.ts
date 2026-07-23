@@ -61,6 +61,7 @@ export class App {
     editor.setClock(clock);
     editor.attach(engine);
     editor.loadCompositions(project.compositions, project.mainCompId);
+    editor.loadSimPresets(project.simulations);
 
     const app = new App({
       renderer,
@@ -102,6 +103,7 @@ export class App {
       p.compositions = loaded.compositions;
       p.mainCompId = loaded.mainCompId;
       p.objects = loaded.objects;
+      p.simulations = loaded.simulations;
 
       // Extraire le nom du fichier du chemin pour le nom du projet
       const fileName = res.filePath.split(/[\\/]/).pop() || "new project";
@@ -113,6 +115,7 @@ export class App {
 
       // Charger toutes les compositions ; l'éditeur entre dans la comp principale (durée d'horloge incluse)
       this.context.editor.loadCompositions(p.compositions, p.mainCompId);
+      this.context.editor.loadSimPresets(p.simulations);
 
       // Mettre à jour la fréquence d'envoi eHuB
       this.updateFrequency(p.config.frequency ?? 24);
@@ -136,6 +139,8 @@ export class App {
       // Compositions éditées en place (partagées avec l'éditeur) ; on synchronise juste la
       // durée vivante de la comp active depuis l'horloge avant de sérialiser.
       this.context.editor.activeComp().durationFrames = this.context.clock.durationFrames;
+      // Bibliothèque de simulations : stable côté éditeur (hors project.compositions) → l'injecter avant de sérialiser.
+      this.context.project.simulations = [...this.context.editor.listSimPresets()];
       const json = serializeProject(this.context.project);
       await window.led?.saveProject(json, this.context.project.config.name);
       console.log("Projet sauvegardé avec succès");

@@ -3,7 +3,7 @@ import {
   DEFAULT_DURATION_FRAMES, hasTracks, isComposition, makeComposition, type Composition,
 } from "./Composition.ts";
 import type { SceneObject } from "./SceneObject.ts";
-import { makeGroup, makeShape, makeShaderLayer, type Document, type GroupLayer } from "./Layer.ts";
+import { makeGroup, makeShape, makeShaderLayer, type Document, type GroupLayer, type SimPreset } from "./Layer.ts";
 
 /** Document projet = config + compositions (dont la principale) + objets. Chargeable/sauvable en JSON. */
 export interface Project {
@@ -12,6 +12,9 @@ export interface Project {
   compositions: Record<string, Composition>;
   mainCompId: string;
   objects: SceneObject[];
+  /** Bibliothèque de simulations de particules (presets partagés, façon `Editor._simulations`).
+   *  Optionnel : absent sur les projets antérieurs à cette fonctionnalité (l'éditeur sème alors le donut). */
+  simulations?: SimPreset[];
 }
 
 const MAIN_ID = "main";
@@ -69,6 +72,7 @@ export function deserializeProject(json: string): Project {
 
   const config = readConfig((parsed as { config?: Partial<ProjectConfig> }).config);
   const objects = (parsed as { objects?: SceneObject[] }).objects ?? [];
+  const simulations = readSimulations((parsed as { simulations?: unknown }).simulations);
 
   // — Nouveau format : { compositions, mainCompId } —
   const rawComps = (parsed as { compositions?: Record<string, unknown> }).compositions;
@@ -82,7 +86,7 @@ export function deserializeProject(json: string): Project {
     if (!compositions[mainCompId]) {
       compositions[mainCompId] = makeComposition(mainCompId, "Composition principale", "main");
     }
-    return { config, compositions, mainCompId, objects };
+    return { config, compositions, mainCompId, objects, simulations };
   }
 
   // — Ancien format : { composition: { tracks }, document?: { root, ... } } → une comp principale —
@@ -93,7 +97,20 @@ export function deserializeProject(json: string): Project {
   const main = makeComposition(MAIN_ID, "Composition principale", "main", {
     root, tracks, durationFrames: DEFAULT_DURATION_FRAMES,
   });
-  return { config, compositions: { [MAIN_ID]: main }, mainCompId: MAIN_ID, objects };
+  return { config, compositions: { [MAIN_ID]: main }, mainCompId: MAIN_ID, objects, simulations };
+}
+
+/** Lit la bibliothèque de simulations (validation légère : présence de id/code/params). undefined si absente. */
+function readSimulations(raw: unknown): SimPreset[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: SimPreset[] = [];
+  for (const p of raw) {
+    if (p && typeof p === "object" && typeof (p as SimPreset).id === "string" && typeof (p as SimPreset).code === "string") {
+      const params = Array.isArray((p as SimPreset).params) ? (p as SimPreset).params : [];
+      out.push({ id: (p as SimPreset).id, name: (p as SimPreset).name ?? (p as SimPreset).id, code: (p as SimPreset).code, params });
+    }
+  }
+  return out;
 }
 
 function readConfig(c: Partial<ProjectConfig> | undefined): ProjectConfig {

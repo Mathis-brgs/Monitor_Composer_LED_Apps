@@ -13,6 +13,10 @@ export interface NestedSource {
   readonly scene: Scene;
   readonly camera: Camera;
   readonly target: RenderTarget;
+  /** Étape optionnelle avant le rendu (ex : dispatch d'un compute shader de particules). */
+  prepare?(renderer: WebGPURenderer): void;
+  /** Rendu custom optionnel dans `target` (ex : scène 3D + surimpression particules). Sinon rendu par défaut. */
+  render?(renderer: WebGPURenderer): void;
 }
 import { CompositePass } from "./passes.ts";
 import { EhubOutput } from "./EhubOutput.ts";
@@ -56,8 +60,13 @@ export class Engine {
   /** chaque frame : rend d'abord les comps imbriquées dans leurs RT, puis compose la comp active. */
   update(time: number): void {
     for (const sub of this._nested) {
-      this._renderer.setRenderTarget(sub.target);
-      this._renderer.render(sub.scene, sub.camera);
+      sub.prepare?.(this._renderer);
+      if (sub.render) {
+        sub.render(this._renderer);
+      } else {
+        this._renderer.setRenderTarget(sub.target);
+        this._renderer.render(sub.scene, sub.camera);
+      }
     }
     this._renderer.setRenderTarget(null);
     this.stack.setTime(time);

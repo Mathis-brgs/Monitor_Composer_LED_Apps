@@ -10,15 +10,22 @@ import { Layer, LAYER_ID, type LayerContext, type TSLNode } from "./Layer.ts";
 export class NestedTextureLayer extends Layer {
   readonly kind = LAYER_ID.NESTED;
   private _tex: Texture | null = null;
+  private _flipV = true;
 
   /** Associe la texture de sortie de la comp enfant (idempotent). */
   setTexture(tex: Texture): void {
     this._tex = tex;
   }
 
+  /** Flip vertical de l'échantillonnage. Vrai pour une précomp 2D (LayerStack) ; FAUX pour un prérendu
+   *  (la scène 3D rendue en RT n'a pas l'inversion V du compositor 2D → la flipper la mettrait à l'envers). */
+  setFlipV(v: boolean): void {
+    this._flipV = v;
+  }
+
   build(_ctx: LayerContext): TSLNode {
     if (!this._tex) return vec4(0, 0, 0, 0) as unknown as TSLNode; // transparent tant qu'aucune RT
-    // Flip vertical : une RT échantillonnée puis re-rendue dans le parent inverse l'axe V (origine WebGPU).
-    return texture(this._tex, vec2(uv().x, uv().y.oneMinus())) as unknown as TSLNode;
+    const coord = this._flipV ? vec2(uv().x, uv().y.oneMinus()) : uv();
+    return texture(this._tex, coord) as unknown as TSLNode;
   }
 }

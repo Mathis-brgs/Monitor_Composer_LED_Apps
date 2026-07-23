@@ -12,6 +12,7 @@ const ITEMS: readonly AddItem[] = [
   { glyph: "◍", label: "Tore", run: (e) => e.addShape("torus") },
   { glyph: "✦", label: "Projecteur", run: (e) => e.addSpot() },
   { glyph: "❋", label: "Lyre", run: (e) => e.addLyre() },
+  { glyph: "✺", label: "Particules", run: (e) => e.addParticles() },
   { glyph: "⧉", label: "Précomp vide", run: (e) => e.addPrecomp() },
   { glyph: "◎", label: "Prérendu vide", run: (e) => e.addPrerender() },
 ];
