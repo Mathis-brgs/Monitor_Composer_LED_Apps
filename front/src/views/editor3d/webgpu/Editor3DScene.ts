@@ -1,10 +1,12 @@
 import {
   BoxGeometry,
   BufferAttribute,
+  CameraHelper,
   Color,
   ConeGeometry,
   CylinderGeometry,
   BufferGeometry,
+  Float32BufferAttribute,
   Group,
   InstancedMesh,
   Line,
@@ -15,6 +17,7 @@ import {
   MeshBasicNodeMaterial,
   MOUSE,
   Object3D,
+  OrthographicCamera,
   PerspectiveCamera,
   Plane,
   PlaneGeometry,
@@ -40,6 +43,7 @@ const HALF = 1;
 const PITCH = (2 * HALF) / (N - 1);      // espacement entre LEDs
 const LED_RADIUS = (PITCH * LED_FILL) / 2; // rayon physique d'une LED
 const ACCENT = new Color(0xff8a3d);
+const NEUTRAL = new Color(0x6b6560); // wireframe d'un objet NON sélectionné (neutre, plus d'orange)
 const HELPER_DIM = 0.28;  // opacité des helpers non sélectionnés (discrets)
 const HELPER_LIT = 0.9;   // opacité du helper sélectionné
 const FIXTURE_MARKER_RADIUS = 0.06; // repère visuel spot/lyre (position seule, pas de calcul sur le mur)
@@ -94,6 +98,12 @@ export class Editor3DScene {
   private readonly _hit = new Vector3();
   private readonly _pickMat: MeshBasicNodeMaterial;
   private readonly _leds: InstancedMesh;
+  private _wallFrame!: LineSegments;              // cadre du mur (masqué en prérendu)
+  private _originRef!: Group;                      // repère d'origine (grille + axes), visible en prérendu
+  private readonly _particleViewers = new Group(); // jumeaux 3D des systèmes de particules de la comp active
+  private _prerenderCam: PerspectiveCamera | OrthographicCamera | null = null;
+  private _camHelper: CameraHelper | null = null; // frustum de la caméra du prérendu actif
+  private _camHelperKind = "";
   private readonly _raycaster = new Raycaster();
   private readonly _ndc = new Vector2();
   private readonly _unsub: () => void;
@@ -142,11 +152,19 @@ export class Editor3DScene {
     base.dispose();
     this._scene.add(this._leds);
 
-    const frame = new LineSegments(
+    this._wallFrame = new LineSegments(
       new WireframeGeometry(new PlaneGeometry(2 * HALF, 2 * HALF)),
       lineMaterial(0x4a3f37),
     );
-    this._scene.add(frame);
+    this._scene.add(this._wallFrame);
+
+    // Repère d'origine (masqué par défaut) : rendu quand on édite un prérendu, où le mur+cadre
+    // disparaissent — sinon les objets flottent dans le noir sans centre ni orientation.
+    this._originRef = buildOriginRef();
+    this._originRef.visible = false;
+    this._scene.add(this._originRef);
+    this._scene.add(this._particleViewers);
+
     this._scene.add(this._objects);
 
     // Cibles de raycast : maillages pleins invisibles (une par shape), jamais rendus.
@@ -174,16 +192,15 @@ export class Editor3DScene {
     this._gizmo.addEventListener("objectChange", () => this._commitGizmo());
     this._scene.add(this._gizmo.getHelper());
 
-    // g/r/s = outil déplacer/tourner/échelle ; Échap = curseur. Ignore si on tape dans un champ.
+    // g/r/s = outil déplacer/tourner/échelle ; z = mode d'affichage ; Échap = curseur.
+    // (Suppr est global — voir AppShell.) Ignore si on tape dans un champ.
     this._onKey = (e: KeyboardEvent): void => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.key === "g") this._editor.setTool("translate");
       else if (e.key === "r") this._editor.setTool("rotate");
       else if (e.key === "s") this._editor.setTool("scale");
+      else if (e.key === "z") this._editor.cycleViewportMode();
       else if (e.key === "Escape") this._editor.setTool("select");
-      else if (e.key === "Delete" || e.key === "Del") {
-        this._editor.deleteSelected();
-      }
     };
     window.addEventListener("keydown", this._onKey);
 
@@ -294,8 +311,21 @@ export class Editor3DScene {
       this._camera.updateProjectionMatrix();
     }
     this._controls.update();
+    this._syncParticleViewers();
     this._renderer.setRenderTarget(null);
     this._renderer.render(this._scene, this._camera);
+  }
+
+  /** Réconcilie les jumeaux 3D des particules de la comp active dans la scène de l'éditeur (mêmes buffers compute). */
+  private _syncParticleViewers(): void {
+    const wanted = this._editor.activeParticleViewers();
+    const set = new Set(wanted);
+    for (const child of [...this._particleViewers.children]) {
+      if (!set.has(child)) this._particleViewers.remove(child);
+    }
+    for (const v of wanted) {
+      if (v.parent !== this._particleViewers) this._particleViewers.add(v);
+    }
   }
 
   /** Caméra active (le HUD lit son orientation / fov). */
@@ -344,6 +374,10 @@ export class Editor3DScene {
     this._controls.dispose();
     this._leds.geometry.dispose();
     (this._leds.material as MeshBasicNodeMaterial).dispose();
+    this._originRef.traverse((o) => {
+      if (o instanceof LineSegments) { o.geometry.dispose(); (o.material as LineBasicNodeMaterial).dispose(); }
+    });
+    if (this._camHelper) { this._scene.remove(this._camHelper); this._camHelper.dispose(); }
   }
 
   // ————————————————————————————————— Interne —————————————————————————————————
@@ -362,37 +396,54 @@ export class Editor3DScene {
 
   private _rebuild(): void {
     const selectedId = this._editor.selectedId;
+    const mode = this._editor.viewportMode;
     this._clearGroup(this._objects);
     this._clearGroup(this._picks);
+    this._syncPrerenderView();
 
     for (const l of this._editor.children) {
       if (l.type !== "shape") continue;
       const s = l as ShapeLayer;
       if (!s.visible) continue;
 
-      // cible de raycast : volume plein invisible (même si le helper est masqué)
+      // cible de raycast : volume plein invisible (sélection possible dans tous les modes)
       const pickGeo = unitGeometry(s.shape);
       const pick = new Mesh(pickGeo, this._pickMat);
-      applyTransform(pick, this._editor.worldTransform(s.id));
+      const transform = this._editor.worldTransform(s.id);
+      applyTransform(pick, transform);
       pick.userData.id = s.id;
       this._picks.add(pick);
 
-      if (!s.showHelper) continue; // helper caché → pas de wireframe (mais toujours sélectionnable)
+      if (mode === "none" || !s.showHelper) continue; // aucun helper (mais toujours sélectionnable)
 
       const selected = s.id === selectedId;
-      const unit = unitGeometry(s.shape);
-      const wf = new WireframeGeometry(unit);
       const preview = fillPreviewColor(s.fill);
-      const color = selected ? ACCENT : new Color(preview.r, preview.g, preview.b);
-      const mesh = new LineSegments(wf, helperMaterial(color, selected ? HELPER_LIT : HELPER_DIM));
-      applyTransform(mesh, this._editor.worldTransform(s.id));
-      this._objects.add(mesh);
-      unit.dispose();
+
+      if (mode === "solid") {
+        // solide couleur de fill ; wireframe accent seulement sur l'objet sélectionné
+        const solid = new Mesh(unitGeometry(s.shape), solidMaterial(new Color(preview.r, preview.g, preview.b)));
+        applyTransform(solid, transform);
+        this._objects.add(solid);
+        if (selected) {
+          const unit = unitGeometry(s.shape);
+          const outline = new LineSegments(new WireframeGeometry(unit), helperMaterial(ACCENT, HELPER_LIT));
+          applyTransform(outline, transform);
+          this._objects.add(outline);
+          unit.dispose();
+        }
+      } else {
+        // wireframe : non sélectionné en neutre (plus d'orange), sélectionné en accent
+        const unit = unitGeometry(s.shape);
+        const mesh = new LineSegments(new WireframeGeometry(unit), helperMaterial(selected ? ACCENT : NEUTRAL, selected ? HELPER_LIT : HELPER_DIM));
+        applyTransform(mesh, transform);
+        this._objects.add(mesh);
+        unit.dispose();
+      }
     }
 
     for (const l of this._editor.children) {
       if (l.type !== "spot" && l.type !== "lyre") continue;
-      if (!l.visible) continue;
+      if (!l.visible || mode === "none") continue;
       const p = l.transform.position;
 
       // cible de raycast (même volume simple pour les deux, pas de forme physique à représenter)
@@ -410,6 +461,45 @@ export class Editor3DScene {
     }
     this._buildPath(selectedId);
     this._syncGizmo();
+  }
+
+  /**
+   * Comp active = prérendu : c'est une scène 3D filmée par une caméra, pas le mur LED. On masque
+   * donc la grille de LEDs + son cadre et on montre le frustum de la caméra du prérendu (repère de
+   * cadrage). Les objets restent affichés (wireframe/solide) pour les positionner. Sinon : mur visible.
+   */
+  private _syncPrerenderView(): void {
+    const comp = this._editor.activeComp();
+    const cam = comp.kind === "prerender" ? comp.scene?.camera : undefined;
+    this._leds.visible = !cam;
+    this._wallFrame.visible = !cam;
+    this._originRef.visible = !!cam;
+    if (!cam) {
+      if (this._camHelper) this._camHelper.visible = false;
+      return;
+    }
+
+    if (this._camHelperKind !== cam.kind || !this._prerenderCam) {
+      if (this._camHelper) { this._scene.remove(this._camHelper); this._camHelper.dispose(); }
+      this._prerenderCam = cam.kind === "orthographic"
+        ? new OrthographicCamera(-1, 1, 1, -1, cam.near, cam.far)
+        : new PerspectiveCamera(cam.fov ?? 50, 1, cam.near, cam.far);
+      this._camHelper = new CameraHelper(this._prerenderCam);
+      this._scene.add(this._camHelper);
+      this._camHelperKind = cam.kind;
+    }
+
+    const c = this._prerenderCam;
+    if (c instanceof PerspectiveCamera) { c.fov = cam.fov ?? 50; c.aspect = 1; }
+    c.near = cam.near;
+    c.far = cam.far;
+    c.position.set(cam.position.x, cam.position.y, cam.position.z);
+    c.up.set(0, 1, 0);
+    c.lookAt(cam.target.x, cam.target.y, cam.target.z);
+    c.updateProjectionMatrix();
+    c.updateMatrixWorld(true);
+    this._camHelper!.visible = true;
+    this._camHelper!.update();
   }
 
   /** Motion path du calque sélectionné : polyline reliant ses positions keyframées + une poignée par clé. */
@@ -624,11 +714,47 @@ function lineMaterial(hex: number): LineBasicNodeMaterial {
   return m;
 }
 
+function linesFrom(points: number[], mat: LineBasicNodeMaterial): LineSegments {
+  const geo = new BufferGeometry();
+  geo.setAttribute("position", new Float32BufferAttribute(new Float32Array(points), 3));
+  return new LineSegments(geo, mat);
+}
+
+/**
+ * Repère d'origine pour l'édition d'un prérendu (mur masqué) : grille sol XZ discrète + axes X/Y/Z
+ * colorés partant de l'origine → on situe le centre et l'orientation de la scène.
+ */
+function buildOriginRef(): Group {
+  const g = new Group();
+  const HALF_GRID = 2;
+  const STEP = 0.5;
+  const grid: number[] = [];
+  for (let i = -HALF_GRID; i <= HALF_GRID + 1e-6; i += STEP) {
+    grid.push(i, 0, -HALF_GRID, i, 0, HALF_GRID); // ligne // Z
+    grid.push(-HALF_GRID, 0, i, HALF_GRID, 0, i); // ligne // X
+  }
+  g.add(linesFrom(grid, helperMaterial(new Color(0x3a322c), 0.5)));
+  const A = 0.6; // longueur des axes
+  g.add(linesFrom([0, 0, 0, A, 0, 0], lineMaterial(0xd8624a))); // X (rouge)
+  g.add(linesFrom([0, 0, 0, 0, A, 0], lineMaterial(0x8fce6a))); // Y (vert)
+  g.add(linesFrom([0, 0, 0, 0, 0, A], lineMaterial(0x5a86c8))); // Z (bleu)
+  return g;
+}
+
 function helperMaterial(color: Color, opacity: number): LineBasicNodeMaterial {
   const m = new LineBasicNodeMaterial();
   m.color = color;
   m.transparent = true;
   m.opacity = opacity;
+  return m;
+}
+
+/** Matériau plein (mode « solide ») : couleur de fill, légèrement translucide pour laisser deviner le mur. */
+function solidMaterial(color: Color): MeshBasicNodeMaterial {
+  const m = new MeshBasicNodeMaterial();
+  m.color = color;
+  m.transparent = true;
+  m.opacity = 0.9;
   return m;
 }
 

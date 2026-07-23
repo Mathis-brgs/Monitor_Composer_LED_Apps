@@ -1,5 +1,5 @@
 import {
-  EMPTY_COMPOSITION, sampleKeyframes, upsertKeyframe, moveKeyframe, removeKeyframe,
+  makeComposition, sampleKeyframes, upsertKeyframe, moveKeyframe, removeKeyframe,
   type Composition, type Interp, type Track,
 } from "../domain/Composition.ts";
 
@@ -11,7 +11,8 @@ export type ApplyChannel = (layerId: string, channel: string, value: number) => 
  * Agnostique du moteur et du modèle : passe par le callback `apply` injecté.
  */
 export class Animator {
-  private _comp: Composition = { tracks: [...EMPTY_COMPOSITION.tracks] };
+  // comp active dont on anime les tracks ; remplacée par `load()` au démarrage/chargement projet.
+  private _comp: Composition = makeComposition("__animator__", "", "main");
   private readonly _apply: ApplyChannel;
 
   constructor(apply: ApplyChannel) {
@@ -32,7 +33,12 @@ export class Animator {
 
   /** Chaque frame : échantillonne chaque track et applique (aucune émission). */
   evaluate(frame: number): void {
-    for (const t of this._comp.tracks) {
+    this.evaluateAt(this._comp.tracks, frame);
+  }
+
+  /** Applique un jeu de tracks à un frame donné (sans toucher la comp active — pour les comps imbriquées). */
+  evaluateAt(tracks: readonly Track[], frame: number): void {
+    for (const t of tracks) {
       if (t.keyframes.length > 0) this._apply(t.layerId, t.channel, sampleKeyframes(t.keyframes, frame));
     }
   }

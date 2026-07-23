@@ -1,6 +1,6 @@
 import { createMemo, createSignal, For, Show, type Accessor, type JSX } from "solid-js";
 import type { Editor } from "@core/Editor.ts";
-import type { Fill, GroupLayer, Layer, LyreLayer, MaterialMode, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
+import type { Fill, Layer, LyreLayer, MaterialMode, ParticlesLayer, PrecompLayer, RGB, ShaderLayer, ShapeLayer, SpotLayer, Vec3 } from "@domain/Layer.ts";
 import { fromStore } from "@ui/solid/store.ts";
 import { solidPanel } from "@ui/solid/mount.ts";
 import { Checkbox, ColorField, MediaField, NumberField, Row, Section, Segmented, Slider, TextField } from "@ui/solid/controls.tsx";
@@ -44,28 +44,6 @@ function Vec3Field(props: {
   );
 }
 
-/** Sélecteur de parent (transform hérité) : « Aucun » + les autres calques du groupe actif. */
-function ParentField(props: { editor: Editor; node: Layer; changed: Accessor<unknown> }): JSX.Element {
-  const { editor, node, changed } = props;
-  const options = createMemo(() => { changed(); return editor.children.filter((l) => l.id !== node.id); });
-  const current = createMemo(() => { changed(); return node.parentId ?? ""; });
-  return (
-    <select
-      class="insp-field insp-field--editable insp-control insp-select"
-      value={current()}
-      onChange={(e) => {
-        editor.setParent(node.id, e.currentTarget.value || null);
-        e.currentTarget.value = node.parentId ?? ""; // resync si refusé (cycle)
-      }}
-    >
-      <option value="">Aucun</option>
-      <For each={options()}>
-        {(l) => <option value={l.id}>{l.name}</option>}
-      </For>
-    </select>
-  );
-}
-
 /** Association « groupé sous un média » : le calque n'est actif que dans la fenêtre du média parent. */
 function MediaGroupField(props: { editor: Editor; node: Layer; changed: Accessor<unknown> }): JSX.Element {
   const { editor, node, changed } = props;
@@ -102,12 +80,12 @@ function Inspector(props: { editor: Editor }): JSX.Element {
 function NodeBody(props: { editor: Editor; node: Layer | null; changed: Accessor<unknown> }): JSX.Element {
   const { editor, node, changed } = props;
   if (!node) return <div class="insp-empty">Aucune sélection</div>;
+  const name = createMemo(() => { changed(); return node.name; });
   return (
     <>
-      <ObjectHeader node={node} />
+      <ObjectHeader node={node} changed={changed} />
       <Section title="Général">
-        <Row label="Nom"><TextField value={node.name} onInput={(v) => editor.setName(node.id, v)} /></Row>
-        <Row label="Parent"><ParentField editor={editor} node={node} changed={changed} /></Row>
+        <Row label="Nom"><TextField value={name()} onInput={(v) => editor.setName(node.id, v)} /></Row>
         <Show when={node.type !== "audio" && node.type !== "video"}>
           <Row label="Groupe média"><MediaGroupField editor={editor} node={node} changed={changed} /></Row>
         </Show>
@@ -116,10 +94,7 @@ function NodeBody(props: { editor: Editor; node: Layer | null; changed: Accessor
         <ShapeBody editor={editor} node={node as ShapeLayer} changed={changed} />
       </Show>
       <Show when={node.type === "shader"}>
-        <ShaderBody editor={editor} node={node as ShaderLayer} />
-      </Show>
-      <Show when={node.type === "group"}>
-        <GroupBody editor={editor} node={node as GroupLayer} />
+        <ShaderBody editor={editor} node={node as ShaderLayer} changed={changed} />
       </Show>
       <Show when={node.type === "spot"}>
         <SpotBody editor={editor} node={node as SpotLayer} changed={changed} />
@@ -127,7 +102,96 @@ function NodeBody(props: { editor: Editor; node: Layer | null; changed: Accessor
       <Show when={node.type === "lyre"}>
         <LyreBody editor={editor} node={node as LyreLayer} changed={changed} />
       </Show>
+      <Show when={node.type === "precomp"}>
+        <PrecompBody editor={editor} node={node as PrecompLayer} changed={changed} />
+      </Show>
+      <Show when={node.type === "particles"}>
+        <ParticlesBody editor={editor} node={node as ParticlesLayer} changed={changed} />
+      </Show>
     </>
+  );
+}
+
+/**
+ * Instance de précomp / prérendu : mapping temporel (décalage + vitesse vers sa timeline interne),
+ * fusion/opacité. Si la comp référencée est un prérendu, on greffe les réglages caméra (édite la
+ * scène de la COMPOSITION, pas l'instance — d'où `compId`).
+ */
+function PrecompBody(props: { editor: Editor; node: PrecompLayer; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
+  const id = node.id;
+  const comp = createMemo(() => { changed(); return editor.getCompositions()[node.compId]; });
+  const isPrerender = createMemo(() => comp()?.kind === "prerender");
+  const timeOffset = createMemo(() => { changed(); return node.timeOffset; });
+  const speed = createMemo(() => { changed(); return node.speed; });
+  const opacity = createMemo(() => { changed(); return node.opacity; });
+  const blend = createMemo(() => { changed(); return node.blend; });
+  return (
+    <>
+      <Section title={isPrerender() ? "Prérendu" : "Précomposition"}>
+        <Row label="Durée comp"><div class="insp-field insp-control">{`${comp()?.durationFrames ?? 0} f`}</div></Row>
+        <Row label="Décalage">
+          <NumberField value={timeOffset()} step={1} format={(v) => `${Math.round(v)} f`} onInput={(v) => editor.setPrecompTiming(id, { timeOffset: v })} />
+        </Row>
+        <Row label="Vitesse">
+          <NumberField value={speed()} step={0.05} format={(v) => `${v.toFixed(2)}×`} onInput={(v) => editor.setPrecompTiming(id, { speed: v })} />
+        </Row>
+        <Row label="Fusion">
+          <Segmented options={["Normal", "Additif"]} active={blend() === "add" ? 1 : 0} onChange={(i) => editor.setBlend(id, i === 1 ? "add" : "normal")} />
+        </Row>
+        <Row label="Opacité">
+          <Slider value={opacity()} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
+          <KeyDot editor={editor} id={id} channels={["opacity"]} />
+        </Row>
+      </Section>
+      <Show when={isPrerender()}>
+        <PrerenderCamera editor={editor} compId={node.compId} changed={changed} />
+      </Show>
+    </>
+  );
+}
+
+/** Réglages caméra + fond d'un prérendu (scène 3D → RT). `compId` : édite la composition référencée. */
+function PrerenderCamera(props: { editor: Editor; compId: string; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, compId, changed } = props;
+  const set = (patch: Parameters<Editor["setPrerenderCamera"]>[1]) => editor.setPrerenderCamera(compId, patch);
+  const cam = createMemo(() => { changed(); return editor.getCompositions()[compId]?.scene?.camera; });
+  const background = createMemo(() => { changed(); return editor.getCompositions()[compId]?.scene?.background; });
+  return (
+    <Show when={cam()}>
+      {/* cam() présent sous ce Show (garanti par le prérendu) : accès via `cam()!`. */}
+      <Section title="Caméra">
+        <Row label="Type">
+          <Segmented
+            options={["Perspective", "Ortho"]}
+            active={cam()!.kind === "orthographic" ? 1 : 0}
+            onChange={(i) => set({ kind: i === 1 ? "orthographic" : "perspective" })}
+          />
+        </Row>
+        <Show when={cam()!.kind === "perspective"}>
+          <Row label="Champ (FOV)">
+            <NumberField value={cam()!.fov ?? 50} step={1} format={(v) => `${Math.round(v)}°`} onInput={(v) => set({ fov: v })} />
+          </Row>
+        </Show>
+        <Row label="Position">
+          <Vec3Field value={cam()!.position} step={0.1} onInput={(a, v) => set({ position: axisPatch(a, v) })} />
+        </Row>
+        <Row label="Cible">
+          <Vec3Field value={cam()!.target} step={0.1} onInput={(a, v) => set({ target: axisPatch(a, v) })} />
+        </Row>
+        <Row label="Near / Far">
+          <div class="insp-fields insp-control">
+            <NumberField value={cam()!.near} step={0.1} format={(v) => v.toFixed(2)} onInput={(v) => set({ near: v })} />
+            <NumberField value={cam()!.far} step={1} format={(v) => v.toFixed(0)} onInput={(v) => set({ far: v })} />
+          </div>
+        </Row>
+      </Section>
+      <Show when={background()}>
+        <Section title="Rendu">
+          <Row label="Fond"><ColorField value={background()!} onInput={(rgb) => editor.setPrerenderBackground(compId, rgb)} /></Row>
+        </Section>
+      </Show>
+    </Show>
   );
 }
 
@@ -290,6 +354,8 @@ function ShapeBody(props: { editor: Editor; node: ShapeLayer; changed: Accessor<
   const position = createMemo(() => { changed(); return node.transform.position; });
   const rotation = createMemo(() => { changed(); return node.transform.rotation; });
   const scale = createMemo(() => { changed(); return node.transform.scale; });
+  const opacity = createMemo(() => { changed(); return node.opacity; });
+  const showHelper = createMemo(() => { changed(); return node.showHelper; });
   return (
     <>
       <Section title="Transform">
@@ -314,72 +380,180 @@ function ShapeBody(props: { editor: Editor; node: ShapeLayer; changed: Accessor<
       <Section title="Apparence">
         <FillFields editor={editor} id={id} fill={node.fill} />
         <Row label="Opacité">
-          <Slider value={node.opacity} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
+          <Slider value={opacity()} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
           <KeyDot editor={editor} id={id} channels={["opacity"]} />
         </Row>
-        <Row label="Helper"><Checkbox checked={node.showHelper} onChange={(v) => editor.setShowHelper(id, v)} /></Row>
+        <Row label="Helper"><Checkbox checked={showHelper()} onChange={(v) => editor.setShowHelper(id, v)} /></Row>
       </Section>
     </>
   );
 }
 
-function ShaderBody(props: { editor: Editor; node: ShaderLayer }): JSX.Element {
-  const { editor, node } = props;
+function ShaderBody(props: { editor: Editor; node: ShaderLayer; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
   const id = node.id;
+  const param = (k: "speed" | "detail" | "contrast") => createMemo(() => { changed(); return node.params[k] ?? 0; });
+  const speed = param("speed"), detail = param("detail"), contrast = param("contrast");
+  const color = createMemo(() => { changed(); return node.color; });
+  const blend = createMemo(() => { changed(); return node.blend; });
+  const opacity = createMemo(() => { changed(); return node.opacity; });
   return (
     <Section title={node.name}>
       <Show when={node.shader === "plasma"}>
         <Row label="Vitesse">
-          <Slider value={node.params.speed ?? 0} onInput={(v) => editor.setParam(id, "speed", v)} />
+          <Slider value={speed()} onInput={(v) => editor.setParam(id, "speed", v)} />
           <KeyDot editor={editor} id={id} channels={["param.speed"]} />
         </Row>
         <Row label="Détail">
-          <Slider value={node.params.detail ?? 0} onInput={(v) => editor.setParam(id, "detail", v)} />
+          <Slider value={detail()} onInput={(v) => editor.setParam(id, "detail", v)} />
           <KeyDot editor={editor} id={id} channels={["param.detail"]} />
         </Row>
         <Row label="Contraste">
-          <Slider value={node.params.contrast ?? 0} onInput={(v) => editor.setParam(id, "contrast", v)} />
+          <Slider value={contrast()} onInput={(v) => editor.setParam(id, "contrast", v)} />
           <KeyDot editor={editor} id={id} channels={["param.contrast"]} />
         </Row>
       </Show>
       <Show when={node.shader === "solid"}>
         <Row label="Couleur">
-          <ColorField value={node.color} onInput={(c) => editor.setColor(id, c)} />
+          <ColorField value={color()} onInput={(c) => editor.setColor(id, c)} />
           <KeyDot editor={editor} id={id} channels={["color.r", "color.g", "color.b"]} />
         </Row>
       </Show>
       <Row label="Fusion">
         <Segmented
           options={["Normal", "Additif"]}
-          active={node.blend === "add" ? 1 : 0}
+          active={blend() === "add" ? 1 : 0}
           onChange={(i) => editor.setBlend(id, i === 1 ? "add" : "normal")}
         />
       </Row>
       <Row label="Opacité">
-        <Slider value={node.opacity} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
+        <Slider value={opacity()} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
         <KeyDot editor={editor} id={id} channels={["opacity"]} />
       </Row>
     </Section>
   );
 }
 
-function GroupBody(props: { editor: Editor; node: GroupLayer }): JSX.Element {
-  const { editor, node } = props;
+/** Système de particules GPU : preset de sim réutilisable (bibliothèque) + paramètres keyframables par calque. */
+function ParticlesBody(props: { editor: Editor; node: ParticlesLayer; changed: Accessor<unknown> }): JSX.Element {
+  const { editor, node, changed } = props;
   const id = node.id;
+  const count = createMemo(() => { changed(); return node.count; });
+  const size = createMemo(() => { changed(); return node.size; });
+  const color = createMemo(() => { changed(); return node.color; });
+  const colorEnd = createMemo(() => { changed(); return node.colorEnd; });
+  const blend = createMemo(() => { changed(); return node.blend; });
+  const opacity = createMemo(() => { changed(); return node.opacity; });
+  // Preset de simulation référencé (bibliothèque partagée) : réactif à la fois au relink du calque et
+  // aux édits de preset (nom/code/params émettent depuis l'éditeur).
+  const presets = fromStore(editor, () => { changed(); return editor.listSimPresets(); });
+  const simId = createMemo(() => { changed(); return node.simId; });
+  const preset = createMemo(() => presets().find((p) => p.id === simId()) ?? presets()[0]);
+  const params = createMemo(() => preset()?.params ?? []);
+  const [newName, setNewName] = createSignal("");
+  const importFile = (e: Event): void => {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const name = file.name.replace(/\.[^.]+$/, "");
+      editor.setParticleSimId(id, editor.importSimPreset(name, reader.result as string));
+    };
+    reader.readAsText(file);
+    input.value = ""; // permet de réimporter le même fichier
+  };
   return (
-    <Section title="Groupe">
-      <Row label="Calques"><div class="insp-field insp-control">{`${node.children.length}`}</div></Row>
-      <Row label="Fusion">
-        <Segmented
-          options={["Normal", "Additif"]}
-          active={node.blend === "add" ? 1 : 0}
-          onChange={(i) => editor.setBlend(id, i === 1 ? "add" : "normal")}
-        />
-      </Row>
-      <Row label="Opacité">
-        <Slider value={node.opacity} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
-      </Row>
-    </Section>
+    <>
+      <Section title="Système">
+        <Row label="Nombre">
+          <NumberField value={count()} step={25} format={(v) => v.toFixed(0)} onInput={(v) => editor.setParticleParam(id, "count", v)} />
+        </Row>
+        <Row label="Taille">
+          <NumberField value={size()} step={0.1} onInput={(v) => editor.setParticleParam(id, "size", v)} />
+        </Row>
+      </Section>
+      <Section title="Simulation">
+        <Show when={preset()}>
+          {(sim) => (
+            <>
+              <Row label="Nom">
+                <TextField value={sim().name} onInput={(name) => editor.updateSimPreset(sim().id, { name })} />
+              </Row>
+              <Row label="Preset">
+                <select
+                  class="insp-text insp-control"
+                  value={sim().id}
+                  onChange={(e) => editor.setParticleSimId(id, (e.currentTarget as HTMLSelectElement).value)}
+                >
+                  <For each={presets()}>{(p) => <option value={p.id}>{p.name}</option>}</For>
+                </select>
+              </Row>
+              <Row label="">
+                <button
+                  type="button"
+                  class="btn"
+                  onClick={() => editor.setParticleSimId(id, editor.addSimPreset(`Simulation ${presets().length + 1}`))}
+                >
+                  Nouveau preset
+                </button>
+              </Row>
+              <Row label="Fichier">
+                <input class="insp-control" type="file" accept=".glsl,.txt,.js,.ts" onChange={importFile} />
+              </Row>
+              <Row label="Code (TSL)">
+                <textarea
+                  class="insp-code"
+                  value={sim().code}
+                  spellcheck={false}
+                  onChange={(e) => editor.updateSimPreset(sim().id, { code: (e.currentTarget as HTMLTextAreaElement).value })}
+                />
+              </Row>
+            </>
+          )}
+        </Show>
+      </Section>
+      <Section title="Paramètres">
+        <For each={params()}>
+          {(p) => {
+            const val = createMemo(() => { changed(); return node.simValues[p.name] ?? p.value; });
+            const span = p.max - p.min || 1;
+            return (
+              <Row label={p.name}>
+                <Slider
+                  value={(val() - p.min) / span}
+                  format={() => val().toFixed(2)}
+                  onInput={(t) => editor.setParticleSimParam(id, p.name, p.min + t * span)}
+                />
+                <KeyDot editor={editor} id={id} channels={["simParam." + p.name]} />
+                <button type="button" class="insp-danger insp-control" title="Supprimer le paramètre (du preset)" onClick={() => { const s = preset(); if (s) editor.removeSimParam(s.id, p.name); }}>×</button>
+              </Row>
+            );
+          }}
+        </For>
+        <Row label="+ param">
+          <input
+            class="insp-text insp-control"
+            type="text"
+            placeholder="nom (ex: pulse)"
+            value={newName()}
+            onInput={(e) => setNewName((e.currentTarget as HTMLInputElement).value)}
+            onKeyDown={(e) => { const s = preset(); if (e.key === "Enter" && s && newName().trim()) { editor.addSimParam(s.id, newName().trim()); setNewName(""); } }}
+          />
+        </Row>
+      </Section>
+      <Section title="Apparence">
+        <Row label="Bord"><ColorField value={color()} onInput={(c) => editor.setParticleColor(id, "color", c)} /></Row>
+        <Row label="Centre"><ColorField value={colorEnd()} onInput={(c) => editor.setParticleColor(id, "colorEnd", c)} /></Row>
+        <Row label="Fusion">
+          <Segmented options={["Normal", "Additif"]} active={blend() === "add" ? 1 : 0} onChange={(i) => editor.setBlend(id, i === 1 ? "add" : "normal")} />
+        </Row>
+        <Row label="Opacité">
+          <Slider value={opacity()} format={(v) => `${Math.round(v * 100)}%`} onInput={(v) => editor.setOpacity(id, v)} />
+        </Row>
+      </Section>
+      <DeleteRow editor={editor} id={id} />
+    </>
   );
 }
 
@@ -509,13 +683,16 @@ function LyreBody(props: { editor: Editor; node: LyreLayer; changed: Accessor<un
   );
 }
 
-function ObjectHeader(props: { node: Layer }): JSX.Element {
+function ObjectHeader(props: { node: Layer; changed: Accessor<unknown> }): JSX.Element {
+  const name = createMemo(() => { props.changed(); return props.node.name; });
+  const sub = createMemo(() => { props.changed(); return subtitle(props.node); });
+  const thumb = createMemo(() => { props.changed(); return thumbBg(props.node); });
   return (
     <div class="insp-object">
-      <div class="insp-object__thumb" style={{ background: thumbBg(props.node) }} />
+      <div class="insp-object__thumb" style={{ background: thumb() }} />
       <div class="insp-object__info">
-        <div class="insp-object__name">{props.node.name}</div>
-        <div class="insp-object__sub">{subtitle(props.node)}</div>
+        <div class="insp-object__name">{name()}</div>
+        <div class="insp-object__sub">{sub()}</div>
       </div>
     </div>
   );
