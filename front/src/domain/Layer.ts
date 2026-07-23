@@ -77,13 +77,16 @@ interface LayerBase {
 export interface ShaderLayer extends LayerBase { type: "shader"; shader: ShaderId; params: Record<string, number>; color: RGB; }
 
 /** Remplissage d'une shape : couleur unie, dégradé linéaire (angle en radians), média (data URL,
- *  embarqué dans le projet), ou matériau personnalisé (référence un `MaterialPreset` du document). */
+ *  embarqué dans le projet), matériau personnalisé (référence un `MaterialPreset` du document),
+ *  ou séquence PRÉ-RENDUE (frames calculées une fois à l'avance, hors du document — voir
+ *  `Editor.setPrerenderedFrames` — non sérialisable, ne survit pas à une sauvegarde/rechargement). */
 export type Fill =
   | { type: "solid"; color: RGB }
   | { type: "gradient"; from: RGB; to: RGB; angle: number }
   | { type: "image"; dataUrl: string }
   | { type: "video"; dataUrl: string }
-  | { type: "material"; presetId: string };
+  | { type: "material"; presetId: string }
+  | { type: "prerender" };
 
 /** Mode de rendu d'un matériau : "basic" = couleur brute (unlit), "emission" = même couleur
  *  boostée en intensité (effet "qui brille" pour des LEDs pilotées en valeurs brutes — pas de
@@ -160,7 +163,8 @@ export function fillPreviewColor(fill: Fill): RGB {
     case "gradient": return { r: (fill.from.r + fill.to.r) / 2, g: (fill.from.g + fill.to.g) / 2, b: (fill.from.b + fill.to.b) / 2 };
     case "image":
     case "video":
-    case "material": return { r: 1, g: 1, b: 1 };
+    case "material":
+    case "prerender": return { r: 1, g: 1, b: 1 };
   }
 }
 

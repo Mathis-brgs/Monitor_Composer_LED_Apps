@@ -14,6 +14,7 @@ import { fromStore } from "@ui/solid/store.ts";
 import { solidPanel } from "@ui/solid/mount.ts";
 import { animatableProps } from "./timeline-properties.ts";
 import { insertTunnel } from "@core/precomps/tunnel.ts";
+import { insertTunnelPrerendered, insertTunnelPrerenderedSimple } from "@core/precomps/tunnelPrerendered.ts";
 import type { Panel } from "../Panel.ts";
 
 const AXIS_SHORT: Record<string, string> = { x: "X", y: "Y", z: "Z", r: "R", g: "G", b: "B" };
@@ -250,10 +251,16 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
 
   /** Précomposition "tunnel" : anneaux imbriqués (carrés ou triangles par côté) qui apparaissent
    *  un par un du plus grand au plus petit (tempo = 1 temps/BPM par défaut), puis zooment vers le
-   *  centre en boucle une fois construits. */
-  const addTunnel = (kind: "square" | "triangle"): void => {
+   *  centre en boucle une fois construits.
+   *  Shift+clic = EXACTEMENT le même tunnel, mais PRÉ-RENDU (mêmes clés, échantillonnées à
+   *  l'avance au lieu d'animées en direct) — identique au pixel près, sans le coût par frame.
+   *  Shift+Alt+clic = variante PRÉ-RENDUE simple (anneaux synchronisés, pas de construction). */
+  const addTunnel = (e: MouseEvent, kind: "square" | "triangle"): void => {
     const fpb = clock.framesPerBeat;
-    insertTunnel(editor, { kind, stepFrames: fpb > 0 ? Math.round(fpb) : 10 });
+    const stepFrames = fpb > 0 ? Math.round(fpb) : 10;
+    if (e.shiftKey && e.altKey) { insertTunnelPrerenderedSimple(editor, { kind }); return; }
+    if (e.shiftKey) { insertTunnelPrerendered(editor, { kind, stepFrames }); return; }
+    insertTunnel(editor, { kind, stepFrames });
   };
 
   const [expanded, setExpanded] = createSignal<Set<string>>(new Set());
@@ -1269,16 +1276,16 @@ function Timeline(props: { clock: Clock; editor: Editor; audio: AudioEngine }): 
         <button
           type="button"
           class="seq__tool"
-          data-tooltip="Précomposition : tunnel carrés imbriqués (se construit au tempo puis zoome en boucle)"
-          onClick={() => addTunnel("square")}
+          data-tooltip="Précomposition : tunnel carrés imbriqués (se construit au tempo puis zoome en boucle) — Shift+clic = pré-rendu identique, Shift+Alt+clic = pré-rendu simple (synchronisé)"
+          onClick={(e) => addTunnel(e, "square")}
         >
           {createIcon("box", { size: 16 })}
         </button>
         <button
           type="button"
           class="seq__tool"
-          data-tooltip="Précomposition : tunnel triangles (côtés + coins par anneau, clignotent en opposition)"
-          onClick={() => addTunnel("triangle")}
+          data-tooltip="Précomposition : tunnel triangles (côtés + coins par anneau, clignotent en opposition) — Shift+clic = pré-rendu identique, Shift+Alt+clic = pré-rendu simple (synchronisé)"
+          onClick={(e) => addTunnel(e, "triangle")}
         >
           {createIcon("triangle", { size: 16 })}
         </button>

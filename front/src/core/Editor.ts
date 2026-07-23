@@ -127,6 +127,12 @@ export class Editor {
   // shapes en fill matériau actuellement en cours de bake — évite les bakes qui se chevauchent
   // (best-effort : on saute le tick si le précédent n'est pas fini, comme `EhubOutput._busy`)
   private readonly _materialBaking = new Set<string>();
+  // fill "prerender" : séquence de bitmaps calculée une fois à l'avance (par id de shape) —
+  // voir `setPrerenderedFrames`/`core/precomps/tunnelPrerendered.ts`
+  private readonly _prerenderedFrames = new Map<string, Uint8ClampedArray[]>();
+  // frame (index dans `_prerenderedFrames`) où la boucle démarre : les frames avant ne jouent
+  // qu'une fois (intro/construction), celles à partir de là bouclent indéfiniment.
+  private readonly _prerenderedLoopStart = new Map<string, number>();
 
   // ————————————————————————————————— Lecture —————————————————————————————————
 
@@ -367,6 +373,8 @@ export class Editor {
       // Libérer le calque shader du cache en RAM
       this._shaderLive.delete(id);
       this._animator.dropLayer(id);
+      this._prerenderedFrames.delete(id); // séquence pré-rendue potentiellement volumineuse (N frames × 128×128×4)
+      this._prerenderedLoopStart.delete(id);
       
       // Si la couche supprimée était sélectionnée, on réinitialise la sélection
       if (this._doc.selectedId === id) {
@@ -794,6 +802,8 @@ export class Editor {
     if (fill.type === "material") void this._bakeMaterialFor(id, fill.presetId);
     else this._materialPixels.delete(id);
 
+    if (fill.type !== "prerender") { this._prerenderedFrames.delete(id); this._prerenderedLoopStart.delete(id); }
+
     if (fill.type === "solid") {
       this._animator.autoKey(id, "color.r", this._frame, fill.color.r);
       this._animator.autoKey(id, "color.g", this._frame, fill.color.g);
@@ -836,7 +846,7 @@ export class Editor {
     if (this._activeSignature() !== this._lastActiveSig) {
       this._push(); // un calque a franchi un bord de clip → reconstruit la pile (re-rasterise aussi les shapes)
     } else {
-      if (this._sceneDirty || this._videoEls.size > 0) this._recomputeScene();
+      if (this._sceneDirty || this._videoEls.size > 0 || this._prerenderedFrames.size > 0) this._recomputeScene();
       if (this._fixturesDirty) this._pushFixtures();
     }
     this._syncVideos(frame, playing, fps);
@@ -1016,7 +1026,26 @@ export class Editor {
         const bmp = this._materialPixels.get(s.id);
         return bmp ? { kind: "bitmap", ...bmp } : FALLBACK_FILL;
       }
+      case "prerender": {
+        const frames = this._prerenderedFrames.get(s.id);
+        if (!frames || frames.length === 0) return FALLBACK_FILL;
+        const loopStart = Math.min(frames.length - 1, this._prerenderedLoopStart.get(s.id) ?? 0);
+        const idx = this._frame < loopStart
+          ? Math.max(0, this._frame)
+          : loopStart + (((this._frame - loopStart) % (frames.length - loopStart)) + (frames.length - loopStart)) % (frames.length - loopStart);
+        return { kind: "bitmap", data: frames[idx], width: this.materialBakeSize, height: this.materialBakeSize };
+      }
     }
+  }
+
+  /** Fournit la séquence pré-calculée d'un fill "prerender" (voir `tunnelPrerendered.ts`).
+   *  `loopStart` (index dans `frames`) sépare une intro jouée UNE FOIS (avant) d'une boucle
+   *  infinie (à partir de là) — 0 = tout boucle dès le début. Aucun calcul par frame ensuite. */
+  setPrerenderedFrames(shapeId: string, frames: Uint8ClampedArray[], loopStart = 0): void {
+    this._prerenderedFrames.set(shapeId, frames);
+    this._prerenderedLoopStart.set(shapeId, Math.max(0, loopStart));
+    this._recomputeScene();
+    this._emit();
   }
 
   // ————————————————————————————————— Matériaux ─────————————————————————————————

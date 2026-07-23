@@ -1,5 +1,5 @@
 import type { Editor } from "../Editor.ts";
-import type { RGB, ShapeKind } from "@domain/Layer.ts";
+import type { RGB } from "@domain/Layer.ts";
 import type { Interp } from "@domain/Composition.ts";
 
 export interface TunnelOptions {
@@ -28,20 +28,45 @@ export interface TunnelOptions {
   blinkPeriod?: number;
 }
 
-const COLOR_WHITE: RGB = { r: 1, g: 1, b: 1 };
+// blanc volontairement pas à 1,1,1 : trop violent/aveuglant sur le vrai mur LED
+const COLOR_WHITE: RGB = { r: 0.4, g: 0.4, b: 0.4 };
 const COLOR_BLACK: RGB = { r: 0, g: 0, b: 0 };
 
-/**
- * Précomposition "tunnel" en deux temps, façon effet démo classique :
- * 1. Construction : les anneaux apparaissent un par un, du plus grand au plus petit, au tempo
- *    `stepFrames` ("le tunnel se prépare").
- * 2. Voyage : une fois construits, tous les anneaux zooment ensemble vers le centre en boucle
- *    (sawtooth : rétrécit puis re-saute à la taille de départ) — "on reste dans le tunnel".
- * Formes en couleur SOLIDE alternée (pas de matériau/shader) : le look "carrés imbriqués" vient
- * du masquage entre shapes (les plus petites sont ajoutées en dernier → au-dessus → cachent le
- * centre des plus grandes), pas d'un calcul procédural.
- */
-export function insertTunnel(editor: Editor, opts: TunnelOptions = {}): string[] {
+interface KeyframeSpec { frame: number; value: number; interp: Interp }
+
+/** Description d'une forme du tunnel, indépendante de l'Editor : soit on la matérialise en
+ *  calque + clés live (`insertTunnel`), soit on l'échantillonne hors-écran image par image
+ *  (`tunnelPrerendered.ts`, via `sampleKeyframes`) — les deux lisent EXACTEMENT les mêmes clés,
+ *  donc un rendu pré-rendu identique au live, pixel pour pixel. */
+export interface TunnelShapeSpec {
+  kind: "box" | "triangle";
+  name: string;
+  position: { x: number; y: number };
+  rotationZ: number;
+  color: RGB;
+  scaleKeys: KeyframeSpec[];
+  opacityKeys: KeyframeSpec[]; // vide si pas de clignotement (carrés, ou blinkPeriod=0)
+}
+
+export interface TunnelBuild {
+  specs: TunnelShapeSpec[];
+  /** 1re frame de la boucle "voyage" en régime établi (tous les anneaux construits). */
+  buildEnd: number;
+  /** Durée (frames) d'UN cycle complet de la boucle établie — voir `tunnelPrerendered.ts`. */
+  loopLength: number;
+  endFrame: number;
+}
+
+function gcd(a: number, b: number): number {
+  return b === 0 ? a : gcd(b, a % b);
+}
+function lcm(a: number, b: number): number {
+  return (a * b) / gcd(a, b);
+}
+
+/** Calcule toutes les shapes + clés du tunnel, sans toucher à l'Editor — logique pure partagée
+ *  entre la version live et la version pré-rendue (voir `TunnelShapeSpec`). */
+export function buildTunnel(opts: TunnelOptions = {}): TunnelBuild {
   const kind = opts.kind ?? "square";
   const ringCount = Math.max(2, Math.min(20, Math.round(opts.ringCount ?? 8)));
   const startFrame = Math.max(0, Math.round(opts.startFrame ?? 0));
@@ -55,34 +80,48 @@ export function insertTunnel(editor: Editor, opts: TunnelOptions = {}): string[]
   const colorA = opts.colorA ?? COLOR_WHITE;
   const colorB = opts.colorB ?? COLOR_BLACK;
   const blinkPeriod = Math.max(0, Math.round(opts.blinkPeriod ?? 15));
+  const loopLength = kind === "triangle" && blinkPeriod > 0 ? lcm(travelPeriod, blinkPeriod * 2) : travelPeriod;
 
-  const ids: string[] = [];
-  const keys: { id: string; channel: string; frame: number; value: number; interp: Interp }[] = [];
+  const specs: TunnelShapeSpec[] = [];
 
-  /** Anime un calque déjà positionné : invisible → pop-in à `settleScale` → boucle de zoom (sawtooth
-   *  vers `minRatio*settleScale` puis reset) jusqu'à `endFrame`. */
-  const animateRing = (id: string, ringIndex: number, settleScale: number): void => {
+  /** Clés scale d'un anneau : invisible → pop-in à `settleScale` → boucle de zoom (sawtooth vers
+   *  `settleScale*0.2` puis reset) jusqu'à `endFrame`. */
+  const scaleKeysFor = (ringIndex: number, settleScale: number): KeyframeSpec[] => {
     const activation = startFrame + ringIndex * stepFrames;
     const popEnd = activation + popFrames;
-    for (const axis of ["x", "y", "z"] as const) {
-      keys.push({ id, channel: `scale.${axis}`, frame: startFrame, value: 0, interp: "hold" });
-      keys.push({ id, channel: `scale.${axis}`, frame: activation, value: 0, interp: "bezier" });
-      keys.push({ id, channel: `scale.${axis}`, frame: popEnd, value: settleScale, interp: "linear" });
-    }
-    // voyage : sawtooth synchronisé (tous les anneaux zooment/resettent ensemble). Chaque cycle
-    // se termine 1 frame avant le suivant démarre : deux clés ne doivent JAMAIS tomber sur le
-    // même frame (upsertKeyframe remplace, n'empile pas — la 2e écraserait la 1re et le "reset"
-    // instantané du sawtooth disparaîtrait).
+    const scaleKeys: KeyframeSpec[] = [
+      { frame: startFrame, value: 0, interp: "hold" },
+      { frame: activation, value: 0, interp: "bezier" },
+      { frame: popEnd, value: settleScale, interp: "linear" },
+    ];
+    // voyage : sawtooth synchronisé. Chaque cycle se termine 1 frame avant le suivant : deux clés
+    // ne doivent jamais tomber sur le même frame (upsertKeyframe remplace, n'empile pas — la 2e
+    // écraserait la 1re et le reset instantané du sawtooth disparaîtrait).
     const travelMin = settleScale * 0.2;
     let cycleStart = popEnd;
     while (cycleStart < endFrame) {
       const shrinkEnd = Math.min(endFrame, cycleStart + travelPeriod - 1);
-      for (const axis of ["x", "y", "z"] as const) {
-        keys.push({ id, channel: `scale.${axis}`, frame: cycleStart, value: settleScale, interp: "linear" });
-        keys.push({ id, channel: `scale.${axis}`, frame: shrinkEnd, value: travelMin, interp: "hold" });
-      }
+      scaleKeys.push({ frame: cycleStart, value: settleScale, interp: "linear" });
+      scaleKeys.push({ frame: shrinkEnd, value: travelMin, interp: "hold" });
       cycleStart = shrinkEnd + 1;
     }
+    return scaleKeys;
+  };
+
+  const opacityKeysFor = (ringIndex: number, startOn: boolean): KeyframeSpec[] => {
+    if (blinkPeriod <= 0) return [];
+    const popEnd = startFrame + ringIndex * stepFrames + popFrames;
+    const opacityKeys: KeyframeSpec[] = [];
+    let on = startOn;
+    let f = popEnd;
+    opacityKeys.push({ frame: f, value: on ? 1 : 0, interp: "hold" });
+    while (f < endFrame) {
+      const next = Math.min(endFrame, f + blinkPeriod);
+      on = !on;
+      opacityKeys.push({ frame: next, value: on ? 1 : 0, interp: "hold" });
+      f = next;
+    }
+    return opacityKeys;
   };
 
   for (let i = 0; i < ringCount; i++) {
@@ -91,54 +130,84 @@ export function insertTunnel(editor: Editor, opts: TunnelOptions = {}): string[]
     const color = i % 2 === 0 ? colorA : colorB;
 
     if (kind === "square") {
-      const id = editor.addShape("box");
-      editor.setName(id, `Tunnel anneau ${i + 1}`);
-      editor.setFill(id, { type: "solid", color });
-      editor.setTransform(id, { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 0, y: 0, z: 0 } });
-      animateRing(id, i, settleScale);
-      ids.push(id);
+      specs.push({
+        kind: "box",
+        name: `Tunnel anneau ${i + 1}`,
+        position: { x: 0, y: 0 },
+        rotationZ: 0,
+        color,
+        scaleKeys: scaleKeysFor(i, settleScale),
+        opacityKeys: [],
+      });
     } else {
       // 8 triangles par anneau : 4 sur les côtés (haut/bas/gauche/droite) + 4 dans les coins
       // (les zones qui seraient sinon noires entre les côtés) — pointe toujours vers le centre
-      // (rotation = angle + 90°, dérivé des placements d'origine haut/bas/gauche/droite).
-      // Les deux groupes clignotent en OPPOSITION : quand les côtés sont visibles, les coins sont
-      // éteints (et inversement), donc les 8 zones sont couvertes en alternance, pas seulement 4.
-      const sideAngles = [Math.PI / 2, -Math.PI / 2, Math.PI, 0];        // haut, bas, gauche, droite
-      const cornerAngles = [Math.PI / 4, 3 * Math.PI / 4, 5 * Math.PI / 4, 7 * Math.PI / 4]; // coins
-
-      const popEnd = startFrame + i * stepFrames + popFrames;
-
-      const addTriangle = (angle: number, group: "side" | "corner"): void => {
-        const kindShape: ShapeKind = "triangle";
-        const id = editor.addShape(kindShape);
-        editor.setName(id, `Tunnel anneau ${i + 1} (${group})`);
-        editor.setFill(id, { type: "solid", color });
-        editor.setTransform(id, {
-          position: { x: Math.cos(angle) * settleScale, y: Math.sin(angle) * settleScale, z: 0 },
-          rotation: { x: 0, y: 0, z: angle + Math.PI / 2 },
-          scale: { x: 0, y: 0, z: 0 },
+      // (rotation = angle + 90°). Les deux groupes clignotent en OPPOSITION : quand les côtés
+      // sont visibles, les coins sont éteints (et inversement).
+      const sideAngles = [Math.PI / 2, -Math.PI / 2, Math.PI, 0];
+      const cornerAngles = [Math.PI / 4, (3 * Math.PI) / 4, (5 * Math.PI) / 4, (7 * Math.PI) / 4];
+      const scaleKeys = scaleKeysFor(i, settleScale);
+      for (const a of sideAngles) {
+        specs.push({
+          kind: "triangle",
+          name: `Tunnel anneau ${i + 1} (side)`,
+          position: { x: Math.cos(a) * settleScale, y: Math.sin(a) * settleScale },
+          rotationZ: a + Math.PI / 2,
+          color,
+          scaleKeys,
+          opacityKeys: opacityKeysFor(i, true),
         });
-        animateRing(id, i, settleScale);
-
-        // clignotement : le groupe "side" démarre visible, "corner" démarre éteint, et ça alterne
-        if (blinkPeriod > 0) {
-          let on = group === "side";
-          let f = popEnd;
-          keys.push({ id, channel: "opacity", frame: f, value: on ? 1 : 0, interp: "hold" });
-          while (f < endFrame) {
-            const next = Math.min(endFrame, f + blinkPeriod);
-            on = !on;
-            keys.push({ id, channel: "opacity", frame: next, value: on ? 1 : 0, interp: "hold" });
-            f = next;
-          }
-        }
-
-        ids.push(id);
-      };
-
-      for (const a of sideAngles) addTriangle(a, "side");
-      for (const a of cornerAngles) addTriangle(a, "corner");
+      }
+      for (const a of cornerAngles) {
+        specs.push({
+          kind: "triangle",
+          name: `Tunnel anneau ${i + 1} (corner)`,
+          position: { x: Math.cos(a) * settleScale, y: Math.sin(a) * settleScale },
+          rotationZ: a + Math.PI / 2,
+          color,
+          scaleKeys,
+          opacityKeys: opacityKeysFor(i, false),
+        });
+      }
     }
+  }
+
+  return { specs, buildEnd, loopLength, endFrame };
+}
+
+/**
+ * Précomposition "tunnel" en deux temps, façon effet démo classique :
+ * 1. Construction : les anneaux apparaissent un par un, du plus grand au plus petit, au tempo
+ *    `stepFrames` ("le tunnel se prépare").
+ * 2. Voyage : une fois construits, tous les anneaux zooment ensemble vers le centre en boucle
+ *    (sawtooth : rétrécit puis re-saute à la taille de départ) — "on reste dans le tunnel".
+ * Formes en couleur SOLIDE alternée (pas de matériau/shader) : le look "carrés imbriqués" vient
+ * du masquage entre shapes (les plus petites sont ajoutées en dernier → au-dessus → cachent le
+ * centre des plus grandes), pas d'un calcul procédural.
+ */
+export function insertTunnel(editor: Editor, opts: TunnelOptions = {}): string[] {
+  const { specs } = buildTunnel(opts);
+  const ids: string[] = [];
+  const keys: { id: string; channel: string; frame: number; value: number; interp: Interp }[] = [];
+
+  for (const spec of specs) {
+    const id = editor.addShape(spec.kind);
+    editor.setName(id, spec.name);
+    editor.setFill(id, { type: "solid", color: spec.color });
+    editor.setTransform(id, {
+      position: { x: spec.position.x, y: spec.position.y, z: 0 },
+      rotation: { x: 0, y: 0, z: spec.rotationZ },
+      scale: { x: 0, y: 0, z: 0 },
+    });
+    for (const k of spec.scaleKeys) {
+      keys.push({ id, channel: "scale.x", frame: k.frame, value: k.value, interp: k.interp });
+      keys.push({ id, channel: "scale.y", frame: k.frame, value: k.value, interp: k.interp });
+      keys.push({ id, channel: "scale.z", frame: k.frame, value: k.value, interp: k.interp });
+    }
+    for (const k of spec.opacityKeys) {
+      keys.push({ id, channel: "opacity", frame: k.frame, value: k.value, interp: k.interp });
+    }
+    ids.push(id);
   }
 
   editor.putKeyframesBulk(keys);

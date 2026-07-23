@@ -144,7 +144,9 @@ function ByteSlider(props: { value: number; onInput: (v: number) => void }): JSX
 
 const DEFAULT_FILL_COLOR: RGB = { r: 1, g: 0.541, b: 0.239 };
 const FILL_TYPES: Fill["type"][] = ["solid", "gradient", "image", "video", "material"];
-const FILL_LABELS: Record<Fill["type"], string> = { solid: "Couleur", gradient: "Dégradé", image: "Image", video: "Vidéo", material: "Matériau" };
+// "prerender" n'apparaît pas dans FILL_TYPES (donc pas dans le menu déroulant) : c'est un fill
+// posé par du code (précompositions comme le tunnel pré-rendu), pas un choix manuel utilisateur.
+const FILL_LABELS: Record<Fill["type"], string> = { solid: "Couleur", gradient: "Dégradé", image: "Image", video: "Vidéo", material: "Matériau", prerender: "Pré-rendu" };
 const MATERIAL_MODES: MaterialMode[] = ["basic", "emission"];
 
 /**
