@@ -12,11 +12,7 @@ export interface Transport {
  * les émet en UDP vers le routage Go (le renderer ne fait pas de réseau).
  */
 export class IpcTransport implements Transport {
-  private _target: { host: string; port: number };
-
-  constructor(target: { host: string; port: number }) {
-    this._target = target;
-  }
+  constructor(private readonly _target: { host: string; port: number }) {}
 
   get connected(): boolean {
     return typeof window !== "undefined" && Boolean(window.led);
@@ -31,8 +27,12 @@ export class IpcTransport implements Transport {
   }
 
   updateTarget(host: string, port: number): void {
-    this._target = { host, port };
-    window.led?.setEhubTarget(host, port);
+    const mutableTarget = this._target as { host: string; port: number };
+    mutableTarget.host = host;
+    mutableTarget.port = port;
+    if (this.connected) {
+      window.led?.setEhubTarget(host, port);
+    }
   }
 
   dispose(): void {}

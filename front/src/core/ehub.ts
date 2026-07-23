@@ -77,7 +77,7 @@ export function buildConfigPayload(ranges: EhubRange[]): Uint8Array {
   return buf;
 }
 
-/** Message `config` : en-tête (10 o) + payload GZip (même format que `update`). */
+/** Message `config` : en-tête (10 o, même format que `update`) + plages GZip. */
 export async function encodeConfig(
   universe: number,
   ranges: EhubRange[],

@@ -1,5 +1,6 @@
 import { Pane, type TpChangeEvent } from "tweakpane";
 import type { App } from "@core/app.ts";
+import { FixtureRegistry } from "@domain/FixtureRegistry.ts";
 
 /**
  * Panneau d'interface graphique flottant (Tweakpane)
@@ -53,6 +54,45 @@ export class ConfigPanel {
       label: "Nom",
     });
 
+    // Réglages de taille personnalisée (masqué par défaut sauf si fixture === "custom")
+    const fCustomSize = fProject.addFolder({
+      title: "Taille Personnalisée",
+      expanded: true,
+    });
+
+    fCustomSize.addBinding(config, "customWidth", {
+      label: "Largeur",
+      min: 1,
+      max: 128,
+      step: 1,
+    }).on("change", async (ev: TpChangeEvent<number | undefined>) => {
+      await this._app.changeCustomSize(ev.value ?? 128, config.customHeight ?? 128);
+    });
+
+    fCustomSize.addBinding(config, "customHeight", {
+      label: "Hauteur",
+      min: 1,
+      max: 128,
+      step: 1,
+    }).on("change", async (ev: TpChangeEvent<number | undefined>) => {
+      await this._app.changeCustomSize(config.customWidth ?? 128, ev.value ?? 128);
+    });
+
+    fProject.addBinding(config, "fixture", {
+      options: FixtureRegistry.getAvailableIds().reduce((acc, id) => {
+        acc[id] = id;
+        return acc;
+      }, {} as Record<string, string>),
+      label: "Fixture",
+    }).on("change", async (ev: TpChangeEvent<string>) => {
+      fCustomSize.hidden = (ev.value !== "custom");
+      if (ev.value !== this._app.context.engine.fixture.id) {
+        await this._app.changeFixture(ev.value);
+      }
+    });
+
+    fCustomSize.hidden = (config.fixture !== "custom");
+
     const btnLoad = fProject.addButton({ title: "Charger Projet" });
     btnLoad.on("click", async () => {
       await this._app.loadProject();
@@ -74,11 +114,14 @@ export class ConfigPanel {
 
     fEhub.addBinding(config.ehub, "port", {
       label: "Port UDP",
-      step: 1,
-      min: 1,
-      max: 65535,
     }).on("change", (ev: TpChangeEvent<number>) => {
       this._app.context.transport.updateTarget(config.ehub.host, ev.value);
+    });
+
+    fEhub.addBinding(config, "ehubHz", {
+      label: "Fréquence (Hz)",
+    }).on("change", () => {
+      this._app.restartEhubTimer();
     });
 
     const btnSendConfig = fEhub.addButton({ title: "Envoyer Config eHuB" });
@@ -86,13 +129,20 @@ export class ConfigPanel {
       await this._app.sendEhubConfig();
     });
 
-    // --- Dossier Contrôleurs ---
-    const fControllers = this._pane.addFolder({ title: "Contrôleurs Physiques" });
+    // --- Dossier Sauvegarde Auto ---
+    const fAutosave = this._pane.addFolder({ title: "Sauvegarde Auto" });
 
-    config.controllers.forEach((ctrl, index) => {
-      fControllers.addBinding(ctrl, "ip", {
-        label: `Ctrl ${index + 1} (.${45 + index})`,
-      });
+    fAutosave.addBinding(config, "autosaveEnabled", {
+      label: "Activer",
+    });
+
+    fAutosave.addBinding(config, "autosaveInterval", {
+      label: "Intervalle (s)",
+      min: 5,
+      max: 120,
+      step: 5,
+    }).on("change", () => {
+      this._app.restartAutosaveTimer();
     });
   }
 

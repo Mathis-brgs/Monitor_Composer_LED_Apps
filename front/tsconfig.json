@@ -18,14 +18,20 @@
     "skipLibCheck": true,
     "noEmit": true,
 
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"],
       "@core/*": ["src/core/*"],
       "@domain/*": ["src/domain/*"],
       "@assets/*": ["src/assets/*"],
-      "@views/*": ["src/views/*"]
+      "@views/*": ["src/views/*"],
+      "@ui/*": ["src/ui/*"],
+      "@styles/*": ["src/styles/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts", "src/config/**/*"]
 }

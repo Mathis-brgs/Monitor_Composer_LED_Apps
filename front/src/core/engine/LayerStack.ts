@@ -10,7 +10,7 @@ import {
   Scene,
   Vector2,
 } from "three/webgpu";
-import { float, uniform } from "three/tsl";
+import { uniform } from "three/tsl";
 import type { Layer, LayerContext, TSLNode } from "./layers/Layer.ts";
 
 /**
@@ -51,7 +51,7 @@ export class LayerStack {
       .forEach((layer, i) => {
         const material = new MeshBasicNodeMaterial();
         material.colorNode = layer.build(this._ctx);
-        material.opacityNode = float(layer.opacity);
+        material.opacityNode = layer.opacityNode;
         material.transparent = true;
         material.depthTest = false;
         material.depthWrite = false;

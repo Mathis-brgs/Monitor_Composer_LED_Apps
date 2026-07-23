@@ -1,19 +1,17 @@
-// Package wall décrit la géométrie physique d'un mur LED du Groupe LAPS
-// (bandes en serpentin, RGB, plusieurs univers DMX par bande) et sait
-// convertir une position logique (bande, LED) en adresse ArtNet (IP du
-// contrôleur, univers, canal). La géométrie exacte (dimensions, IP des
-// contrôleurs, numérotation) est portée par Config (voir config.go) plutôt
-// que figée en constantes, pour pouvoir changer d'installation sans
-// recompiler.
+// Package wall décrit la géométrie physique d'un mur LED (bandes en
+// serpentin, plusieurs univers DMX par bande) et convertit une position
+// logique (bande, LED) en adresse ArtNet (IP, univers, canal). La géométrie
+// est portée par Config plutôt que figée en constantes.
 package wall
 
-import "ledtest/artnet"
+import (
+	"fmt"
 
-// StripBase retourne l'IP du contrôleur et le premier univers utilisé par une
-// bande (1-indexée, 1..StripCount). L'univers ArtNet est local à chaque
-// contrôleur (chaque BC216 numérote ses propres univers à partir de 0), il
-// faut donc repartir à 0 à chaque nouveau contrôleur plutôt que de continuer
-// à compter globalement.
+	"ledtest/artnet"
+)
+
+// L'univers ArtNet est local à chaque contrôleur (chaque BC216 numérote ses
+// univers à partir de 0), donc on repart à 0 à chaque nouveau contrôleur.
 func (c Config) StripBase(strip int) (ip string, baseUniverse uint16) {
 	idx := strip - 1
 	ctrlIdx := idx / c.StripsPerCtrl
@@ -23,60 +21,51 @@ func (c Config) StripBase(strip int) (ip string, baseUniverse uint16) {
 	return
 }
 
-// LEDAddress retourne l'univers ArtNet et l'offset (0-indexé, début du canal
-// R) pour adresser la LED "led" (1..LEDsPerStrip) de la bande "strip".
 func (c Config) LEDAddress(strip, led int) (ip string, universe uint16, channelOffset int) {
 	ip, base := c.StripBase(strip)
-	universeIdx := (led - 1) / LEDsPerUniverse
-	channelOffset = ((led - 1) % LEDsPerUniverse) * 3
+	lpu := c.LEDsPerUniverse()
+	universeIdx := (led - 1) / lpu
+	channelOffset = ((led - 1) % lpu) * c.ChannelsPerLED()
 	universe = base + uint16(universeIdx)
 	return
 }
 
 // VisibleLEDIndex convertit un index de LED visible (0..2*Height-1) en
-// numéro de LED réel (1..LEDsPerStrip) dans la bande, en sautant les 3 LED de
-// fixation.
+// numéro de LED réel, en sautant les 3 LED de fixation.
 func (c Config) VisibleLEDIndex(n int) int {
 	if n < c.Height {
-		return n + 2 // montée
+		return n + 2
 	}
-	return n + 3 // descente : (n-Height) + (Height+3)
+	return n + 3
 }
 
-// Pixel convertit une coordonnée écran (x: 1..Width colonne, y: 0..Height-1
-// ligne, 0 = bas, Height-1 = haut) en (bande, LED). Une bande couvre 2
-// colonnes adjacentes en serpentin (montée puis descente), donc les colonnes
-// impaires et paires d'une même bande ont un sens de LED opposé. ok vaut
-// false si (x,y) est hors du mur.
+// Pixel convertit (x: 1..Width colonne, y: 0..Height-1, 0=bas) en (bande,
+// LED). Une bande couvre 2 colonnes adjacentes en serpentin (montée puis
+// descente), donc les colonnes impaires/paires ont un sens de LED opposé.
 func (c Config) Pixel(x, y int) (strip, led int, ok bool) {
 	if x < 1 || x > c.Width() || y < 0 || y >= c.Height {
 		return 0, 0, false
 	}
 	strip = (x-1)/2 + 1
 	if x%2 == 1 {
-		led = y + 2 // colonne montante : 0=bas
+		led = y + 2
 	} else {
-		led = c.LEDsPerStrip() - 1 - y // colonne descendante : 0=bas
+		led = c.LEDsPerStrip() - 1 - y
 	}
 	return strip, led, true
 }
 
-// PixelForLED est l'inverse de Pixel : retrouve la coordonnée écran (x,y)
-// d'une LED donnée. ok vaut false pour les 3 LED de fixation (non visibles,
-// donc sans coordonnée écran).
+// PixelForLED est l'inverse de Pixel. ok=false pour les LED de fixation.
 func (c Config) PixelForLED(strip, led int) (x, y int, ok bool) {
 	if !c.IsVisible(led) {
 		return 0, 0, false
 	}
 	if led <= c.Height+1 {
-		return 2*strip - 1, led - 2, true // colonne montante
+		return 2*strip - 1, led - 2, true
 	}
-	return 2 * strip, c.LEDsPerStrip() - 1 - led, true // colonne descendante
+	return 2 * strip, c.LEDsPerStrip() - 1 - led, true
 }
 
-// InRegion indique si la coordonnée écran (x,y) tombe dans la zone active de
-// la configuration (voir Config.Region*). Sans restriction définie, toute la
-// surface du mur est active.
 func (c Config) InRegion(x, y int) bool {
 	if c.RegionWidth <= 0 {
 		return true
@@ -85,7 +74,6 @@ func (c Config) InRegion(x, y int) bool {
 		y >= c.RegionY0 && y < c.RegionY0+c.RegionHeight
 }
 
-// LEDInRegion indique si une LED (bande, led) tombe dans la zone active.
 func (c Config) LEDInRegion(strip, led int) bool {
 	if c.RegionWidth <= 0 {
 		return true
@@ -94,86 +82,222 @@ func (c Config) LEDInRegion(strip, led int) bool {
 	return ok && c.InRegion(x, y)
 }
 
-// ledSlot calcule le slot de stockage interne et l'offset de canal pour une
-// LED (bande, led). Factorisé entre SetLED, GetLED et Flush.
-func (c Config) ledSlot(strip, led int) (slot, ch int) {
-	universeIdx := (led - 1) / LEDsPerUniverse
-	ch = ((led - 1) % LEDsPerUniverse) * 3
-	slot = (strip-1)*c.UniversesPerStrip() + universeIdx
-	return
+// Frame est l'état DMX de tout le mur : un buffer 512 octets par univers
+// physique (IP, univers), indexé par adresse plutôt que par bande — ainsi
+// formule (StripBase) et table de patch explicite (Config.Patch) partagent
+// exactement le même stockage/envoi, sans dupliquer la logique.
+type frameSlot struct {
+	ip       string
+	universe uint16
+	data     [512]byte
+	dirty    bool
 }
 
-// Frame représente l'état RGB de l'ensemble des univers du mur, avec suivi
-// des univers modifiés pour n'envoyer que le strict nécessaire sur le réseau.
 type Frame struct {
 	cfg   Config
-	data  [][512]byte
-	dirty []bool
+	slots []frameSlot
+	index map[string]int // clé slotKey(ip,universe) -> indice dans slots
 }
 
-// NewFrame crée une frame vide dimensionnée pour la configuration donnée.
+func slotKey(ip string, universe uint16) string {
+	return fmt.Sprintf("%s#%d", ip, universe)
+}
+
+// NewFrame réserve un slot par univers physique utilisé : ceux de la table de
+// patch explicite si elle est renseignée, sinon ceux dérivés de la formule
+// (StripBase/UniversesPerStrip) — comportement par défaut inchangé — plus
+// l'univers fixtures (lyres/projecteur) du dernier contrôleur.
 func NewFrame(cfg Config) *Frame {
-	n := cfg.StripCount() * cfg.UniversesPerStrip()
-	return &Frame{cfg: cfg, data: make([][512]byte, n), dirty: make([]bool, n)}
+	f := &Frame{cfg: cfg, index: map[string]int{}}
+	add := func(ip string, universe uint16) {
+		key := slotKey(ip, universe)
+		if _, exists := f.index[key]; exists {
+			return
+		}
+		f.index[key] = len(f.slots)
+		f.slots = append(f.slots, frameSlot{ip: ip, universe: universe})
+	}
+	if len(cfg.Patch) > 0 {
+		for _, row := range cfg.Patch {
+			add(row.IP, row.Universe)
+		}
+	} else {
+		for strip := 1; strip <= cfg.StripCount(); strip++ {
+			ip, base := cfg.StripBase(strip)
+			for u := 0; u < cfg.UniversesPerStrip(); u++ {
+				add(ip, base+uint16(u))
+			}
+		}
+		if len(cfg.ControllerIPs) > 0 {
+			add(cfg.ControllerIPs[len(cfg.ControllerIPs)-1], FixtureUniverse)
+		}
+	}
+	return f
 }
 
-// Config renvoie la configuration utilisée par cette frame.
 func (f *Frame) Config() Config {
 	return f.cfg
 }
 
-// SetLED colore une LED donnée (bande 1..StripCount, led 1..LEDsPerStrip). Le
-// stockage interne utilise un slot global unique (indépendant du contrôleur)
-// pour éviter toute collision entre bandes de contrôleurs différents qui
-// partagent les mêmes numéros d'univers locaux.
-func (f *Frame) SetLED(strip, led int, r, g, b byte) {
-	slot, ch := f.cfg.ledSlot(strip, led)
-	f.data[slot][ch] = r
-	f.data[slot][ch+1] = g
-	f.data[slot][ch+2] = b
-	f.dirty[slot] = true
+func (f *Frame) slotFor(ip string, universe uint16) (int, bool) {
+	idx, ok := f.index[slotKey(ip, universe)]
+	return idx, ok
 }
 
-// GetLED lit la couleur actuellement stockée pour une LED, utilisé par le
-// monitor pour prévisualiser l'état sans dupliquer le mapping bande/LED.
-func (f *Frame) GetLED(strip, led int) (r, g, b byte) {
-	slot, ch := f.cfg.ledSlot(strip, led)
-	return f.data[slot][ch], f.data[slot][ch+1], f.data[slot][ch+2]
-}
-
-// ChannelsFor renvoie les 512 octets bruts actuellement stockés pour un
-// (IP, univers) donné, utilisé par le monitor pour visualiser les canaux DMX
-// bruts avant leur envoi (P8). ok vaut false si ce couple ne correspond à
-// aucune bande de la configuration.
-func (f *Frame) ChannelsFor(ip string, universe uint16) (data [512]byte, ok bool) {
-	ups := f.cfg.UniversesPerStrip()
-	for strip := 1; strip <= f.cfg.StripCount(); strip++ {
-		sip, base := f.cfg.StripBase(strip)
-		if sip != ip || universe < base || universe >= base+uint16(ups) {
-			continue
-		}
-		slot := (strip-1)*ups + int(universe-base)
-		return f.data[slot], true
+// SetLED adresse une LED via la formule bande/LED (StripBase/LEDAddress).
+// Ignore silencieusement si (ip,univers) n'a pas de slot réservé (ex: table
+// de patch active qui ne couvre pas cette bande).
+func (f *Frame) SetLED(strip, led int, r, g, b, w byte) {
+	ip, universe, ch := f.cfg.LEDAddress(strip, led)
+	idx, ok := f.slotFor(ip, universe)
+	if !ok {
+		return
 	}
-	return [512]byte{}, false
+	f.cfg.writeChannels(f.slots[idx].data[:], ch, r, g, b, w)
+	f.slots[idx].dirty = true
 }
 
-// Flush envoie uniquement les univers modifiés depuis le dernier Flush, en
-// reconvertissant chaque slot de stockage vers l'IP et l'univers local réels.
+func (f *Frame) GetLED(strip, led int) (r, g, b, w byte) {
+	ip, universe, ch := f.cfg.LEDAddress(strip, led)
+	idx, ok := f.slotFor(ip, universe)
+	if !ok {
+		return 0, 0, 0, 0
+	}
+	return f.cfg.readChannels(f.slots[idx].data[:], ch)
+}
+
+// SetEntity adresse une entité eHuB (LED de bande OU fixture, cf.
+// Config.ResolveEntity) directement par ID, sans que l'appelant ait à
+// distinguer les deux mécanismes. Renvoie false si l'entité n'est adressable
+// nulle part (ID inconnu, ou (ip,univers) résolu hors de la config actuelle).
+func (f *Frame) SetEntity(entityID int, r, g, b, w byte) bool {
+	ip, universe, ch, isFixture, ok := f.cfg.ResolveEntity(entityID)
+	if !ok {
+		return false
+	}
+	idx, ok := f.slotFor(ip, universe)
+	if !ok {
+		return false
+	}
+	if isFixture {
+		// canal DMX brut (spot/lyre) : un seul octet compte (R). Écrire 3+ octets
+		// comme pour une LED écraserait les 1-2 canaux suivants (ex: Pan puis Pan
+		// fin/Tilt d'une lyre) à chaque mise à jour.
+		f.slots[idx].data[ch] = r
+	} else {
+		f.cfg.writeChannels(f.slots[idx].data[:], ch, r, g, b, w)
+	}
+	f.slots[idx].dirty = true
+	return true
+}
+
+// writeChannels/readChannels appliquent Config.ChannelOrder (ex: "rgb",
+// "grb", "rgbw") pour placer/lire les composantes aux bons octets DMX.
+func (c Config) writeChannels(buf []byte, ch int, r, g, b, w byte) {
+	order := c.channelOrder()
+	for i := 0; i < len(order); i++ {
+		switch order[i] {
+		case 'r':
+			buf[ch+i] = r
+		case 'g':
+			buf[ch+i] = g
+		case 'b':
+			buf[ch+i] = b
+		case 'w':
+			buf[ch+i] = w
+		}
+	}
+}
+
+func (c Config) readChannels(buf []byte, ch int) (r, g, b, w byte) {
+	order := c.channelOrder()
+	for i := 0; i < len(order); i++ {
+		switch order[i] {
+		case 'r':
+			r = buf[ch+i]
+		case 'g':
+			g = buf[ch+i]
+		case 'b':
+			b = buf[ch+i]
+		case 'w':
+			w = buf[ch+i]
+		}
+	}
+	return
+}
+
+// ChannelsFor renvoie les 512 octets bruts d'un (IP, univers) donné, pour le
+// monitor (visualisation des canaux DMX avant envoi).
+func (f *Frame) ChannelsFor(ip string, universe uint16) (data [512]byte, ok bool) {
+	idx, found := f.slotFor(ip, universe)
+	if !found {
+		return [512]byte{}, false
+	}
+	return f.slots[idx].data, true
+}
+
+// SetRaw écrit directement les octets d'un univers, pour le mode "adressage
+// brut" du monitor (bypass de l'abstraction bande/LED). Renvoie false si
+// (ip, univers) n'a pas de slot réservé dans la config actuelle.
+func (f *Frame) SetRaw(ip string, universe uint16, data []byte) bool {
+	idx, ok := f.slotFor(ip, universe)
+	if !ok {
+		return false
+	}
+	copy(f.slots[idx].data[:], data)
+	f.slots[idx].dirty = true
+	return true
+}
+
+// Flush envoie uniquement les univers modifiés depuis le dernier Flush.
+// Pratique pour les commandes CLI mono-thread (single/fill/sweep/chase) ;
+// pour cmdListen/monitor (réception concurrente), préférer Snapshot+Send
+// (voir plus bas) pour ne pas tenir le verrou pendant les sendto() réseau.
 func (f *Frame) Flush(sender *artnet.Sender, seq byte) error {
-	ups := f.cfg.UniversesPerStrip()
-	for slot := range f.data {
-		if !f.dirty[slot] {
+	for i := range f.slots {
+		if !f.slots[i].dirty {
 			continue
 		}
-		strip := slot/ups + 1
-		universeIdx := slot % ups
-		ip, base := f.cfg.StripBase(strip)
-		universe := base + uint16(universeIdx)
-		if err := sender.Send(ip, universe, seq, f.data[slot][:]); err != nil {
+		if err := sender.Send(f.slots[i].ip, f.slots[i].universe, seq, f.slots[i].data[:]); err != nil {
 			return err
 		}
-		f.dirty[slot] = false
+		f.slots[i].dirty = false
+	}
+	return nil
+}
+
+// FlushSnapshot est la copie d'un univers modifié, prête à être envoyée SANS
+// tenir le verrou qui protège l'état partagé (voir Snapshot/SendSnapshot).
+type FlushSnapshot struct {
+	ip       string
+	universe uint16
+	data     [512]byte
+}
+
+// Snapshot copie les univers actuellement marqués modifiés et les démarque,
+// mais N'ENVOIE RIEN sur le réseau — à appeler sous verrou (accès à l'état
+// partagé), très rapide (copie mémoire pure). Envoyer le résultat via
+// SendSnapshot APRÈS avoir libéré le verrou : sur une grosse installation
+// (beaucoup d'univers modifiés d'un coup), tenir le verrou pendant plusieurs
+// sendto() séquentiels bloquerait la réception eHuB pour rien.
+func (f *Frame) Snapshot() []FlushSnapshot {
+	var out []FlushSnapshot
+	for i := range f.slots {
+		if !f.slots[i].dirty {
+			continue
+		}
+		out = append(out, FlushSnapshot{ip: f.slots[i].ip, universe: f.slots[i].universe, data: f.slots[i].data})
+		f.slots[i].dirty = false
+	}
+	return out
+}
+
+// SendSnapshot envoie un instantané via ArtNet — à appeler HORS verrou.
+func SendSnapshot(sender *artnet.Sender, seq byte, snapshot []FlushSnapshot) error {
+	for _, s := range snapshot {
+		if err := sender.Send(s.ip, s.universe, seq, s.data[:]); err != nil {
+			return err
+		}
 	}
 	return nil
 }

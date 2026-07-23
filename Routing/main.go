@@ -42,6 +42,8 @@ func main() {
 		cmdChase(cfg, sender, os.Args[2:])
 	case "listen":
 		cmdListen(cfg, sender, os.Args[2:])
+	case "fixtures":
+		cmdFixtureTest(cfg, sender, os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -60,7 +62,8 @@ Commandes:
   fill   -strip N -r N -g N -b N          Remplit une bande (-strip 0 = tout le mur)
   sweep                                    Balaie chaque bande en rouge/vert/bleu (debug cablage)
   chase  -fps N                            Anime un point lumineux sur tout le mur (test perf/synchro)
-  listen -port N -fps N                    Ecoute le flux eHuB (config+update) et le route vers ArtNet`)
+  listen -port N -fps N                    Ecoute le flux eHuB (config+update) et le route vers ArtNet
+  fixtures                                  Teste projecteur + 4 lyres une par une (bypass front/eHuB, debug cross-talk)`)
 }
 
 func cmdSingle(cfg wall.Config, s *artnet.Sender, args []string) {
@@ -73,7 +76,7 @@ func cmdSingle(cfg wall.Config, s *artnet.Sender, args []string) {
 	fs.Parse(args)
 
 	f := wall.NewFrame(cfg)
-	f.SetLED(*strip, *led, byte(*r), byte(*g), byte(*b))
+	f.SetLED(*strip, *led, byte(*r), byte(*g), byte(*b), 0)
 	if err := f.Flush(s, 0); err != nil {
 		fmt.Println("erreur d'envoi:", err)
 		os.Exit(1)
@@ -105,7 +108,7 @@ func cmdFill(cfg wall.Config, s *artnet.Sender, args []string) {
 			if !cfg.IsVisible(led) {
 				continue
 			}
-			f.SetLED(st, led, byte(*r), byte(*g), byte(*b))
+			f.SetLED(st, led, byte(*r), byte(*g), byte(*b), 0)
 		}
 	}
 	if err := f.Flush(s, 0); err != nil {
@@ -115,8 +118,7 @@ func cmdFill(cfg wall.Config, s *artnet.Sender, args []string) {
 	fmt.Println("remplissage envoye")
 }
 
-// cmdSweep allume chaque bande une par une en rouge/vert/bleu : pratique
-// pour vérifier visuellement que le mapping bande -> IP/univers est correct.
+// cmdSweep allume chaque bande une par une : vérifie visuellement le mapping.
 func cmdSweep(cfg wall.Config, s *artnet.Sender, args []string) {
 	colors := [][3]byte{{255, 0, 0}, {0, 255, 0}, {0, 0, 255}}
 	for _, c := range colors {
@@ -124,7 +126,7 @@ func cmdSweep(cfg wall.Config, s *artnet.Sender, args []string) {
 			on := wall.NewFrame(cfg)
 			for led := 1; led <= cfg.LEDsPerStrip(); led++ {
 				if cfg.IsVisible(led) {
-					on.SetLED(st, led, c[0], c[1], c[2])
+					on.SetLED(st, led, c[0], c[1], c[2], 0)
 				}
 			}
 			on.Flush(s, 0)
@@ -134,7 +136,7 @@ func cmdSweep(cfg wall.Config, s *artnet.Sender, args []string) {
 			off := wall.NewFrame(cfg)
 			for led := 1; led <= cfg.LEDsPerStrip(); led++ {
 				if cfg.IsVisible(led) {
-					off.SetLED(st, led, 0, 0, 0)
+					off.SetLED(st, led, 0, 0, 0, 0)
 				}
 			}
 			off.Flush(s, 0)
@@ -142,8 +144,7 @@ func cmdSweep(cfg wall.Config, s *artnet.Sender, args []string) {
 	}
 }
 
-// cmdChase fait défiler un point lumineux sur tout le mur, utile pour
-// vérifier la fluidité/synchronisation (pas de saccades, pas d'artefacts).
+// cmdChase fait défiler un point lumineux sur tout le mur : test de fluidité.
 func cmdChase(cfg wall.Config, s *artnet.Sender, args []string) {
 	fs := flag.NewFlagSet("chase", flag.ExitOnError)
 	fps := fs.Int("fps", 24, "images par seconde (limite fixee par le prof : 24 fps max)")
@@ -165,9 +166,9 @@ func cmdChase(cfg wall.Config, s *artnet.Sender, args []string) {
 
 		f := wall.NewFrame(cfg)
 		if prevStrip != 0 {
-			f.SetLED(prevStrip, prevLed, 0, 0, 0)
+			f.SetLED(prevStrip, prevLed, 0, 0, 0, 0)
 		}
-		f.SetLED(strip, led, 0, 255, 255)
+		f.SetLED(strip, led, 0, 255, 255, 0)
 		if err := f.Flush(s, seq); err != nil {
 			fmt.Println("erreur d'envoi:", err)
 		}
@@ -178,20 +179,10 @@ func cmdChase(cfg wall.Config, s *artnet.Sender, args []string) {
 	}
 }
 
-// cmdListen écoute le flux eHuB envoyé par l'outil de création (config +
-// update), et route chaque état reçu vers les contrôleurs via ArtNet. C'est
-// le module de routage proprement dit : il ne connaît rien de l'origine des
-// couleurs (Unity, Tan, ...), seulement le protocole eHuB en entrée et le
-// mapping entité -> bande/LED (ou canal DMX brut pour les lyres/projecteur)
-// en sortie.
-//
-// Réception et envoi sont découplés : l'émetteur peut envoyer son état en de
-// nombreux petits messages UDP par seconde (un `update` eHuB dépasse vite la
-// taille qu'un datagramme UDP peut transporter d'un coup, voir ehub.go), mais
-// on ne veut surtout pas déclencher un envoi ArtNet par message reçu — ça
-// génère beaucoup plus de paquets que nécessaire et peut saturer le buffer
-// d'envoi local (ENOBUFS). On accumule donc l'état dans `frame` au fil de la
-// réception, et on ne flush vers ArtNet qu'à une cadence contrôlée (-fps).
+// cmdListen écoute le flux eHuB et route vers ArtNet. Réception et envoi sont
+// découplés : on accumule l'état dans `frame` au fil de la réception, et on
+// ne flush vers ArtNet qu'à cadence contrôlée (-fps) — sinon un ArtNet par
+// message eHuB reçu sature le buffer d'envoi local (ENOBUFS).
 func cmdListen(cfg wall.Config, s *artnet.Sender, args []string) {
 	fs := flag.NewFlagSet("listen", flag.ExitOnError)
 	port := fs.Int("port", 8765, "port UDP sur lequel ecouter les messages eHuB")
@@ -207,8 +198,6 @@ func cmdListen(cfg wall.Config, s *artnet.Sender, args []string) {
 
 	frame := wall.NewFrame(cfg)
 	var mu sync.Mutex
-	var fixtureData [512]byte
-	fixtureDirty := false
 	unknownEntities := 0
 	updateCount := 0
 
@@ -250,13 +239,7 @@ func cmdListen(cfg wall.Config, s *artnet.Sender, args []string) {
 
 				mu.Lock()
 				for _, e := range entities {
-					if strip, led, ok := cfg.EntityLocation(int(e.ID)); ok {
-						frame.SetLED(strip, led, e.R, e.G, e.B)
-						continue
-					}
-					if _, _, ch, ok := cfg.FixtureChannel(int(e.ID)); ok {
-						fixtureData[ch] = e.R
-						fixtureDirty = true
+					if frame.SetEntity(int(e.ID), e.R, e.G, e.B, e.W) {
 						continue
 					}
 					unknownEntities++
@@ -284,23 +267,13 @@ func cmdListen(cfg wall.Config, s *artnet.Sender, args []string) {
 	fmt.Printf("ecoute eHuB sur le port %d, envoi ArtNet a %d Hz, Ctrl+C pour arreter\n", *port, *fps)
 	for range ticker.C {
 		mu.Lock()
-		sendFixture := fixtureDirty
-		fixtureDirty = false
-		var fixtureSnapshot [512]byte
-		if sendFixture {
-			fixtureSnapshot = fixtureData
-		}
-		flushErr := frame.Flush(s, seq)
+		snapshot := frame.Snapshot() // copie memoire pure, tres rapide : verrou tenu tres brievement
 		mu.Unlock()
 
-		if flushErr != nil {
-			fmt.Println("erreur d'envoi ArtNet:", flushErr)
-		}
-		if sendFixture {
-			ip, universe, _, _ := cfg.FixtureChannel(1)
-			if err := s.Send(ip, universe, seq, fixtureSnapshot[:]); err != nil {
-				fmt.Println("erreur d'envoi ArtNet (fixtures):", err)
-			}
+		// envoi reseau HORS verrou : la reception eHuB n'est jamais bloquee par
+		// plusieurs sendto() sequentiels (important sur une grosse installation)
+		if err := wall.SendSnapshot(s, seq, snapshot); err != nil {
+			fmt.Println("erreur d'envoi ArtNet:", err)
 		}
 		seq++
 	}

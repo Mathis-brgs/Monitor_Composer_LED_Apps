@@ -1,0 +1,183 @@
+/*
+ * Design tokens — logiciel de composition LED.
+ * Palette ember par défaut (:root). 3 palettes alternatives via [data-theme],
+ * 2 densités via [data-density]. Valeurs extraites du proto (findings.md).
+ */
+
+:root {
+  /* — Palette EMBER (défaut) — */
+  --app: #0a0908;
+  --panel: #141210;
+  --panel-2: #191614;
+  --row: #201c18;
+  --row-hi: #2b241d;
+
+  --line: rgba(255, 220, 190, 0.1);
+  --line-2: rgba(255, 220, 190, 0.05);
+
+  --txt: #efe8df;
+  --dim: #948a7e;
+  --faint: #5d5449;
+
+  --acc: #ff8a3d;
+  --acc-fill: rgba(255, 138, 61, 0.15);
+  --acc-border: rgba(255, 138, 61, 0.55);
+  --acc-glow: rgba(255, 138, 61, 0.28);
+
+  --pv-a: #ff8a3d;
+  --pv-b: #ff4a5a;
+  --pv-solid: #1c0e06;
+  --pv-sweep: #ffe8ce;
+
+  /* — Axes 3D (gizmo d'orientation + outils gizmo) : X suit l'accent, Y/Z fixes — */
+  --axis-x: var(--acc);
+  --axis-y: #7fd88a;
+  --axis-z: #5a9bff;
+
+  /* — Typographie — */
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --font-display: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  /* letter-spacing réglé par usage (valeurs du proto) */
+  --ls-label: 0.04em;
+  --ls-caps: 0.08em;
+  --ls-status: 0.06em;
+  --ls-sub: 0.1em;
+  --ls-tab: 0.13em;
+  --ls-live: 0.14em;
+  --ls-head: 0.15em;
+  --ls-word: 0.2em;
+
+  /* — Formes — */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 5px;
+  --radius-lg: 9px;
+  --stroke-hairline: 1px;
+
+  /* — Espacements — */
+  --space-1: 1px;
+  --space-2: 2px;
+  --space-3: 3px;
+  --space-4: 4px;
+  --space-5: 5px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-9: 9px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-14: 14px;
+  --space-16: 16px;
+  --space-20: 20px;
+
+  /* — Régions du cadre (hauteurs fixes) — */
+  --menu-bar: 38px;
+  --tab-bar: 34px;
+  --panel-header: 30px;
+  --status-bar: 26px;
+
+  /* — Régions du body — */
+  --rail: 48px;
+  --outliner: 260px;
+  --inspector: 322px;
+  --render-stack: 214px;
+
+  /* — Densité COMFORT (défaut) — */
+  --fs: 11px;
+  --fs-2: 10px;
+  --fs-3: 9px;
+  --row-h: 46px;
+  --lane: 42px;
+
+  /* — Timeline (dope sheet / pistes) : échelle dérivée, plus de nombres magiques — */
+  --tl-names: var(--outliner); /* largeur colonne noms */
+  --tl-header: var(--status-bar); /* hauteur règle + coin figé */
+  --tl-row: var(--lane); /* ligne calque */
+  --tl-row-prop: 24px; /* ligne propriété */
+  --tl-row-axis: 22px; /* ligne axe X/Y/Z */
+  --tl-ctrl: 18px; /* contrôle calque (œil / solo / lock) */
+  --tl-ctrl-sm: 16px; /* petit contrôle (chrono / nav clé / lien / pastille) */
+  --tl-ctrl-xs: 14px; /* triangle de repli (twirl / subtwirl) */
+  --tl-kf: 9px; /* diamant keyframe */
+  --tl-kf-sm: 7px; /* diamant résumé (calque replié) */
+  --tl-beat: color-mix(in srgb, var(--txt) 8%, transparent); /* ligne de battement (grille BPM) */
+  --tl-bar: color-mix(in srgb, var(--txt) 18%, transparent); /* accent de mesure (grille BPM) */
+  --tl-tools: 40px; /* largeur du rail d'outils */
+  --tl-tool: 28px; /* bouton d'outil (icône) */
+
+  --shadow-window: 0 40px 120px rgba(0, 0, 0, 0.65);
+}
+
+/* — Palettes alternatives — */
+[data-theme="graphite"] {
+  --app: #0a0a0b;
+  --panel: #111113;
+  --panel-2: #161619;
+  --row: #1b1b1f;
+  --row-hi: #26262c;
+  --line: rgba(255, 255, 255, 0.09);
+  --line-2: rgba(255, 255, 255, 0.045);
+  --txt: #e7e7ea;
+  --dim: #8a8a91;
+  --faint: #54545b;
+  --acc: #5cf08f;
+  --acc-fill: rgba(92, 240, 143, 0.15);
+  --acc-border: rgba(92, 240, 143, 0.55);
+  --acc-glow: rgba(92, 240, 143, 0.28);
+  --pv-a: #5cf08f;
+  --pv-b: #2eaaff;
+  --pv-solid: #071a14;
+  --pv-sweep: #ecfff4;
+}
+
+[data-theme="cobalt"] {
+  --app: #070912;
+  --panel: #0d111e;
+  --panel-2: #111627;
+  --row: #161d33;
+  --row-hi: #1f294a;
+  --line: rgba(150, 175, 255, 0.12);
+  --line-2: rgba(150, 175, 255, 0.06);
+  --txt: #e3e8f5;
+  --dim: #7e88a6;
+  --faint: #4c556f;
+  --acc: #4d7cff;
+  --acc-fill: rgba(77, 124, 255, 0.16);
+  --acc-border: rgba(77, 124, 255, 0.55);
+  --acc-glow: rgba(77, 124, 255, 0.32);
+  --pv-a: #4d7cff;
+  --pv-b: #966eff;
+  --pv-solid: #080e26;
+  --pv-sweep: #d6e2ff;
+}
+
+[data-theme="signal"] {
+  --app: #0b070c;
+  --panel: #151018;
+  --panel-2: #1a141f;
+  --row: #211a28;
+  --row-hi: #2c2236;
+  --line: rgba(240, 180, 255, 0.11);
+  --line-2: rgba(240, 180, 255, 0.05);
+  --txt: #f0e6f2;
+  --dim: #9a879f;
+  --faint: #5c4f61;
+  --acc: #ff4da6;
+  --acc-fill: rgba(255, 77, 166, 0.15);
+  --acc-border: rgba(255, 77, 166, 0.55);
+  --acc-glow: rgba(255, 77, 166, 0.3);
+  --pv-a: #ff4da6;
+  --pv-b: #40e0ff;
+  --pv-solid: #1a0816;
+  --pv-sweep: #ffe0f2;
+}
+
+/* — Densité COMPACT — */
+[data-density="compact"] {
+  --fs: 10px;
+  --fs-2: 9px;
+  --fs-3: 8px;
+  --row-h: 38px;
+  --lane: 34px;
+  --tl-row-prop: 20px;
+  --tl-row-axis: 18px;
+}
