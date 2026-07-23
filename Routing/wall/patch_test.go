@@ -134,6 +134,42 @@ func TestFrameSetEntityUnifiesLEDsAndFixtures(t *testing.T) {
 	}
 }
 
+// TestResolveEntityPatchFixtureRow verifie qu'une ligne de patch couvrant une
+// fixture (entite < EntityBase, ex: import CSV "Lyre 1,10,23,...") est bien
+// resolue en canal DMX brut (1 octet), pas en LED (stride ChannelsPerLED()) —
+// sinon une lyre voit son canal Pan ecraser Pan fine/Tilt (bug corrige).
+func TestResolveEntityPatchFixtureRow(t *testing.T) {
+	cfg := DefaultConfig() // EntityBase = 100
+	cfg.Patch = []PatchRow{
+		{Name: "Lyre 1", EntityStart: 10, EntityEnd: 23, IP: "192.168.1.48", Universe: 33},
+	}
+
+	ip, universe, ch, isFixture, ok := cfg.ResolveEntity(12)
+	if !ok || ip != "192.168.1.48" || universe != 33 {
+		t.Fatalf("attendu (192.168.1.48, univers 33), recu (%s, %d, ok=%v)", ip, universe, ok)
+	}
+	if !isFixture {
+		t.Error("une ligne de patch sous EntityBase doit etre un canal fixture brut")
+	}
+	if ch != 2 { // 12 - 10
+		t.Errorf("offset canal : recu %d, attendu 2", ch)
+	}
+
+	f := NewFrame(cfg)
+	if !f.SetEntity(12, 200, 0, 0, 0) {
+		t.Fatal("SetEntity(12,...) attendu ok=true")
+	}
+	channels, ok := f.ChannelsFor("192.168.1.48", 33)
+	if !ok || channels[2] != 200 {
+		t.Errorf("canal fixture inattendu : %v (ok=%v)", channels[:3], ok)
+	}
+	// Un canal fixture n'ecrit qu'un seul octet : le canal voisin (ex: Tilt
+	// d'une lyre) ne doit pas etre touche.
+	if channels[3] != 0 {
+		t.Errorf("un canal fixture (patch) a ecrase son voisin : %v", channels[:4])
+	}
+}
+
 // TestFrameWithPatch verifie que Frame reserve ses slots depuis Config.Patch
 // quand elle est renseignee, meme si les univers ne suivent aucune formule.
 func TestFrameWithPatch(t *testing.T) {

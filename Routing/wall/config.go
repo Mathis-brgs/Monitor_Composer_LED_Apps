@@ -199,6 +199,12 @@ func (c Config) ResolveEntity(entityID int) (ip string, universe uint16, channel
 	if len(c.Patch) > 0 {
 		for _, row := range c.Patch {
 			if entityID >= row.EntityStart && entityID <= row.EntityEnd {
+				if entityID < c.EntityBase {
+					// Ligne de patch couvrant une fixture (lyre/projecteur) : même
+					// convention que le chemin formule (FixtureChannel) — canal DMX
+					// brut, 1 octet, pas le stride ChannelsPerLED() d'une LED.
+					return row.IP, row.Universe, entityID - row.EntityStart, true, true
+				}
 				return row.IP, row.Universe, (entityID - row.EntityStart) * c.ChannelsPerLED(), false, true
 			}
 		}
