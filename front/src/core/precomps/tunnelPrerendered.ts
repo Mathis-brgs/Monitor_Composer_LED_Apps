@@ -16,18 +16,20 @@ function lcm(a: number, b: number): number {
   return (a * b) / gcd(a, b);
 }
 
+export interface PrerenderResult { frames: Uint8ClampedArray[]; loopStart: number }
+
+/** Identifiant de générateur stocké dans `Fill` (voir `prerenderRegistry.ts`) — permet de
+ *  recalculer les frames après un rechargement de projet (les frames elles-mêmes ne sont pas
+ *  sérialisées, trop volumineuses). */
+export const TUNNEL_EXACT_GENERATOR = "tunnel-prerender-exact";
+export const TUNNEL_SIMPLE_GENERATOR = "tunnel-prerender-simple";
+
 /**
- * Version PRÉ-RENDUE du tunnel — EXACTEMENT le même tunnel que `insertTunnel` (même construction
- * anneau par anneau, même boucle de voyage), pas une version simplifiée : `buildTunnel` calcule
- * les mêmes clés pour les deux, et celle-ci les échantillonne via `sampleKeyframes` (la même
- * fonction que l'Editor utilise en live) image par image au lieu de les animer en direct — donc
- * un résultat identique au pixel près, sans le coût de calcul par frame pendant la lecture.
- *
- * La construction (anneaux qui apparaissent un par un) ne se répète qu'une fois (intro) ; une
- * fois le tunnel bâti, la boucle de voyage se répète indéfiniment (voir `Editor.setPrerenderedFrames`,
- * paramètre `loopStart`). Non sérialisable (ne survit pas à une sauvegarde/rechargement).
+ * Calcule les frames du tunnel pré-rendu EXACT (mêmes clés que `insertTunnel`, échantillonnées
+ * via `sampleKeyframes` au lieu d'animées en direct — résultat identique au pixel près). Pure
+ * (pas d'Editor) : réutilisée à la création ET à la régénération après chargement de projet.
  */
-export function insertTunnelPrerendered(editor: Editor, opts: TunnelOptions = {}): string {
+export function computeTunnelPrerendered(opts: TunnelOptions = {}): PrerenderResult {
   const { specs, buildEnd, loopLength } = buildTunnel({ ...opts, startFrame: 0 });
   const totalFrames = buildEnd + loopLength;
 
@@ -49,22 +51,29 @@ export function insertTunnelPrerendered(editor: Editor, opts: TunnelOptions = {}
     }
     frames.push(new Uint8ClampedArray(rasterizeShapes(shapes, SIZE, SIZE)));
   }
-
-  const id = editor.addShape("box");
-  editor.setName(id, `Tunnel pré-rendu (${opts.kind ?? "square"})`);
-  editor.setTransform(id, { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } });
-  editor.setFill(id, { type: "prerender" });
-  editor.setPrerenderedFrames(id, frames, buildEnd);
-  return id;
+  return { frames, loopStart: buildEnd };
 }
 
 /**
- * Version PRÉ-RENDUE "simple" : pas de reprise des clés live — tous les anneaux SYNCHRONISÉS
- * (même zoom, même clignotement, en phase), sans phase de construction, boucle depuis la frame 0.
- * Plus sobre/lisible que la version exacte (qui garde le décalage par anneau hérité du tempo de
- * construction) — gardée en plus comme option, pas une étape vers la version exacte.
+ * Version PRÉ-RENDUE du tunnel — EXACTEMENT le même tunnel que `insertTunnel` (même construction
+ * anneau par anneau, même boucle de voyage), pas une version simplifiée. La construction (anneaux
+ * qui apparaissent un par un) ne se répète qu'une fois (intro) ; une fois le tunnel bâti, la
+ * boucle de voyage se répète indéfiniment (voir `Editor.setPrerenderedFrames`, paramètre
+ * `loopStart`). Les FRAMES ne sont pas sérialisées, mais `generator`+`options` le sont sur le
+ * `Fill` — `Editor._rehydratePrerenderedFills` les recalcule après un chargement de projet.
  */
-export function insertTunnelPrerenderedSimple(editor: Editor, opts: TunnelOptions = {}): string {
+export function insertTunnelPrerendered(editor: Editor, opts: TunnelOptions = {}): string {
+  const { frames, loopStart } = computeTunnelPrerendered(opts);
+  const id = editor.addShape("box");
+  editor.setName(id, `Tunnel pré-rendu (${opts.kind ?? "square"})`);
+  editor.setTransform(id, { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } });
+  editor.setFill(id, { type: "prerender", generator: TUNNEL_EXACT_GENERATOR, options: opts as Record<string, unknown> });
+  editor.setPrerenderedFrames(id, frames, loopStart);
+  return id;
+}
+
+/** Calcule les frames du tunnel pré-rendu SIMPLE (anneaux synchronisés, pas de construction). */
+export function computeTunnelPrerenderedSimple(opts: TunnelOptions = {}): PrerenderResult {
   const kind = opts.kind ?? "square";
   const ringCount = Math.max(2, Math.min(20, Math.round(opts.ringCount ?? 8)));
   const travelPeriod = Math.max(4, Math.round(opts.travelPeriod ?? 40));
@@ -112,11 +121,21 @@ export function insertTunnelPrerenderedSimple(editor: Editor, opts: TunnelOption
     }
     frames.push(new Uint8ClampedArray(rasterizeShapes(shapes, SIZE, SIZE)));
   }
+  return { frames, loopStart: 0 }; // boucle depuis le début, pas d'intro
+}
 
+/**
+ * Version PRÉ-RENDUE "simple" : pas de reprise des clés live — tous les anneaux SYNCHRONISÉS
+ * (même zoom, même clignotement, en phase), sans phase de construction, boucle depuis la frame 0.
+ * Plus sobre/lisible que la version exacte (qui garde le décalage par anneau hérité du tempo de
+ * construction) — gardée en plus comme option, pas une étape vers la version exacte.
+ */
+export function insertTunnelPrerenderedSimple(editor: Editor, opts: TunnelOptions = {}): string {
+  const { frames, loopStart } = computeTunnelPrerenderedSimple(opts);
   const id = editor.addShape("box");
-  editor.setName(id, `Tunnel pré-rendu simple (${kind})`);
+  editor.setName(id, `Tunnel pré-rendu simple (${opts.kind ?? "square"})`);
   editor.setTransform(id, { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } });
-  editor.setFill(id, { type: "prerender" });
-  editor.setPrerenderedFrames(id, frames, 0); // loopStart=0 : boucle depuis le début, pas d'intro
+  editor.setFill(id, { type: "prerender", generator: TUNNEL_SIMPLE_GENERATOR, options: opts as Record<string, unknown> });
+  editor.setPrerenderedFrames(id, frames, loopStart);
   return id;
 }

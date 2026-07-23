@@ -63,16 +63,20 @@ export interface EmberPlasmaBallOptions {
   groundY?: number;
 }
 
+export interface PrerenderResult { frames: Uint8ClampedArray[]; loopStart: number }
+
+/** Identifiant de générateur stocké dans `Fill` (voir `prerenderRegistry.ts`) — permet de
+ *  recalculer les frames après un rechargement de projet. Note : la sim utilise `Math.random()`
+ *  (chute des particules) — une régénération après reload donne un résultat crédible mais PAS
+ *  pixel-identique (positions de chute différentes) ; sans conséquence visible pour un effet
+ *  organique comme celui-ci. */
+export const EMBER_PLASMA_BALL_GENERATOR = "ember-plasma-ball";
+
 /**
- * Précomposition PRÉ-RENDUE (pas de version live) : des particules de PLASMA (couleur = motif
- * plasma échantillonné à leur position, pas une palette statique) APPARAISSENT et tombent au sol
- * une par une (pas toutes en même temps — chaque particule a sa propre horloge de spawn/chute/
- * attraction), puis sont attirées vers le centre où elles fondent dans une boule de plasma lisse
- * et continue, recolorée en BRAISE (jaune→rouge). La boule grandit UNIQUEMENT au rythme des
- * arrivées réelles (jamais avant qu'une particule n'ait fini son trajet) — pas sur une horloge
- * indépendante. Toujours pré-rendu (bake CPU intensif) — pas de version live équivalente.
+ * Calcule les frames de la boule plasma → braise. Pure (pas d'Editor) : réutilisée à la création
+ * ET à la régénération après chargement de projet.
  */
-export function insertEmberPlasmaBall(editor: Editor, opts: EmberPlasmaBallOptions = {}): string {
+export function computeEmberPlasmaBall(opts: EmberPlasmaBallOptions = {}): PrerenderResult {
   const count = Math.max(4, Math.min(150, Math.round(opts.count ?? 80)));
   const fps = opts.fps && opts.fps > 0 ? opts.fps : 24;
   // par défaut, la formation complète (dernière particule fondue) dure 3.8+1.2+3.0 = 8s
@@ -174,10 +178,24 @@ export function insertEmberPlasmaBall(editor: Editor, opts: EmberPlasmaBallOptio
     frames.push(new Uint8ClampedArray(rasterizeShapes(shapes, SIZE, SIZE)));
   }
 
+  return { frames, loopStart: lastArrival };
+}
+
+/**
+ * Précomposition PRÉ-RENDUE (pas de version live) : des particules de PLASMA (couleur = motif
+ * plasma échantillonné à leur position, pas une palette statique) APPARAISSENT et tombent au sol
+ * une par une (pas toutes en même temps — chaque particule a sa propre horloge de spawn/chute/
+ * attraction), puis sont attirées vers le centre où elles fondent dans une boule de plasma lisse
+ * et continue, recolorée en BRAISE (jaune→rouge). La boule grandit UNIQUEMENT au rythme des
+ * arrivées réelles (jamais avant qu'une particule n'ait fini son trajet) — pas sur une horloge
+ * indépendante. Toujours pré-rendu (bake CPU intensif) — pas de version live équivalente.
+ */
+export function insertEmberPlasmaBall(editor: Editor, opts: EmberPlasmaBallOptions = {}): string {
+  const { frames, loopStart } = computeEmberPlasmaBall(opts);
   const id = editor.addShape("box");
   editor.setName(id, "Plasma → boule de braise (pré-rendu)");
   editor.setTransform(id, { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } });
-  editor.setFill(id, { type: "prerender" });
-  editor.setPrerenderedFrames(id, frames, lastArrival);
+  editor.setFill(id, { type: "prerender", generator: EMBER_PLASMA_BALL_GENERATOR, options: opts as Record<string, unknown> });
+  editor.setPrerenderedFrames(id, frames, loopStart);
   return id;
 }

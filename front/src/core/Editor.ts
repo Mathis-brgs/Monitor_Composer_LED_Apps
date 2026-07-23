@@ -30,6 +30,7 @@ import { ParticleScene } from "./engine/ParticleScene.ts";
 import type { ResolvedSim } from "./engine/ParticleSystem.ts";
 import type { NestedSource } from "./engine/Engine.ts";
 import { countLit, type ShapeFill, type ShapeInput } from "./engine/shapes.ts";
+import { computePrerenderedFrames } from "./precomps/prerenderRegistry.ts";
 import { Animator } from "./Animator.ts";
 import { makeComposition, defaultPrerenderScene, partitionTracks, sampleKeyframes, type Composition, type Interp, type Track } from "@domain/Composition.ts";
 import type { Clock } from "./Clock.ts";
@@ -152,9 +153,15 @@ export class Editor {
   // qu'une fois (intro/construction), celles à partir de là bouclent indéfiniment.
   private readonly _prerenderedLoopStart = new Map<string, number>();
 
-  // Bibliothèque de simulations de particules : STABLE (hors `_doc`, contrairement aux matériaux — évite
-  // que la nav entre comps ne la réinitialise), partagée par toutes les comps, sérialisée dans le projet.
+  // Bibliothèque de simulations de particules : STABLE (hors `_doc`), partagée par toutes les
+  // comps, sérialisée dans le projet.
   private _simulations: SimPreset[] = [defaultSimPreset()];
+
+  // Bibliothèque de matériaux personnalisés : STABLE (hors `_doc`, même raison que `_simulations`
+  // ci-dessus — vivait sur `_doc.materials` avant, réinitialisé à chaque nav entre comps ET jamais
+  // sérialisé dans le projet, donc perdu au rechargement). Voir `Editor.loadMaterialPresets`/
+  // `app.ts` (injection avant sauvegarde, même pattern que `listSimPresets`).
+  private _materials: MaterialPreset[] = [];
 
   // ————————————————————————————————— Lecture —————————————————————————————————
 
@@ -198,7 +205,27 @@ export class Editor {
     const main = compositions[mainCompId] ?? makeComposition(mainCompId || "main", "Composition", "main");
     if (!compositions[mainCompId]) compositions[mainCompId] = main;
     this._nav = [{ compId: mainCompId, groupId: main.root.id, selectedId: null, frame: 0 }];
+    this._rehydratePrerenderedFills(compositions);
     this._enterContext(main, main.root.id, null, 0);
+  }
+
+  /**
+   * Les frames d'un fill "prerender" ne sont PAS sérialisées (binaire, potentiellement
+   * volumineux) — seuls `generator`/`options` le sont (voir `Fill` dans `domain/Layer.ts`). Sans
+   * ce recalcul, une shape "prerender" rechargée depuis un projet resterait noire pour toujours
+   * (`_prerenderedFrames` vide, jamais repeuplé). Parcourt TOUTES les comps (pas juste l'active),
+   * un fill pré-rendu peut vivre dans n'importe laquelle.
+   */
+  private _rehydratePrerenderedFills(compositions: Record<string, Composition>): void {
+    for (const comp of Object.values(compositions)) {
+      for (const shape of this._collect((l): l is ShapeLayer => l.type === "shape" && l.fill.type === "prerender", comp.root)) {
+        if (shape.fill.type !== "prerender" || !shape.fill.generator) continue;
+        const result = computePrerenderedFrames(shape.fill.generator, shape.fill.options ?? {});
+        if (!result) continue;
+        this._prerenderedFrames.set(shape.id, result.frames);
+        this._prerenderedLoopStart.set(shape.id, result.loopStart);
+      }
+    }
   }
 
   /** Comp courante (haut de la pile de navigation). */
@@ -1454,28 +1481,33 @@ export class Editor {
 
   // ————————————————————————————————— Matériaux ─────————————————————————————————
 
-  /** Bibliothèque de matériaux du document (presets réutilisables entre shapes). */
+  /** Bibliothèque de matériaux (presets réutilisables entre shapes, toutes comps confondues). */
   listMaterialPresets(): readonly MaterialPreset[] {
-    return this._doc.materials ?? [];
+    return this._materials;
   }
 
-  /** Crée un nouveau preset (fichier de matériau) dans le document. Renvoie son id. */
+  /** Charge la bibliothèque (depuis un projet) — voir `loadSimPresets`, même pattern. */
+  loadMaterialPresets(presets: readonly MaterialPreset[] | undefined): void {
+    this._materials = (presets ?? []).map((p) => ({ ...p }));
+    this._emit();
+  }
+
+  /** Crée un nouveau preset (fichier de matériau). Renvoie son id. */
   addMaterialPreset(name: string, mode: MaterialMode = "basic", fragment = DEFAULT_MATERIAL_FRAGMENT, vertex = ""): string {
     this._counter += 1;
     const id = `material-${this._counter}`;
     const preset: MaterialPreset = { id, name, mode, fragment, vertex };
-    this._doc.materials = [...(this._doc.materials ?? []), preset];
+    this._materials = [...this._materials, preset];
     this._emit();
     return id;
   }
 
   /** Édite un preset existant (nom/mode/fragment/vertex) et re-bake toutes les shapes qui l'utilisent. */
   updateMaterialPreset(id: string, patch: Partial<Omit<MaterialPreset, "id">>): void {
-    const list = this._doc.materials ?? [];
-    const idx = list.findIndex((p) => p.id === id);
+    const idx = this._materials.findIndex((p) => p.id === id);
     if (idx === -1) return;
-    const updated = { ...list[idx], ...patch };
-    this._doc.materials = list.map((p, i) => (i === idx ? updated : p));
+    const updated = { ...this._materials[idx], ...patch };
+    this._materials = this._materials.map((p, i) => (i === idx ? updated : p));
     this._emit();
     for (const shape of this._collect((l): l is ShapeLayer => l.type === "shape" && l.fill.type === "material" && l.fill.presetId === id)) {
       void this._bakeMaterialFor(shape.id, id);
@@ -1487,7 +1519,7 @@ export class Editor {
    *  cassé est indiscernable d'un matériau qui charge encore — voir la console pour le détail
    *  de l'erreur (`MaterialBaker: échec du fragment TSL utilisateur`). */
   private async _bakeMaterialFor(shapeId: string, presetId: string): Promise<void> {
-    const preset = (this._doc.materials ?? []).find((p) => p.id === presetId);
+    const preset = this._materials.find((p) => p.id === presetId);
     if (!preset || !this._engine || this._materialBaking.has(shapeId)) return;
     this._materialBaking.add(shapeId);
     try {
