@@ -44,6 +44,10 @@ func main() {
 	a := app.New()
 	a.Settings().SetTheme(emberTheme{})
 	win := a.NewWindow("LED Monitor")
+	// Sans ça, Fyne ne quitte jamais l'appli quand cette fenetre se ferme (aucune
+	// fenetre n'est "maitresse" par defaut) : le process reste en arriere-plan,
+	// visible dans le Dock, meme sans fenetre ouverte.
+	win.SetMaster()
 
 	img := image.NewRGBA(image.Rect(0, 0, state.cfg.Width()*cellSize, state.cfg.Height*cellSize))
 
