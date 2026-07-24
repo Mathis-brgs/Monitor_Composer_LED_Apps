@@ -109,9 +109,10 @@ export class Editor3DScene {
   private readonly _unsub: () => void;
   private readonly _onKey: (e: KeyboardEvent) => void;
   private readonly _onDown: (e: PointerEvent) => void;
-  private readonly _onUp: (e: PointerEvent) => void;
+  private _onUp: (e: PointerEvent) => void;
   private _dragging = false;
   private _aspect = 0;
+  private _lyreBeams: { layerId: string; line: Line; ring?: Mesh; dot?: Mesh }[] = [];
   private _onMove: ((e: PointerEvent) => void) | null = null;
   private _onUpMove: ((e: PointerEvent) => void) | null = null;
   private readonly _marquee: HTMLElement;
@@ -312,6 +313,7 @@ export class Editor3DScene {
     }
     this._controls.update();
     this._syncParticleViewers();
+    this._updateLyreBeams();
     this._renderer.setRenderTarget(null);
     this._renderer.render(this._scene, this._camera);
   }
@@ -363,6 +365,7 @@ export class Editor3DScene {
       this._onUpMove = null;
     }
     this._marquee.remove();
+    this._clearLyreBeams();
     this._clearGroup(this._objects);
     this._clearGroup(this._picks);
     this._clearPath();
@@ -399,6 +402,7 @@ export class Editor3DScene {
     const mode = this._editor.viewportMode;
     this._clearGroup(this._objects);
     this._clearGroup(this._picks);
+    this._clearLyreBeams();
     this._syncPrerenderView();
 
     for (const l of this._editor.children) {
@@ -458,6 +462,29 @@ export class Editor3DScene {
       const marker = new Mesh(new SphereGeometry(FIXTURE_MARKER_RADIUS, 12, 8), fixtureMarkerMaterial(color, selected ? HELPER_LIT : HELPER_DIM));
       marker.position.set(p.x, p.y, p.z);
       this._objects.add(marker);
+
+      if (l.type === "lyre") {
+        const lineGeo = new BufferGeometry().setFromPoints([new Vector3(), new Vector3()]);
+        const lineMat = laserMaterial(new Color(1, 1, 1), 0.5);
+        const line = new Line(lineGeo, lineMat);
+        this._objects.add(line);
+
+        const hitMat = fixtureMarkerMaterial(new Color(1, 1, 1), 0.5);
+        const ring = new Mesh(new TorusGeometry(0.02, 0.003, 8, 16), hitMat);
+        ring.visible = false;
+        this._objects.add(ring);
+
+        const dot = new Mesh(new SphereGeometry(0.006, 6, 4), hitMat);
+        dot.visible = false;
+        this._objects.add(dot);
+
+        this._lyreBeams.push({
+          layerId: l.id,
+          line,
+          ring,
+          dot,
+        });
+      }
     }
     this._buildPath(selectedId);
     this._syncGizmo();
@@ -691,14 +718,139 @@ export class Editor3DScene {
 
   private _clearGroup(group: Group): void {
     for (const child of group.children) {
-      if (child instanceof LineSegments || child instanceof Mesh) {
+      if (child instanceof Line || child instanceof Mesh) {
         child.geometry.dispose();
-        if (child instanceof LineSegments) (child.material as LineBasicNodeMaterial).dispose();
+        if (child instanceof Line) (child.material as LineBasicNodeMaterial).dispose();
         // Mesh dont le matériau est partagé (_pickMat, cibles de raycast) : ne pas le disposer ici.
         else if (child.material !== this._pickMat) (child.material as MeshBasicNodeMaterial).dispose();
       }
     }
     group.clear();
+  }
+
+  private _clearLyreBeams(): void {
+    for (const beam of this._lyreBeams) {
+      this._objects.remove(beam.line);
+      beam.line.geometry.dispose();
+      (beam.line.material as LineBasicNodeMaterial).dispose();
+
+      if (beam.ring) {
+        this._objects.remove(beam.ring);
+        beam.ring.geometry.dispose();
+        (beam.ring.material as MeshBasicNodeMaterial).dispose();
+      }
+      if (beam.dot) {
+        this._objects.remove(beam.dot);
+        beam.dot.geometry.dispose();
+        (beam.dot.material as MeshBasicNodeMaterial).dispose();
+      }
+    }
+    this._lyreBeams = [];
+  }
+
+  private _updateLyreBeams(): void {
+    const selectedId = this._editor.selectedId;
+    for (const beam of this._lyreBeams) {
+      const l = this._editor.children.find((child) => child.id === beam.layerId);
+      if (!l || l.type !== "lyre" || !l.visible) {
+        beam.line.visible = false;
+        if (beam.ring) beam.ring.visible = false;
+        if (beam.dot) beam.dot.visible = false;
+        continue;
+      }
+
+      const p = l.transform.position;
+      const selected = l.id === selectedId;
+      const c = l.channels;
+
+      const pan = c.pan ?? 0;
+      const panFine = c.panFine ?? 0;
+      const tilt = c.tilt ?? 0;
+      const tiltFine = c.tiltFine ?? 0;
+
+      // Pan: range of 540 degrees (0 to 3*PI)
+      const panAngle = ((pan + panFine / 256) / 255) * (540 * Math.PI / 180);
+      // Tilt: range of 180 degrees (0 to PI)
+      const tiltAngle = ((tilt + tiltFine / 256) / 255) * Math.PI;
+
+      const baseRot = l.transform.rotation;
+      const baseObj = new Object3D();
+      baseObj.rotation.set(baseRot.x, baseRot.y, baseRot.z);
+
+      const headObj = new Object3D();
+      headObj.rotation.y = panAngle;
+
+      // At tilt = 0, points behind (0, 0, 1). At tilt = 127, points straight up (0, 1, 0). At tilt = 255, points in front (0, 0, -1).
+      const dirLocal = new Vector3(0, Math.sin(tiltAngle), Math.cos(tiltAngle));
+
+      const dir = dirLocal.clone();
+      dir.applyQuaternion(headObj.quaternion);
+      dir.applyQuaternion(baseObj.quaternion);
+      dir.normalize();
+
+      let endPoint = new Vector3().copy(dir).multiplyScalar(2).add(new Vector3(p.x, p.y, p.z));
+      let hitsWall = false;
+
+      if (Math.abs(dir.z) > 1e-5) {
+        const t = -p.z / dir.z;
+        if (t > 0) {
+          endPoint.set(p.x + t * dir.x, p.y + t * dir.y, 0);
+          hitsWall = true;
+        }
+      }
+
+      const rVal = c.r / 255;
+      const gVal = c.g / 255;
+      const bVal = c.b / 255;
+      const wVal = (c.w || 0) / 255;
+
+      const beamColor = new Color(
+        Math.min(1, rVal + wVal),
+        Math.min(1, gVal + wVal),
+        Math.min(1, bVal + wVal)
+      );
+      if (beamColor.r === 0 && beamColor.g === 0 && beamColor.b === 0) {
+        beamColor.setRGB(1, 1, 1);
+      }
+
+      const dimmerVal = (c.dimmer !== undefined ? c.dimmer : 255) / 255;
+      let beamOpacity = selected ? HELPER_LIT : HELPER_DIM;
+      if (dimmerVal > 0) {
+        beamOpacity = Math.max(beamOpacity, dimmerVal * 0.7);
+      }
+
+      const isVisible = true;
+
+      beam.line.visible = isVisible;
+      if (isVisible) {
+        const points = [new Vector3(p.x, p.y, p.z), endPoint];
+        beam.line.geometry.setFromPoints(points);
+
+        const lineMat = beam.line.material as LineBasicNodeMaterial;
+        lineMat.color.copy(selected ? ACCENT : beamColor);
+        lineMat.opacity = beamOpacity;
+      }
+
+      const showHits = isVisible && hitsWall;
+      if (beam.ring) {
+        beam.ring.visible = showHits;
+        if (showHits) {
+          beam.ring.position.set(endPoint.x, endPoint.y, 0.005);
+          const ringMat = beam.ring.material as MeshBasicNodeMaterial;
+          ringMat.color.copy(selected ? ACCENT : beamColor);
+          ringMat.opacity = Math.min(1, beamOpacity * 1.3);
+        }
+      }
+      if (beam.dot) {
+        beam.dot.visible = showHits;
+        if (showHits) {
+          beam.dot.position.set(endPoint.x, endPoint.y, 0.005);
+          const dotMat = beam.dot.material as MeshBasicNodeMaterial;
+          dotMat.color.copy(selected ? ACCENT : beamColor);
+          dotMat.opacity = Math.min(1, beamOpacity * 1.3);
+        }
+      }
+    }
   }
 }
 
@@ -774,5 +926,14 @@ function fixtureMarkerMaterial(color: Color, opacity: number): MeshBasicNodeMate
   m.color = color;
   m.transparent = true;
   m.opacity = opacity;
+  return m;
+}
+
+function laserMaterial(color: Color, opacity: number): LineBasicNodeMaterial {
+  const m = new LineBasicNodeMaterial();
+  m.color = color;
+  m.transparent = true;
+  m.opacity = opacity;
+  m.depthWrite = false;
   return m;
 }
