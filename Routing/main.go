@@ -44,6 +44,8 @@ func main() {
 		cmdListen(cfg, sender, os.Args[2:])
 	case "fixtures":
 		cmdFixtureTest(cfg, sender, os.Args[2:])
+	case "gencsv":
+		cmdGenCSV(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -63,7 +65,12 @@ Commandes:
   sweep                                    Balaie chaque bande en rouge/vert/bleu (debug cablage)
   chase  -fps N                            Anime un point lumineux sur tout le mur (test perf/synchro)
   listen -port N -fps N                    Ecoute le flux eHuB (config+update) et le route vers ArtNet
-  fixtures                                  Teste projecteur + 4 lyres une par une (bypass front/eHuB, debug cross-talk)`)
+  fixtures                                  Teste projecteur + 4 lyres une par une (bypass front/eHuB, debug cross-talk)
+  gencsv -width N [-height N] -out fichier.csv
+                                             Genere un patch CSV pour le coin bas-gauche (largeur x
+                                             hauteur) du MUR REEL (memes bandes/IP/ID d'entite que
+                                             wall.DefaultConfig, pas une installation raccourcie).
+                                             Ex: -width 32 -out ecran-32x32.csv`)
 }
 
 func cmdSingle(cfg wall.Config, s *artnet.Sender, args []string) {

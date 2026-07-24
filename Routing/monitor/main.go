@@ -391,7 +391,11 @@ func main() {
 		artnetMonitor,
 	))
 
-	pipelineRow := container.NewGridWithColumns(3, sourceCard, mappingCard, artnetCard)
+	// Grille adaptative : jusqu'a 3 cartes cote a cote sur une fenetre large,
+	// empilees en 1 colonne des que la largeur manque (contrairement a
+	// GridWithColumns qui force toujours 3 colonnes et empeche la fenetre de
+	// descendre sous leur largeur cumulee).
+	pipelineRow := newResponsiveGrid(260, 3, sourceCard, mappingCard, artnetCard)
 
 	toolsAccordion := widget.NewAccordion(
 		widget.NewAccordionItem("Couleur", container.NewVBox(

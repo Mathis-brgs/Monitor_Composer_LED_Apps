@@ -40,15 +40,13 @@
       "out/**"
     ],
     "mac": {
-      "target": "dmg",
-      "arch": [
-        "arm64"
+      "target": [
+        { "target": "dmg", "arch": ["arm64"] }
       ]
     },
     "win": {
-      "target": "nsis",
-      "arch": [
-        "x64"
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
       ]
     }
   }

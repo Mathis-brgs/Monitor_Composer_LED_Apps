@@ -59,3 +59,27 @@ func ParsePatchCSV(r io.Reader) ([]PatchRow, error) {
 	}
 	return rows, nil
 }
+
+// WritePatchCSV écrit une table de patch au même format 5 colonnes que
+// ParsePatchCSV attend en lecture (round-trip garanti par
+// TestPatchCSVRoundTrip) : en-tête, puis une ligne par PatchRow.
+func WritePatchCSV(w io.Writer, rows []PatchRow) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{"Name", "Entity Start", "Entity End", "ArtNet IP", "ArtNet Universe"}); err != nil {
+		return err
+	}
+	for _, row := range rows {
+		rec := []string{
+			row.Name,
+			strconv.Itoa(row.EntityStart),
+			strconv.Itoa(row.EntityEnd),
+			row.IP,
+			strconv.Itoa(int(row.Universe)),
+		}
+		if err := cw.Write(rec); err != nil {
+			return err
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}

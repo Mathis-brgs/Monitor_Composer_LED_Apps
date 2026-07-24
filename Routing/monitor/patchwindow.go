@@ -116,6 +116,27 @@ func (e *patchEditor) promptNewController() {
 // showUniverses affiche les univers d'un contrôleur : une carte éditable par
 // univers (nom, entité début/fin, numéro d'univers), + ajout/suppression.
 func (e *patchEditor) showUniverses(ip string) {
+	ipEntry := newEntry()
+	ipEntry.SetText(ip)
+	ipError := widget.NewLabel("")
+	renameBtn := widget.NewButton("Changer l'IP", func() {
+		newIP := ipEntry.Text
+		if newIP == "" {
+			ipError.SetText("Adresse IP vide")
+			return
+		}
+		if newIP == ip {
+			return
+		}
+		for i := range e.rows {
+			if e.rows[i].IP == ip {
+				e.rows[i].IP = newIP
+			}
+		}
+		e.showUniverses(newIP)
+	})
+	ipRow := container.NewBorder(nil, nil, widget.NewLabel("Adresse IP"), renameBtn, ipEntry)
+
 	list := container.NewVBox()
 	for i := range e.rows {
 		if e.rows[i].IP != ip {
@@ -199,6 +220,8 @@ func (e *patchEditor) showUniverses(ip string) {
 	e.body.Objects = []fyne.CanvasObject{
 		backBtn,
 		widget.NewLabelWithStyle(fmt.Sprintf("Controleur %s", ip), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		ipRow,
+		ipError,
 		list,
 		container.NewGridWithColumns(2, addUniverseBtn, removeControllerBtn),
 	}

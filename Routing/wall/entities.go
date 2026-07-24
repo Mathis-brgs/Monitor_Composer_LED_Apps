@@ -35,6 +35,27 @@ func (c Config) EntityLocation(entityID int) (strip, led int, ok bool) {
 	return strip, led, true
 }
 
+// EntityForStripLED est l'inverse exact de EntityLocation : donne l'ID
+// d'entité qui adresse (strip, led). ok=false si strip/led n'est pas
+// représentable (bande au-delà des contrôleurs connus, LED au-delà de
+// LEDsPerStrip, ou EntityPerStrip trop court pour cette hauteur de bande).
+func (c Config) EntityForStripLED(strip, led int) (entityID int, ok bool) {
+	if strip < 1 || led < 1 || led > c.LEDsPerStrip() {
+		return 0, false
+	}
+	idx := strip - 1
+	quarter := idx / c.StripsPerCtrl
+	if quarter >= len(c.ControllerIPs) {
+		return 0, false
+	}
+	k := idx % c.StripsPerCtrl
+	localOffset := led - 1
+	if localOffset > c.EntityPerStrip-1 {
+		return 0, false // EntityPerStrip trop court pour separer cette bande de la suivante
+	}
+	return c.EntityBase + quarter*c.EntityPerQuarter + k*c.EntityPerStrip + localOffset, true
+}
+
 // FixtureChannel adresse les entités < EntityBase (lyres, projecteur) sur le
 // dernier contrôleur, univers FixtureUniverse ; l'ID = canal DMX (1-indexé).
 // Hypothèse à valider : seule la composante R sert de valeur brute du canal.
