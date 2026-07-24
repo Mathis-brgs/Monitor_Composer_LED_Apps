@@ -11,3 +11,13 @@ cap-*.png
 /task_plan.md
 /handoff/
 /docs/
+
+# Exécutables buildés (gros binaires, jamais versionnés — voir le prof pour
+# la livraison, pas git : deliverables/ contient les .dmg/.zip à envoyer via
+# Drive/WeTransfer, régénérés à la demande depuis le source).
+/deliverables/
+Routing/build/
+Routing/monitor/*.app/
+Routing/monitor/Icon.png
+front/release/
+front/out/
